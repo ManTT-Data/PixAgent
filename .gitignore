@@ -1,10 +1,73 @@
+# Các file và thư mục bị loại trừ bởi gitignore
 # Các file log
 app.log
+logs/
 *.log
 
-# File môi trường
+# Các file môi trường
 .env
 .env.*
+!.env.example
+
+# Các file Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.pytest_cache/
+
+# Các file IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Các file khác
+create_tables.py
+pytest.ini
+tests/
+blabla
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Các thư mục ảo Python
+venv/
+ENV/
+env/
+virtualenv/
+.venv/
+
+# Coverage reports
+htmlcov/
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
 
 # File tạo bảng
 create_tables.py
