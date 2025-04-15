@@ -1,21 +1,17 @@
 # Các file và thư mục bị loại trừ bởi gitignore
 # Các file log
 app.log
-logs/
 *.log
 
 # Các file môi trường
 .env
-.env.*
-!.env.example
 
 # Các file Python cache
 __pycache__/
 *.py[cod]
 *$py.class
-*.so
-.Python
 .pytest_cache/
+pytest.ini
 
 # Các file IDE
 .idea/
@@ -25,28 +21,13 @@ __pycache__/
 
 # Các file khác
 create_tables.py
-pytest.ini
 tests/
 blabla
 
 # Distribution / packaging
-.Python
-build/
-develop-eggs/
 dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
+build/
 *.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
 
 # PyInstaller
 *.manifest
@@ -54,10 +35,8 @@ MANIFEST
 
 # Các thư mục ảo Python
 venv/
-ENV/
 env/
-virtualenv/
-.venv/
+.env/
 
 # Coverage reports
 htmlcov/
@@ -82,24 +61,6 @@ __pycache__/
 *.py[cod]
 *$py.class
 .pytest_cache/
-
-# Distribution / packaging
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
 
 # IDE
 .idea/
