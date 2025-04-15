@@ -1,17 +1,29 @@
-fastapi==0.104.1
-uvicorn==0.24.0
+# FastAPI
+fastapi==0.103.1
+uvicorn[standard]==0.23.2
+pydantic==2.3.0
 python-dotenv==1.0.0
-sqlalchemy==2.0.23
-psycopg2-binary==2.9.9
-pymongo==4.6.0
-pinecone-client>=3.0.0
-pydantic==2.4.2
+websockets==11.0.3
+
+# MongoDB
+pymongo==4.5.0
+dnspython==2.4.2  # Cho MongoDB SRV connection
+
+# PostgreSQL
+sqlalchemy==2.0.20
+pydantic-settings==2.0.3
+psycopg2-binary==2.9.7  # Cho kết nối PostgreSQL
+
+# Pinecone & RAG
+pinecone-client==2.2.4
+langchain==0.0.292
 google-generativeai==0.3.1
-python-multipart==0.0.6
+
+# Extras
 pytz==2023.3
-httpx==0.25.1
-uuid==1.30
-psutil==5.9.5
+python-multipart==0.0.6
+
+# Additional dependencies
 prometheus-client==0.17.1
 pytest==7.4.0
 pytest-cov==4.1.0

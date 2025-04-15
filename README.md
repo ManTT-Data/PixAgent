@@ -54,6 +54,50 @@ Backend API for PIX Project with MongoDB, PostgreSQL and RAG integration. This p
 - `GET /debug/performance`: Get performance metrics
 - `GET /debug/full`: Get comprehensive debug information
 
+## WebSocket API
+
+### Notifications for New Sessions
+
+The backend provides a WebSocket endpoint for receiving notifications about new sessions that match specific criteria.
+
+#### WebSocket Endpoint
+
+```
+ws://localhost:7860/notify
+```
+
+This endpoint allows Admin Bot to connect and receive real-time notifications when new sessions are created that require attention.
+
+#### Notification Criteria
+
+A notification is sent when:
+1. A new session is created with `factor` set to "RAG"
+2. The message content starts with "I don't know"
+
+#### Notification Format
+
+```json
+{
+  "type": "new_session",
+  "timestamp": "2025-04-15 22:30:45",
+  "data": {
+    "session_id": "123e4567-e89b-12d3-a456-426614174000",
+    "factor": "rag",
+    "action": "asking_freely",
+    "created_at": "2025-04-15 22:30:45",
+    "first_name": "John",
+    "last_name": "Doe",
+    "message": "I don't know how to find emergency contacts",
+    "user_id": "12345678",
+    "username": "johndoe"
+  }
+}
+```
+
+#### Usage
+
+Admin Bot should establish a WebSocket connection to this endpoint and listen for incoming messages. When a notification is received, Admin Bot should forward the content to the Telegram Admin.
+
 ## Environment Variables
 
 Create a `.env` file with the following variables:

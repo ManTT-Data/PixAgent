@@ -4,6 +4,7 @@ from pymongo.errors import PyMongoError
 import logging
 from datetime import datetime
 import traceback
+import asyncio
 
 from app.database.mongodb import (
     save_session, 
@@ -18,6 +19,7 @@ from app.models.mongodb_models import (
     HistoryResponse,
     QuestionAnswer
 )
+from app.api.websocket_routes import send_notification
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -63,11 +65,25 @@ async def create_session(session: SessionCreate, response: Response):
             username=session.username
         )
         
-        # Return response with the created_at timestamp
-        return SessionResponse(
+        # Chuẩn bị response object
+        session_response = SessionResponse(
             **session.model_dump(),
             created_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         )
+        
+        # Kiểm tra nếu session cần gửi thông báo (factor là RAG và tin nhắn bắt đầu bằng "I don't know")
+        if (session.factor.lower() == "rag" and 
+            session.message and 
+            session.message.strip().lower().startswith("i don't know")):
+            
+            # Gửi thông báo qua WebSocket
+            notification_data = session_response.model_dump()
+            # Thêm async task để gửi thông báo 
+            asyncio.create_task(send_notification(notification_data))
+            logger.info(f"Notification queued for session {session.session_id}")
+        
+        # Return response
+        return session_response
     except PyMongoError as e:
         logger.error(f"MongoDB error creating session: {e}")
         logger.error(traceback.format_exc())

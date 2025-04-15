@@ -52,11 +52,11 @@ def check_db_connection():
 vietnam_tz = pytz.timezone('Asia/Ho_Chi_Minh')
 
 def get_vietnam_time():
-    """Get current time in Vietnam timezone and format as string"""
+    """Get current time in Vietnam timezone"""
     return datetime.now(vietnam_tz).strftime("%Y-%m-%d %H:%M:%S")
 
 def get_vietnam_datetime():
-    """Get current time in Vietnam timezone as datetime object"""
+    """Get current datetime object in Vietnam timezone"""
     return datetime.now(vietnam_tz)
 
 # Utility functions
@@ -77,7 +77,11 @@ def save_session(session_id, factor, action, first_name, last_name, message, use
         }
         result = session_collection.insert_one(session_data)
         logger.info(f"Session saved with ID: {result.inserted_id}")
-        return result
+        return {
+            "acknowledged": result.acknowledged,
+            "inserted_id": str(result.inserted_id),
+            "session_data": session_data
+        }
     except Exception as e:
         logger.error(f"Error saving session: {e}")
         raise

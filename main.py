@@ -84,6 +84,7 @@ try:
     from app.api.mongodb_routes import router as mongodb_router
     from app.api.postgresql_routes import router as postgresql_router
     from app.api.rag_routes import router as rag_router
+    from app.api.websocket_routes import router as websocket_router
     
     # Import middlewares
     from app.utils.middleware import RequestLoggingMiddleware, ErrorHandlingMiddleware, DatabaseCheckMiddleware
@@ -125,6 +126,7 @@ if not DEBUG:  # Chỉ thêm middleware kiểm tra database trong production
 app.include_router(mongodb_router)
 app.include_router(postgresql_router)
 app.include_router(rag_router)
+app.include_router(websocket_router)
 
 # Root endpoint
 @app.get("/")
