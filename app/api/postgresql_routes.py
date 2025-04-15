@@ -80,7 +80,7 @@ class EventBase(BaseModel):
     location: Optional[str] = None
     date_start: datetime
     date_end: Optional[datetime] = None
-    price: Optional[dict] = None
+    price: Optional[List[dict]] = None
     is_active: bool = True
     featured: bool = False
 
@@ -94,7 +94,7 @@ class EventUpdate(BaseModel):
     location: Optional[str] = None
     date_start: Optional[datetime] = None
     date_end: Optional[datetime] = None
-    price: Optional[dict] = None
+    price: Optional[List[dict]] = None
     is_active: Optional[bool] = None
     featured: Optional[bool] = None
 
