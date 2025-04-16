@@ -132,7 +132,7 @@ app.include_router(websocket_router)
 @app.get("/")
 def read_root():
     return {
-        "message": "Welcome to PIX Project Backend API",
+        "message": "Welcome to PIX Project Backend API - TEST MODE",
         "documentation": "/docs",
     }
 

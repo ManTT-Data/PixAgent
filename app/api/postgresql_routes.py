@@ -1,9 +1,11 @@
 from fastapi import APIRouter, HTTPException, Depends, Query, Path, Body
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 import logging
+import traceback
 from datetime import datetime
+from sqlalchemy import text, inspect
 
 from app.database.postgresql import get_db
 from app.database.models import FAQItem, EmergencyItem, EventItem
@@ -39,8 +41,9 @@ class FAQResponse(FAQBase):
     created_at: datetime
     updated_at: datetime
     
-    # Sử dụng ConfigDict thay vì class Config cho Pydantic V2
-    model_config = ConfigDict(from_attributes=True)
+    # Use Config with orm_mode for Pydantic v1
+    class Config:
+        orm_mode = True
 
 # Emergency contact models
 class EmergencyBase(BaseModel):
@@ -106,6 +109,210 @@ class EventResponse(EventBase):
     # Sử dụng ConfigDict thay vì class Config cho Pydantic V2
     model_config = ConfigDict(from_attributes=True)
 
+# --- Diagnostic endpoints ---
+
+@router.get("/debug/tables", response_model=Dict[str, Any])
+async def debug_tables(db: Session = Depends(get_db)):
+    """
+    Get diagnostic information about database tables.
+    """
+    try:
+        inspector = inspect(db.bind)
+        tables = inspector.get_table_names()
+        
+        result = {
+            "status": "success",
+            "tables": {},
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        # Get details for each table
+        for table_name in tables:
+            columns = inspector.get_columns(table_name)
+            column_info = {col["name"]: {"type": str(col["type"]), "nullable": col["nullable"]} for col in columns}
+            
+            # Try to get row count
+            try:
+                count = db.execute(text(f"SELECT COUNT(*) FROM {table_name}")).scalar()
+                
+                # Get sample row if available
+                sample = None
+                if count > 0:
+                    sample_row = db.execute(text(f"SELECT * FROM {table_name} LIMIT 1")).fetchone()
+                    if sample_row:
+                        sample = dict(zip([col["name"] for col in columns], sample_row))
+                
+                result["tables"][table_name] = {
+                    "columns": column_info,
+                    "row_count": count,
+                    "sample": sample
+                }
+            except Exception as e:
+                result["tables"][table_name] = {
+                    "columns": column_info,
+                    "error": str(e)
+                }
+        
+        return result
+    except Exception as e:
+        logger.error(f"Error in debug_tables: {e}")
+        logger.error(traceback.format_exc())
+        return {
+            "status": "error",
+            "error": str(e),
+            "traceback": traceback.format_exc(),
+            "timestamp": datetime.now().isoformat()
+        }
+
+@router.get("/debug/test-data", response_model=Dict[str, Any])
+async def debug_test_data(db: Session = Depends(get_db)):
+    """
+    Test retrieving a single row from each important table using direct SQL queries.
+    """
+    try:
+        result = {
+            "status": "success",
+            "data": {},
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        # Test FAQ table
+        try:
+            faq_query = text("SELECT * FROM faq_item LIMIT 1")
+            faq_row = db.execute(faq_query).fetchone()
+            if faq_row:
+                faq_columns = db.execute(text("SELECT column_name FROM information_schema.columns WHERE table_name = 'faq_item'")).fetchall()
+                faq_column_names = [col[0] for col in faq_columns]
+                result["data"]["faq_item"] = {"status": "success", "row": dict(zip(faq_column_names, faq_row))}
+            else:
+                result["data"]["faq_item"] = {"status": "empty", "message": "No rows found in faq_item"}
+        except Exception as e:
+            result["data"]["faq_item"] = {"status": "error", "error": str(e)}
+        
+        # Test emergency table
+        try:
+            emergency_query = text("SELECT * FROM emergency_item LIMIT 1")
+            emergency_row = db.execute(emergency_query).fetchone()
+            if emergency_row:
+                emergency_columns = db.execute(text("SELECT column_name FROM information_schema.columns WHERE table_name = 'emergency_item'")).fetchall()
+                emergency_column_names = [col[0] for col in emergency_columns]
+                result["data"]["emergency_item"] = {"status": "success", "row": dict(zip(emergency_column_names, emergency_row))}
+            else:
+                result["data"]["emergency_item"] = {"status": "empty", "message": "No rows found in emergency_item"}
+        except Exception as e:
+            result["data"]["emergency_item"] = {"status": "error", "error": str(e)}
+        
+        # Test event table
+        try:
+            event_query = text("SELECT * FROM event_item LIMIT 1")
+            event_row = db.execute(event_query).fetchone()
+            if event_row:
+                event_columns = db.execute(text("SELECT column_name FROM information_schema.columns WHERE table_name = 'event_item'")).fetchall()
+                event_column_names = [col[0] for col in event_columns]
+                result["data"]["event_item"] = {"status": "success", "row": dict(zip(event_column_names, event_row))}
+            else:
+                result["data"]["event_item"] = {"status": "empty", "message": "No rows found in event_item"}
+        except Exception as e:
+            result["data"]["event_item"] = {"status": "error", "error": str(e)}
+        
+        return result
+    except Exception as e:
+        logger.error(f"Error in debug_test_data: {e}")
+        logger.error(traceback.format_exc())
+        return {
+            "status": "error",
+            "error": str(e),
+            "traceback": traceback.format_exc(),
+            "timestamp": datetime.now().isoformat()
+        }
+
+@router.get("/debug/test-models", response_model=Dict[str, Any])
+async def debug_test_models():
+    """
+    Test creating model objects without database interaction to check serialization.
+    """
+    try:
+        result = {
+            "status": "success",
+            "models": {},
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        # Test FAQ model
+        try:
+            # Create a test FAQ item
+            faq_model = FAQItem(
+                id=1,
+                question="Test question?",
+                answer="Test answer.",
+                is_active=True,
+                created_at=datetime.now(),
+                updated_at=datetime.now()
+            )
+            
+            # Convert to dict 
+            faq_dict = {c.name: getattr(faq_model, c.name) for c in faq_model.__table__.columns}
+            result["models"]["FAQItem"] = {"status": "success", "item": faq_dict}
+        except Exception as e:
+            result["models"]["FAQItem"] = {"status": "error", "error": str(e)}
+        
+        # Test Emergency model
+        try:
+            # Create a test Emergency item
+            emergency_model = EmergencyItem(
+                id=1,
+                name="Test Emergency",
+                phone_number="123-456-7890",
+                description="Test description",
+                address="Test address",
+                location=None,
+                priority=0,
+                is_active=True,
+                created_at=datetime.now(),
+                updated_at=datetime.now()
+            )
+            
+            # Convert to dict
+            emergency_dict = {c.name: getattr(emergency_model, c.name) for c in emergency_model.__table__.columns}
+            result["models"]["EmergencyItem"] = {"status": "success", "item": emergency_dict}
+        except Exception as e:
+            result["models"]["EmergencyItem"] = {"status": "error", "error": str(e)}
+        
+        # Test Event model
+        try:
+            # Create a test Event item
+            event_model = EventItem(
+                id=1,
+                name="Test Event",
+                description="Test description",
+                address="Test address",
+                location=None,
+                date_start=datetime.now(),
+                date_end=datetime.now(),
+                price=[{"type": "standard", "amount": 10, "currency": "USD"}],
+                is_active=True,
+                featured=False,
+                created_at=datetime.now(),
+                updated_at=datetime.now()
+            )
+            
+            # Convert to dict
+            event_dict = {c.name: getattr(event_model, c.name) for c in event_model.__table__.columns}
+            result["models"]["EventItem"] = {"status": "success", "item": event_dict}
+        except Exception as e:
+            result["models"]["EventItem"] = {"status": "error", "error": str(e)}
+        
+        return result
+    except Exception as e:
+        logger.error(f"Error in debug_test_models: {e}")
+        logger.error(traceback.format_exc())
+        return {
+            "status": "error",
+            "error": str(e),
+            "traceback": traceback.format_exc(),
+            "timestamp": datetime.now().isoformat()
+        }
+
 # --- FAQ endpoints ---
 
 @router.get("/faq", response_model=List[FAQResponse])
@@ -123,14 +330,50 @@ async def get_faqs(
     - **active_only**: If true, only return active items
     """
     try:
+        # Log detailed connection info
+        logger.info(f"Attempting to fetch FAQs with skip={skip}, limit={limit}, active_only={active_only}")
+        
+        # Check if the FAQItem table exists
+        inspector = inspect(db.bind)
+        if not inspector.has_table("faq_item"):
+            logger.error("The faq_item table does not exist in the database")
+            raise HTTPException(status_code=500, detail="Table 'faq_item' does not exist")
+        
+        # Log table columns
+        columns = inspector.get_columns("faq_item")
+        logger.info(f"faq_item table columns: {[c['name'] for c in columns]}")
+        
+        # Query the FAQs with detailed logging
         query = db.query(FAQItem)
         if active_only:
             query = query.filter(FAQItem.is_active == True)
+        
+        # Try direct SQL to debug
+        try:
+            test_result = db.execute(text("SELECT COUNT(*) FROM faq_item")).scalar()
+            logger.info(f"SQL test query succeeded, found {test_result} FAQ items")
+        except Exception as sql_error:
+            logger.error(f"SQL test query failed: {sql_error}")
+        
+        # Execute the ORM query
         faqs = query.offset(skip).limit(limit).all()
-        return faqs
+        logger.info(f"Successfully fetched {len(faqs)} FAQ items")
+        
+        # Check what we're returning
+        for i, faq in enumerate(faqs[:3]):  # Log the first 3 items
+            logger.info(f"FAQ item {i+1}: id={faq.id}, question={faq.question[:30]}...")
+        
+        # Convert SQLAlchemy models to Pydantic models
+        result = [FAQResponse.from_orm(faq) for faq in faqs]
+        return result
     except SQLAlchemyError as e:
-        logger.error(f"Database error: {e}")
-        raise HTTPException(status_code=500, detail="Database error")
+        logger.error(f"Database error in get_faqs: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+    except Exception as e:
+        logger.error(f"Unexpected error in get_faqs: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
 
 @router.post("/faq", response_model=FAQResponse)
 async def create_faq(
@@ -145,12 +388,12 @@ async def create_faq(
     - **is_active**: Whether the FAQ is active (default: True)
     """
     try:
-        # Sử dụng model_dump thay vì dict method
-        db_faq = FAQItem(**faq.model_dump())
+        # Use dict() for Pydantic v1
+        db_faq = FAQItem(**faq.dict())
         db.add(db_faq)
         db.commit()
         db.refresh(db_faq)
-        return db_faq
+        return FAQResponse.from_orm(db_faq)
     except SQLAlchemyError as e:
         db.rollback()
         logger.error(f"Database error: {e}")
@@ -170,7 +413,7 @@ async def get_faq(
         faq = db.query(FAQItem).filter(FAQItem.id == faq_id).first()
         if not faq:
             raise HTTPException(status_code=404, detail="FAQ item not found")
-        return faq
+        return FAQResponse.from_orm(faq)
     except SQLAlchemyError as e:
         logger.error(f"Database error: {e}")
         raise HTTPException(status_code=500, detail="Database error")
@@ -194,14 +437,14 @@ async def update_faq(
         if not faq:
             raise HTTPException(status_code=404, detail="FAQ item not found")
         
-        # Update fields if provided - sử dụng model_dump thay vì dict
-        update_data = faq_update.model_dump(exclude_unset=True)
+        # Use dict(exclude_unset=True) for Pydantic v1
+        update_data = faq_update.dict(exclude_unset=True)
         for key, value in update_data.items():
             setattr(faq, key, value)
             
         db.commit()
         db.refresh(faq)
-        return faq
+        return FAQResponse.from_orm(faq)
     except SQLAlchemyError as e:
         db.rollback()
         logger.error(f"Database error: {e}")
@@ -247,14 +490,48 @@ async def get_emergency_contacts(
     - **active_only**: If true, only return active items
     """
     try:
+        # Log detailed connection info
+        logger.info(f"Attempting to fetch emergency contacts with skip={skip}, limit={limit}, active_only={active_only}")
+        
+        # Check if the EmergencyItem table exists
+        inspector = inspect(db.bind)
+        if not inspector.has_table("emergency_item"):
+            logger.error("The emergency_item table does not exist in the database")
+            raise HTTPException(status_code=500, detail="Table 'emergency_item' does not exist")
+        
+        # Log table columns
+        columns = inspector.get_columns("emergency_item")
+        logger.info(f"emergency_item table columns: {[c['name'] for c in columns]}")
+        
+        # Try direct SQL to debug
+        try:
+            test_result = db.execute(text("SELECT COUNT(*) FROM emergency_item")).scalar()
+            logger.info(f"SQL test query succeeded, found {test_result} emergency contacts")
+        except Exception as sql_error:
+            logger.error(f"SQL test query failed: {sql_error}")
+        
+        # Query the emergency contacts
         query = db.query(EmergencyItem)
         if active_only:
             query = query.filter(EmergencyItem.is_active == True)
+        
+        # Execute the ORM query
         emergency_contacts = query.offset(skip).limit(limit).all()
+        logger.info(f"Successfully fetched {len(emergency_contacts)} emergency contacts")
+        
+        # Check what we're returning
+        for i, contact in enumerate(emergency_contacts[:3]):  # Log the first 3 items
+            logger.info(f"Emergency contact {i+1}: id={contact.id}, name={contact.name}")
+        
         return emergency_contacts
     except SQLAlchemyError as e:
-        logger.error(f"Database error: {e}")
-        raise HTTPException(status_code=500, detail="Database error")
+        logger.error(f"Database error in get_emergency_contacts: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+    except Exception as e:
+        logger.error(f"Unexpected error in get_emergency_contacts: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
 
 @router.post("/emergency", response_model=EmergencyResponse)
 async def create_emergency_contact(
@@ -380,16 +657,54 @@ async def get_events(
     - **featured_only**: If true, only return featured items
     """
     try:
+        # Log detailed connection info
+        logger.info(f"Attempting to fetch events with skip={skip}, limit={limit}, active_only={active_only}, featured_only={featured_only}")
+        
+        # Check if the EventItem table exists
+        inspector = inspect(db.bind)
+        if not inspector.has_table("event_item"):
+            logger.error("The event_item table does not exist in the database")
+            raise HTTPException(status_code=500, detail="Table 'event_item' does not exist")
+        
+        # Log table columns
+        columns = inspector.get_columns("event_item")
+        logger.info(f"event_item table columns: {[c['name'] for c in columns]}")
+        
+        # Try direct SQL to debug
+        try:
+            test_result = db.execute(text("SELECT COUNT(*) FROM event_item")).scalar()
+            logger.info(f"SQL test query succeeded, found {test_result} events")
+        except Exception as sql_error:
+            logger.error(f"SQL test query failed: {sql_error}")
+        
+        # Query the events
         query = db.query(EventItem)
         if active_only:
             query = query.filter(EventItem.is_active == True)
         if featured_only:
             query = query.filter(EventItem.featured == True)
+        
+        # Execute the ORM query
         events = query.offset(skip).limit(limit).all()
+        logger.info(f"Successfully fetched {len(events)} events")
+        
+        # Debug price field of first event
+        if events and len(events) > 0:
+            logger.info(f"First event price type: {type(events[0].price)}, value: {events[0].price}")
+        
+        # Check what we're returning
+        for i, event in enumerate(events[:3]):  # Log the first 3 items
+            logger.info(f"Event {i+1}: id={event.id}, name={event.name}, price={type(event.price)}")
+        
         return events
     except SQLAlchemyError as e:
-        logger.error(f"Database error: {e}")
-        raise HTTPException(status_code=500, detail="Database error")
+        logger.error(f"Database error in get_events: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+    except Exception as e:
+        logger.error(f"Unexpected error in get_events: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
 
 @router.post("/events", response_model=EventResponse)
 async def create_event(
@@ -508,7 +823,8 @@ async def health_check(db: Session = Depends(get_db)):
     """
     try:
         # Perform a simple database query to check health
-        db.execute("SELECT 1").first()
+        # Use text() to wrap the SQL query for SQLAlchemy 2.0 compatibility
+        db.execute(text("SELECT 1")).first()
         return {"status": "healthy", "message": "PostgreSQL connection is working", "timestamp": datetime.now().isoformat()}
     except Exception as e:
         logger.error(f"PostgreSQL health check failed: {e}")
