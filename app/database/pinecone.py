@@ -3,6 +3,9 @@ from pinecone import Pinecone
 from dotenv import load_dotenv
 import logging
 from typing import Optional, List, Dict, Any
+import time
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
+import google.generativeai as genai
 
 # Cấu hình logging
 logger = logging.getLogger(__name__)
@@ -13,10 +16,16 @@ load_dotenv()
 # Pinecone API key and index name
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME")
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+
+# Configure Google API
+if GOOGLE_API_KEY:
+    genai.configure(api_key=GOOGLE_API_KEY)
 
 # Khởi tạo biến global để lưu trữ instance của Pinecone và index
 pc = None
 index = None
+_retriever_instance = None
 
 # Kiểm tra biến môi trường
 if not PINECONE_API_KEY:
@@ -82,7 +91,7 @@ def check_db_connection():
         logger.info(f"Pinecone connection is working. Total vectors: {total_vectors}")
         return True
     except Exception as e:
-        logger.error(f"Pinecone connection failed: {e}")
+        logger.error(f"Error in Pinecone connection: {e}")
         return False
 
 # Search vectors in Pinecone
@@ -171,4 +180,49 @@ async def fetch_metadata(ids, namespace=""):
         return response
     except Exception as e:
         logger.error(f"Error fetching vector metadata: {e}")
-        return None 
+        return None
+
+# Functions imported from chatbot.py
+
+def get_chain():
+    """Get the retrieval chain with Pinecone vector store (singleton pattern)"""
+    global _retriever_instance
+    try:
+        if _retriever_instance is not None:
+            return _retriever_instance
+            
+        start_time = time.time()
+        # Initialize embeddings model
+        embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
+        
+        # Get index
+        pinecone_index = get_pinecone_index()
+        if not pinecone_index:
+            logger.error("Failed to get Pinecone index")
+            return None
+            
+        # Use the PineconeVectorStore from langchain
+        from langchain_pinecone import PineconeVectorStore
+        vectorstore = PineconeVectorStore.from_existing_index(
+            index_name=PINECONE_INDEX_NAME,
+            embedding=embeddings,
+            text_key="text"
+        )
+        
+        _retriever_instance = vectorstore.as_retriever(search_kwargs={"k": 6})
+        logger.info(f"Pinecone retriever initialized in {time.time() - start_time:.2f} seconds")
+        return _retriever_instance
+    except Exception as e:
+        logger.error(f"Error getting vector store from Pinecone: {e}")
+        # Fallback to a local vector store if available
+        try:
+            from langchain_community.vectorstores import FAISS
+            # Try to load a local FAISS index if it exists
+            start_time = time.time()
+            vectorstore = FAISS.load_local("faiss_index", embeddings)
+            _retriever_instance = vectorstore.as_retriever(search_kwargs={"k": 3})
+            logger.info(f"FAISS retriever initialized in {time.time() - start_time:.2f} seconds")
+            return _retriever_instance
+        except Exception as faiss_error:
+            logger.error(f"Error getting FAISS vector store: {faiss_error}")
+            return None

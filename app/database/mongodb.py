@@ -146,4 +146,36 @@ def get_user_history(user_id, n=3):
         return history[:n]  # Return at most n pairs
     except Exception as e:
         logger.error(f"Error getting user history: {e}")
-        return [] 
+        return []
+
+# Functions from chatbot.py
+def get_chat_history(user_id, n=5):
+    """Get conversation history for a specific user from MongoDB in format suitable for LLM prompt"""
+    try:
+        history = get_user_history(user_id, n)
+        
+        # Format history for prompt context
+        formatted_history = ""
+        for item in history:
+            formatted_history += f"User: {item['question']}\nAssistant: {item['answer']}\n\n"
+            
+        return formatted_history
+    except Exception as e:
+        logger.error(f"Error getting chat history for prompt: {e}")
+        return ""
+
+def get_request_history(user_id, n=3):
+    """Get the most recent user requests to use as context for retrieval"""
+    try:
+        history = get_user_history(user_id, n)
+        
+        # Just extract the questions for context
+        requests = []
+        for item in history:
+            requests.append(item['question'])
+            
+        # Join all recent requests into a single string for context
+        return " ".join(requests)
+    except Exception as e:
+        logger.error(f"Error getting request history: {e}")
+        return "" 

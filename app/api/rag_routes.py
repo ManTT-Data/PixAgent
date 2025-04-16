@@ -5,9 +5,14 @@ import time
 import os
 import google.generativeai as genai
 from datetime import datetime
+from langchain.prompts import PromptTemplate
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
 
-from app.database.mongodb import get_user_history
-from app.database.pinecone import search_vectors
+from app.database.mongodb import get_user_history, get_chat_history, get_request_history
+from app.database.pinecone import (
+    search_vectors, 
+    get_chain, 
+)
 from app.models.rag_models import (
     ChatRequest,
     ChatResponse,
@@ -29,19 +34,50 @@ router = APIRouter(
     tags=["RAG"],
 )
 
+# Create a prompt template with conversation history
+prompt = PromptTemplate(
+    template = """Goal:
+You are a professional tour guide assistant that assists users in finding information about places in Da Nang, Vietnam.
+You can provide details on restaurants, cafes, hotels, attractions, and other local venues. 
+You have to use core knowledge and conversation history to chat with users, who are Da Nang's tourists. 
+
+Return Format:
+Respond in friendly, natural, concise and use only English like a real tour guide.
+Always use HTML tags (e.g. <b> for bold) so that Telegram can render the special formatting correctly.
+
+Warning:
+Let's support users like a real tour guide, not a bot. The information in core knowledge is your own knowledge.
+Your knowledge is provided in the Core Knowledge. All of information in Core Knowledge is about Da Nang, Vietnam.
+You just care about current time that user mention when user ask about Solana event.
+If you do not have enough information to answer user's question, please reply with "I don't know. I don't have information about that".
+
+Core knowledge:
+{context}
+
+Conversation History:
+{chat_history}
+
+User message:
+{question}
+
+Your message:
+""",
+    input_variables = ["context", "question", "chat_history"],
+)
+
 # Helper for embeddings
 async def get_embedding(text: str):
     """Get embedding from Google Gemini API"""
     try:
         # Initialize embedding model
-        embedding_model = genai.GenerativeModel("embedding-001")
+        embedding_model = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
         
         # Generate embedding
-        result = embedding_model.embed_content(text)
+        result = await embedding_model.aembed_query(text)
         
         # Return embedding
         return {
-            "embedding": result.embedding,
+            "embedding": result,
             "text": text,
             "model": "embedding-001"
         }
@@ -82,65 +118,86 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
     """
     start_time = time.time()
     try:
-        # Initialize answer model
-        answer_model = genai.GenerativeModel("gemini-1.5-pro")
-        
-        # Get user history if requested
-        history = []
-        if request.include_history:
-            history = get_user_history(request.user_id)
-        
-        # Get embedding for question
-        embedding_data = await get_embedding(request.question)
-        query_embedding = embedding_data["embedding"]
-        
-        # Initialize context with relevant information
-        context = ""
-        sources = []
-        
-        # Search Pinecone for relevant information if RAG is enabled
+        # Use the RAG pipeline
         if request.use_rag:
-            # Search for similar vectors
-            search_results = await search_vectors(
-                query_vector=query_embedding,
-                top_k=request.similarity_top_k,
-                filter=None
-            )
+            # Get the retriever
+            retriever = get_chain()
+            if not retriever:
+                raise HTTPException(status_code=500, detail="Failed to initialize retriever")
             
-            # Extract relevant text and add to context
-            if search_results and hasattr(search_results, "matches"):
-                for match in search_results.matches:
-                    if match.score >= request.vector_distance_threshold:
-                        if "text" in match.metadata:
-                            context += match.metadata["text"] + "\n\n"
-                            
-                            # Add to sources
-                            sources.append(SourceDocument(
-                                text=match.metadata["text"],
-                                source=match.metadata.get("source", None),
-                                score=match.score,
-                                metadata={k: v for k, v in match.metadata.items() if k not in ["text", "source"]}
-                            ))
+            # Get request history for context
+            context_query = get_request_history(request.user_id) if request.include_history else request.question
+            
+            # Retrieve relevant documents
+            retrieved_docs = retriever.invoke(context_query)
+            context = "\n".join([doc.page_content for doc in retrieved_docs])
+            
+            # Prepare sources
+            sources = []
+            for doc in retrieved_docs:
+                source = None
+                metadata = {}
+                
+                if hasattr(doc, 'metadata'):
+                    source = doc.metadata.get('source', None)
+                    metadata = {k: v for k, v in doc.metadata.items() if k not in ['text', 'source']}
+                
+                sources.append(SourceDocument(
+                    text=doc.page_content,
+                    source=source,
+                    score=getattr(doc, 'score', None),
+                    metadata=metadata
+                ))
+        else:
+            # No RAG
+            context = ""
+            sources = None
         
-        # Build prompt with context, history, and question
-        prompt = ""
+        # Get chat history
+        chat_history = get_chat_history(request.user_id) if request.include_history else ""
         
-        # Add context if available
-        if context:
-            prompt += f"Context information:\n{context}\n\n"
+        # Initialize Gemini model
+        generation_config = {
+            "temperature": 0.9,
+            "top_p": 1,
+            "top_k": 1,
+            "max_output_tokens": 2048,
+        }
+
+        safety_settings = [
+            {
+                "category": "HARM_CATEGORY_HARASSMENT",
+                "threshold": "BLOCK_MEDIUM_AND_ABOVE"
+            },
+            {
+                "category": "HARM_CATEGORY_HATE_SPEECH",
+                "threshold": "BLOCK_MEDIUM_AND_ABOVE"
+            },
+            {
+                "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                "threshold": "BLOCK_MEDIUM_AND_ABOVE"
+            },
+            {
+                "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+                "threshold": "BLOCK_MEDIUM_AND_ABOVE"
+            },
+        ]
+
+        model = genai.GenerativeModel(
+            model_name='models/gemini-2.0-flash',
+            generation_config=generation_config,
+            safety_settings=safety_settings
+        )
         
-        # Add history if available
-        if history:
-            prompt += "Previous conversation:\n"
-            for qa in history:
-                prompt += f"User: {qa['question']}\nAssistant: {qa['answer']}\n"
-            prompt += "\n"
-        
-        # Add current question
-        prompt += f"User: {request.question}\nAssistant: "
+        # Generate the prompt using template
+        prompt_text = prompt.format(
+            context=context,
+            question=request.question,
+            chat_history=chat_history
+        )
         
         # Generate response
-        response = answer_model.generate_content(prompt)
+        response = model.generate_content(prompt_text)
         answer = response.text
         
         # Calculate processing time
@@ -149,7 +206,7 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
         # Return response
         return ChatResponse(
             answer=answer,
-            sources=sources if sources else None,
+            sources=sources,
             processing_time=processing_time
         )
     except Exception as e:
