@@ -1,4 +1,4 @@
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, status
 from typing import List, Dict
 import logging
 from datetime import datetime
@@ -47,6 +47,80 @@ class ConnectionManager:
 
 # Khởi tạo connection manager
 manager = ConnectionManager()
+
+# Thêm endpoint GET để hiển thị thông tin WebSocket trong Swagger
+@router.get("/notify", 
+    summary="WebSocket thông báo cho Admin Bot",
+    description="""
+    Đây là tài liệu cho WebSocket endpoint.
+    
+    Để kết nối WebSocket:
+    1. Sử dụng đường dẫn `ws://server_address/notify`
+    2. Kết nối bằng thư viện WebSocket client
+    3. Khi có session mới cần thông báo, bạn sẽ nhận được thông báo qua kết nối này
+    
+    Thông báo được gửi khi:
+    - Có session mới với factor "rag"
+    - Tin nhắn bắt đầu bằng "I don't know"
+    """,
+    status_code=status.HTTP_200_OK
+)
+async def websocket_documentation():
+    """
+    Cung cấp thông tin về cách sử dụng WebSocket endpoint /notify.
+    Endpoint này chỉ dùng cho mục đích tài liệu. Để sử dụng WebSocket, vui lòng kết nối đến `ws://server_address/notify`.
+    """
+    return {
+        "websocket_endpoint": "/notify",
+        "connection_type": "WebSocket",
+        "protocol": "ws://",
+        "description": "Endpoint nhận thông báo về các session mới cần chú ý",
+        "notification_format": {
+            "type": "new_session",
+            "timestamp": "YYYY-MM-DD HH:MM:SS",
+            "data": {
+                "session_id": "id của session",
+                "factor": "rag",
+                "action": "loại hành động",
+                "message": "I don't know...",
+                "user_id": "id người dùng",
+                "first_name": "tên người dùng",
+                "last_name": "họ người dùng",
+                "username": "tên đăng nhập",
+                "created_at": "thời gian tạo"
+            }
+        },
+        "client_example": """
+        import websocket
+        import json
+        
+        def on_message(ws, message):
+            data = json.loads(message)
+            print(f"Received notification: {data}")
+            # Forward to Telegram Admin
+        
+        def on_error(ws, error):
+            print(f"Error: {error}")
+        
+        def on_close(ws, close_status_code, close_msg):
+            print("Connection closed")
+        
+        def on_open(ws):
+            print("Connection opened")
+            # Gửi message keepalive định kỳ
+            ws.send("keepalive")
+        
+        # Kết nối WebSocket
+        ws = websocket.WebSocketApp(
+            "ws://server_address/notify",
+            on_open=on_open,
+            on_message=on_message,
+            on_error=on_error,
+            on_close=on_close
+        )
+        ws.run_forever()
+        """
+    }
 
 @router.websocket("/notify")
 async def websocket_endpoint(websocket: WebSocket):
