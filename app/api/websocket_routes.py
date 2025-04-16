@@ -4,6 +4,16 @@ import logging
 from datetime import datetime
 import asyncio
 import json
+import os
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+
+# Lấy cấu hình WebSocket từ biến môi trường
+WEBSOCKET_SERVER = os.getenv("WEBSOCKET_SERVER", "localhost")
+WEBSOCKET_PORT = os.getenv("WEBSOCKET_PORT", "7860")
+WEBSOCKET_PATH = os.getenv("WEBSOCKET_PATH", "/notify")
 
 # Cấu hình logging
 logger = logging.getLogger(__name__)
@@ -48,14 +58,23 @@ class ConnectionManager:
 # Khởi tạo connection manager
 manager = ConnectionManager()
 
+# Tạo URL đầy đủ của WebSocket server từ biến môi trường
+def get_full_websocket_url(server_side=False):
+    if server_side:
+        # URL tương đối (cho phía server)
+        return WEBSOCKET_PATH
+    else:
+        # URL đầy đủ (cho client)
+        return f"ws://{WEBSOCKET_SERVER}:{WEBSOCKET_PORT}{WEBSOCKET_PATH}"
+
 # Thêm endpoint GET để hiển thị thông tin WebSocket trong Swagger
 @router.get("/notify", 
     summary="WebSocket thông báo cho Admin Bot",
-    description="""
+    description=f"""
     Đây là tài liệu cho WebSocket endpoint.
     
     Để kết nối WebSocket:
-    1. Sử dụng đường dẫn `ws://server_address/notify`
+    1. Sử dụng đường dẫn `{get_full_websocket_url()}`
     2. Kết nối bằng thư viện WebSocket client
     3. Khi có session mới cần thông báo, bạn sẽ nhận được thông báo qua kết nối này
     
@@ -68,12 +87,16 @@ manager = ConnectionManager()
 async def websocket_documentation():
     """
     Cung cấp thông tin về cách sử dụng WebSocket endpoint /notify.
-    Endpoint này chỉ dùng cho mục đích tài liệu. Để sử dụng WebSocket, vui lòng kết nối đến `ws://server_address/notify`.
+    Endpoint này chỉ dùng cho mục đích tài liệu. Để sử dụng WebSocket, vui lòng kết nối đến WebSocket URL.
     """
+    ws_url = get_full_websocket_url()
     return {
-        "websocket_endpoint": "/notify",
+        "websocket_endpoint": WEBSOCKET_PATH,
         "connection_type": "WebSocket",
         "protocol": "ws://",
+        "server": WEBSOCKET_SERVER,
+        "port": WEBSOCKET_PORT,
+        "full_url": ws_url,
         "description": "Endpoint nhận thông báo về các session mới cần chú ý",
         "notification_format": {
             "type": "new_session",
@@ -90,17 +113,30 @@ async def websocket_documentation():
                 "created_at": "thời gian tạo"
             }
         },
-        "client_example": """
+        "client_example": f"""
         import websocket
         import json
+        import os
+        from dotenv import load_dotenv
+        
+        # Load environment variables
+        load_dotenv()
+        
+        # Lấy cấu hình WebSocket từ biến môi trường
+        WEBSOCKET_SERVER = os.getenv("WEBSOCKET_SERVER", "localhost")
+        WEBSOCKET_PORT = os.getenv("WEBSOCKET_PORT", "7860")
+        WEBSOCKET_PATH = os.getenv("WEBSOCKET_PATH", "/notify")
+        
+        # Tạo URL đầy đủ
+        ws_url = f"ws://{{WEBSOCKET_SERVER}}:{{WEBSOCKET_PORT}}{{WEBSOCKET_PATH}}"
         
         def on_message(ws, message):
             data = json.loads(message)
-            print(f"Received notification: {data}")
+            print(f"Received notification: {{data}}")
             # Forward to Telegram Admin
         
         def on_error(ws, error):
-            print(f"Error: {error}")
+            print(f"Error: {{error}}")
         
         def on_close(ws, close_status_code, close_msg):
             print("Connection closed")
@@ -112,7 +148,7 @@ async def websocket_documentation():
         
         # Kết nối WebSocket
         ws = websocket.WebSocketApp(
-            "ws://server_address/notify",
+            ws_url,
             on_open=on_open,
             on_message=on_message,
             on_error=on_error,

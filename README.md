@@ -60,13 +60,23 @@ Backend API for PIX Project with MongoDB, PostgreSQL and RAG integration. This p
 
 The backend provides a WebSocket endpoint for receiving notifications about new sessions that match specific criteria.
 
-#### WebSocket Endpoint
+#### WebSocket Endpoint Configuration
+
+The WebSocket endpoint is configured using environment variables:
 
 ```
-ws://localhost:7860/notify
+# WebSocket configuration
+WEBSOCKET_SERVER=localhost
+WEBSOCKET_PORT=7860
+WEBSOCKET_PATH=/notify
 ```
 
-This endpoint allows Admin Bot to connect and receive real-time notifications when new sessions are created that require attention.
+The full WebSocket URL will be:
+```
+ws://{WEBSOCKET_SERVER}:{WEBSOCKET_PORT}{WEBSOCKET_PATH}
+```
+
+For example: `ws://localhost:7860/notify`
 
 #### Notification Criteria
 
@@ -94,9 +104,55 @@ A notification is sent when:
 }
 ```
 
-#### Usage
+#### Usage Example
 
-Admin Bot should establish a WebSocket connection to this endpoint and listen for incoming messages. When a notification is received, Admin Bot should forward the content to the Telegram Admin.
+Admin Bot should establish a WebSocket connection to this endpoint using the configured URL:
+
+```python
+import websocket
+import json
+import os
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+
+# Get WebSocket configuration from environment variables
+WEBSOCKET_SERVER = os.getenv("WEBSOCKET_SERVER", "localhost")
+WEBSOCKET_PORT = os.getenv("WEBSOCKET_PORT", "7860")
+WEBSOCKET_PATH = os.getenv("WEBSOCKET_PATH", "/notify")
+
+# Create full URL
+ws_url = f"ws://{WEBSOCKET_SERVER}:{WEBSOCKET_PORT}{WEBSOCKET_PATH}"
+
+def on_message(ws, message):
+    data = json.loads(message)
+    print(f"Received notification: {data}")
+    # Forward to Telegram Admin
+
+def on_error(ws, error):
+    print(f"Error: {error}")
+
+def on_close(ws, close_status_code, close_msg):
+    print("Connection closed")
+
+def on_open(ws):
+    print("Connection opened")
+    # Send keepalive message periodically
+    ws.send("keepalive")
+
+# Connect to WebSocket
+ws = websocket.WebSocketApp(
+    ws_url,
+    on_open=on_open,
+    on_message=on_message,
+    on_error=on_error,
+    on_close=on_close
+)
+ws.run_forever()
+```
+
+When a notification is received, Admin Bot should forward the content to the Telegram Admin.
 
 ## Environment Variables
 
