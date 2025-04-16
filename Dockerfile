@@ -1,27 +1,28 @@
-FROM python:3.10-slim
+FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install build dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# Cài đặt các gói hệ thống cần thiết
+RUN apt-get update && apt-get install -y \
     build-essential \
-    libpq-dev \
-    && apt-get clean \
+    curl \
+    software-properties-common \
+    git \
+    gcc \
+    python3-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements first for better caching
+# Sao chép các file yêu cầu trước để tận dụng cache của Docker
 COPY requirements.txt .
+
+# Cài đặt các gói Python
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the rest of the application
+# Sao chép toàn bộ code vào container
 COPY . .
 
-# Set environment variables
-ENV PYTHONPATH=/app
-ENV PORT=8000
+# Mở cổng mà ứng dụng sẽ chạy
+EXPOSE 7860
 
-# Expose port
-EXPOSE ${PORT}
-
-# Run the application
-CMD uvicorn main:app --host 0.0.0.0 --port ${PORT} 
+# Chạy ứng dụng với uvicorn
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "7860"] 

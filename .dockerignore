@@ -1,0 +1,46 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.pytest_cache/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Logs
+*.log
+
+# Tests
+tests/
+
+# Docker related
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Other files
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+.coverage
+htmlcov/
+.mypy_cache/
+.tox/
+.nox/
+instance/
+.webassets-cache
+main.py 

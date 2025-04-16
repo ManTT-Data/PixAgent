@@ -6,6 +6,8 @@ import asyncio
 import json
 import os
 from dotenv import load_dotenv
+from app.database.mongodb import session_collection
+from app.utils.utils import get_vietnam_time
 
 # Load environment variables
 load_dotenv()
@@ -186,11 +188,48 @@ async def send_notification(session_data: Dict):
     Args:
         session_data (Dict): Dữ liệu session cần gửi
     """
-    notification = {
-        "type": "new_session",
-        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "data": session_data
-    }
-    
-    await manager.broadcast(notification)
-    logger.info(f"Notification sent for session {session_data.get('session_id')}") 
+    # Nếu đây là thông báo cho RAG và tin nhắn bắt đầu bằng "I don't know"
+    if (session_data.get("factor", "").lower() == "rag" and 
+        session_data.get("message", "").strip().lower().startswith("i don't know")):
+        
+        # Lấy thông tin đầy đủ từ MongoDB thay vì sử dụng dữ liệu từ session_data
+        # Tìm thông điệp có cùng session_id, cùng user_id nhưng với factor là "user"
+        try:
+            user_id = session_data.get("user_id")
+            session_id = session_data.get("session_id")
+            
+            user_message = session_collection.find_one({
+                "user_id": user_id,
+                "session_id": session_id,
+                "factor": "user"
+            })
+            
+            # Nếu tìm thấy thông điệp, sử dụng thông tin từ đó để gửi thông báo
+            if user_message:
+                notification_data = {
+                    "type": "new_session",
+                    "timestamp": get_vietnam_time(),
+                    "data": {
+                        "session_id": session_id,
+                        "user_id": user_id,
+                        "message": user_message.get("message", ""),
+                        "first_name": user_message.get("first_name", ""),
+                        "last_name": user_message.get("last_name", ""),
+                        "username": user_message.get("username", ""),
+                        "created_at": user_message.get("created_at", ""),
+                        "action": user_message.get("action", ""),
+                        "factor": "user"  # Ghi đè factor để hiển thị từ người dùng
+                    }
+                }
+            else:
+                # Nếu không tìm thấy, sử dụng thông tin từ session_data
+                notification_data = {
+                    "type": "new_session",
+                    "timestamp": get_vietnam_time(),
+                    "data": session_data
+                }
+                
+            await manager.broadcast(notification_data)
+            logger.info(f"Notification sent for session {session_data.get('session_id')}")
+        except Exception as e:
+            logger.error(f"Error sending notification: {e}") 

@@ -1,0 +1,582 @@
+# PIX Project Backend API Documentation
+
+## Base URL
+
+```
+https://huggingface.co/spaces/Cuong2004/Pix-Agent/
+```
+
+For local development:
+```
+http://localhost:7860/
+```
+
+## Authentication
+
+Currently, the API does not require authentication.
+
+## Common Status Codes
+
+- `200 OK`: Request successful
+- `201 Created`: Resource created successfully
+- `400 Bad Request`: Invalid request parameters
+- `404 Not Found`: Resource not found
+- `422 Unprocessable Entity`: Validation error
+- `500 Internal Server Error`: Server-side error
+
+## API Endpoints
+
+## Core Endpoints
+
+### Root Endpoint
+
+```
+GET /
+```
+
+**Response**:
+```json
+{
+  "message": "Welcome to PIX Project Backend API",
+  "documentation": "/docs"
+}
+```
+
+### Health Check
+
+```
+GET /health
+```
+
+**Response**:
+```json
+{
+  "status": "healthy",
+  "version": "1.0.0",
+  "environment": "production",
+  "databases": {
+    "postgresql": true,
+    "mongodb": true,
+    "pinecone": true
+  }
+}
+```
+
+## MongoDB Endpoints
+
+### Create Session
+
+```
+POST /mongodb/session
+```
+
+**Request Body**:
+```json
+{
+  "session_id": "string",
+  "factor": "string",
+  "action": "string",
+  "message": "string",
+  "user_id": "string",
+  "username": "string",
+  "first_name": "string",
+  "last_name": "string",
+  "response": "string"
+}
+```
+
+**Response**:
+```json
+{
+  "session_id": "string",
+  "created_at": "string",
+  "factor": "string",
+  "action": "string",
+  "message": "string",
+  "user_id": "string",
+  "username": "string",
+  "first_name": "string",
+  "last_name": "string",
+  "response": "string"
+}
+```
+
+### Get Session
+
+```
+GET /mongodb/session/{session_id}
+```
+
+**Parameters**:
+- `session_id`: Session ID (path parameter)
+
+**Response**:
+```json
+{
+  "session_id": "string",
+  "created_at": "string",
+  "factor": "string",
+  "action": "string",
+  "message": "string",
+  "user_id": "string",
+  "username": "string",
+  "first_name": "string",
+  "last_name": "string",
+  "response": "string"
+}
+```
+
+### Update Session Response
+
+```
+PUT /mongodb/session/{session_id}/response
+```
+
+**Parameters**:
+- `session_id`: Session ID (path parameter)
+- `response_text`: Response text (query parameter)
+
+**Response**:
+```json
+{
+  "status": "success",
+  "message": "Response updated successfully",
+  "session_id": "string"
+}
+```
+
+### Get User History
+
+```
+GET /mongodb/history
+```
+
+**Parameters**:
+- `user_id`: User ID (query parameter)
+- `n`: Number of history items to retrieve (query parameter, default: 3)
+
+**Response**:
+```json
+{
+  "history": [
+    {
+      "question": "string",
+      "answer": "string"
+    }
+  ]
+}
+```
+
+### MongoDB Health Check
+
+```
+GET /mongodb/health
+```
+
+**Response**:
+```json
+{
+  "status": "healthy",
+  "timestamp": "2023-09-15T12:34:56"
+}
+```
+
+## PostgreSQL Endpoints
+
+### FAQ Endpoints
+
+#### Get FAQ Items
+
+```
+GET /postgres/faq
+```
+
+**Parameters**:
+- `skip`: Items to skip (query parameter, default: 0)
+- `limit`: Maximum items to return (query parameter, default: 100)
+
+**Response**:
+```json
+[
+  {
+    "id": 1,
+    "question": "string",
+    "answer": "string",
+    "is_active": true,
+    "created_at": "2023-09-15T12:34:56",
+    "updated_at": "2023-09-15T12:34:56"
+  }
+]
+```
+
+#### Create FAQ Item
+
+```
+POST /postgres/faq
+```
+
+**Request Body**:
+```json
+{
+  "question": "string",
+  "answer": "string",
+  "is_active": true
+}
+```
+
+**Response**:
+```json
+{
+  "id": 1,
+  "question": "string",
+  "answer": "string",
+  "is_active": true,
+  "created_at": "2023-09-15T12:34:56",
+  "updated_at": "2023-09-15T12:34:56"
+}
+```
+
+#### Get FAQ Item
+
+```
+GET /postgres/faq/{faq_id}
+```
+
+**Parameters**:
+- `faq_id`: FAQ ID (path parameter)
+
+**Response**:
+```json
+{
+  "id": 1,
+  "question": "string",
+  "answer": "string",
+  "is_active": true,
+  "created_at": "2023-09-15T12:34:56",
+  "updated_at": "2023-09-15T12:34:56"
+}
+```
+
+#### Update FAQ Item
+
+```
+PUT /postgres/faq/{faq_id}
+```
+
+**Parameters**:
+- `faq_id`: FAQ ID (path parameter)
+
+**Request Body**:
+```json
+{
+  "question": "string",
+  "answer": "string",
+  "is_active": true
+}
+```
+
+**Response**:
+```json
+{
+  "id": 1,
+  "question": "string",
+  "answer": "string",
+  "is_active": true,
+  "created_at": "2023-09-15T12:34:56",
+  "updated_at": "2023-09-15T12:34:56"
+}
+```
+
+#### Delete FAQ Item
+
+```
+DELETE /postgres/faq/{faq_id}
+```
+
+**Parameters**:
+- `faq_id`: FAQ ID (path parameter)
+
+**Response**:
+```json
+{
+  "status": "success",
+  "message": "FAQ item deleted successfully"
+}
+```
+
+### Emergency Contact Endpoints
+
+#### Get Emergency Contacts
+
+```
+GET /postgres/emergency
+```
+
+**Parameters**:
+- `skip`: Items to skip (query parameter, default: 0)
+- `limit`: Maximum items to return (query parameter, default: 100)
+
+**Response**:
+```json
+[
+  {
+    "id": 1,
+    "name": "string",
+    "phone_number": "string",
+    "description": "string",
+    "is_active": true,
+    "created_at": "2023-09-15T12:34:56",
+    "updated_at": "2023-09-15T12:34:56"
+  }
+]
+```
+
+#### Create Emergency Contact
+
+```
+POST /postgres/emergency
+```
+
+**Request Body**:
+```json
+{
+  "name": "string",
+  "phone_number": "string",
+  "description": "string",
+  "is_active": true
+}
+```
+
+**Response**:
+```json
+{
+  "id": 1,
+  "name": "string",
+  "phone_number": "string",
+  "description": "string",
+  "is_active": true,
+  "created_at": "2023-09-15T12:34:56",
+  "updated_at": "2023-09-15T12:34:56"
+}
+```
+
+#### Get Emergency Contact
+
+```
+GET /postgres/emergency/{emergency_id}
+```
+
+**Parameters**:
+- `emergency_id`: Emergency contact ID (path parameter)
+
+**Response**:
+```json
+{
+  "id": 1,
+  "name": "string",
+  "phone_number": "string",
+  "description": "string",
+  "is_active": true,
+  "created_at": "2023-09-15T12:34:56",
+  "updated_at": "2023-09-15T12:34:56"
+}
+```
+
+### Event Endpoints
+
+#### Get Events
+
+```
+GET /postgres/events
+```
+
+**Parameters**:
+- `skip`: Items to skip (query parameter, default: 0)
+- `limit`: Maximum items to return (query parameter, default: 100)
+
+**Response**:
+```json
+[
+  {
+    "id": 1,
+    "name": "string",
+    "description": "string",
+    "address": "string",
+    "date_start": "2023-09-15T12:34:56",
+    "date_end": "2023-09-15T12:34:56",
+    "is_active": true,
+    "featured": false,
+    "price": [
+      {
+        "type": "string",
+        "amount": 0,
+        "currency": "string"
+      }
+    ],
+    "created_at": "2023-09-15T12:34:56",
+    "updated_at": "2023-09-15T12:34:56"
+  }
+]
+```
+
+### PostgreSQL Health Check
+
+```
+GET /postgres/health
+```
+
+**Response**:
+```json
+{
+  "status": "healthy",
+  "version": "PostgreSQL 14.5",
+  "tables": ["faq_item", "emergency_contact", "event"]
+}
+```
+
+## RAG Endpoints
+
+### Generate Embedding
+
+```
+POST /rag/embedding
+```
+
+**Request Body**:
+```json
+{
+  "text": "string"
+}
+```
+
+**Response**:
+```json
+{
+  "embedding": [0.1, 0.2, 0.3, ...],
+  "text": "string",
+  "model": "embedding-001"
+}
+```
+
+### RAG Chat
+
+```
+POST /rag/chat
+```
+
+**Request Body**:
+```json
+{
+  "user_id": "string",
+  "question": "string",
+  "include_history": true,
+  "use_rag": true,
+  "similarity_top_k": 3,
+  "vector_distance_threshold": 0.75,
+  "session_id": "string",
+  "first_name": "string",
+  "last_name": "string",
+  "username": "string"
+}
+```
+
+**Response**:
+```json
+{
+  "answer": "string",
+  "sources": [
+    {
+      "text": "string",
+      "source": "string",
+      "score": 0.95,
+      "metadata": {}
+    }
+  ],
+  "processing_time": 1.23
+}
+```
+
+**Note**: RAG chat will now automatically save the answer to MongoDB for the given session_id.
+
+### RAG Health Check
+
+```
+GET /rag/health
+```
+
+**Response**:
+```json
+{
+  "status": "healthy",
+  "services": {
+    "gemini": true,
+    "pinecone": true
+  },
+  "timestamp": "2023-09-15T12:34:56"
+}
+```
+
+## WebSocket API
+
+### Notifications for New Sessions
+
+```
+WebSocket /notify
+```
+
+**Notifications Format**:
+```json
+{
+  "type": "new_session",
+  "timestamp": "2023-09-15T12:34:56",
+  "data": {
+    "session_id": "string",
+    "factor": "string",
+    "action": "string",
+    "created_at": "string",
+    "first_name": "string",
+    "last_name": "string",
+    "message": "string",
+    "user_id": "string",
+    "username": "string"
+  }
+}
+```
+
+## Error Responses
+
+In case of errors, the API returns a JSON object with the following structure:
+
+```json
+{
+  "detail": "Error message"
+}
+```
+
+For validation errors:
+
+```json
+{
+  "detail": [
+    {
+      "loc": ["body", "field_name"],
+      "msg": "field required",
+      "type": "value_error.missing"
+    }
+  ]
+}
+```
+
+## API Documentation
+
+For more detailed API documentation with schema information, visit:
+
+```
+GET /docs
+```
+
+For ReDoc alternative documentation:
+
+```
+GET /redoc
+``` 

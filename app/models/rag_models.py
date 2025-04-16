@@ -9,6 +9,10 @@ class ChatRequest(BaseModel):
     use_rag: bool = True
     similarity_top_k: Optional[int] = 3
     vector_distance_threshold: Optional[float] = 0.75
+    session_id: Optional[str] = None
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    username: Optional[str] = None
 
 class SourceDocument(BaseModel):
     """Model for source documents"""

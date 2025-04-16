@@ -16,7 +16,7 @@ class SessionBase(BaseModel):
 
 class SessionCreate(SessionBase):
     """Model for creating new session"""
-    pass
+    response: Optional[str] = None
 
 class SessionResponse(SessionBase):
     """Response model for session data"""

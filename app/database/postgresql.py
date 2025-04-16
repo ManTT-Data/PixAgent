@@ -32,17 +32,32 @@ try:
         DATABASE_URL,
         pool_pre_ping=True,
         pool_recycle=300,  # Recycle connections every 5 minutes
-        pool_size=5,       # Connection pool size
-        max_overflow=10,   # Maximum overflow connections
-        connect_args={"connect_timeout": 5}  # Connection timeout in seconds
+        pool_size=10,      # Tăng kích thước pool từ 5 lên 10
+        max_overflow=20,   # Tăng số lượng kết nối tối đa từ 10 lên 20
+        connect_args={
+            "connect_timeout": 3,  # Giảm timeout từ 5 xuống 3 giây
+            "keepalives": 1,      # Bật keepalive
+            "keepalives_idle": 30, # Thời gian idle trước khi gửi keepalive
+            "keepalives_interval": 10, # Khoảng thời gian giữa các gói keepalive
+            "keepalives_count": 5  # Số lần thử lại trước khi đóng kết nối
+        },
+        # Thêm các tùy chọn hiệu suất
+        isolation_level="READ COMMITTED",  # Mức cô lập thấp hơn READ COMMITTED
+        echo=False,  # Tắt echo SQL để giảm overhead logging
+        echo_pool=False  # Tắt echo pool để giảm overhead logging
     )
     logger.info("PostgreSQL engine initialized")
 except Exception as e:
     logger.error(f"Failed to initialize PostgreSQL engine: {e}")
     # Không raise exception để tránh crash khi khởi động, các xử lý lỗi sẽ được thực hiện ở các function
 
-# Create session factory
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+# Create session factory with optimized settings
+SessionLocal = sessionmaker(
+    autocommit=False, 
+    autoflush=False, 
+    bind=engine,
+    expire_on_commit=False  # Tránh truy vấn lại DB sau khi commit
+)
 
 # Base class for declarative models - use sqlalchemy.orm for SQLAlchemy 2.0 compatibility
 from sqlalchemy.orm import declarative_base

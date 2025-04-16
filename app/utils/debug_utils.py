@@ -6,7 +6,14 @@ import json
 import time
 from datetime import datetime
 import platform
-import psutil
+
+# Cố gắng import psutil, nếu không có thì cung cấp phương án dự phòng
+try:
+    import psutil
+    PSUTIL_AVAILABLE = True
+except ImportError:
+    PSUTIL_AVAILABLE = False
+    logging.warning("psutil module not available. System monitoring features will be limited.")
 
 # Cấu hình logging
 logger = logging.getLogger(__name__)
@@ -23,13 +30,27 @@ class DebugInfo:
                 "os_version": platform.version(),
                 "python_version": platform.python_version(),
                 "cpu_count": os.cpu_count(),
-                "total_memory": round(psutil.virtual_memory().total / (1024 * 1024 * 1024), 2),  # GB
-                "available_memory": round(psutil.virtual_memory().available / (1024 * 1024 * 1024), 2),  # GB
-                "cpu_usage": psutil.cpu_percent(interval=0.1),
-                "memory_usage": psutil.virtual_memory().percent,
-                "disk_usage": psutil.disk_usage('/').percent,
                 "timestamp": datetime.now().isoformat()
             }
+            
+            # Thêm thông tin từ psutil nếu có sẵn
+            if PSUTIL_AVAILABLE:
+                info.update({
+                    "total_memory": round(psutil.virtual_memory().total / (1024 * 1024 * 1024), 2),  # GB
+                    "available_memory": round(psutil.virtual_memory().available / (1024 * 1024 * 1024), 2),  # GB
+                    "cpu_usage": psutil.cpu_percent(interval=0.1),
+                    "memory_usage": psutil.virtual_memory().percent,
+                    "disk_usage": psutil.disk_usage('/').percent,
+                })
+            else:
+                info.update({
+                    "total_memory": "psutil not available",
+                    "available_memory": "psutil not available",
+                    "cpu_usage": "psutil not available",
+                    "memory_usage": "psutil not available",
+                    "disk_usage": "psutil not available",
+                })
+            
             return info
         except Exception as e:
             logger.error(f"Error getting system info: {e}")

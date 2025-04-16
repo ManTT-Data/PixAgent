@@ -7,8 +7,9 @@ import google.generativeai as genai
 from datetime import datetime
 from langchain.prompts import PromptTemplate
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from app.utils.utils import cache, timer_decorator
 
-from app.database.mongodb import get_user_history, get_chat_history, get_request_history
+from app.database.mongodb import get_user_history, get_chat_history, get_request_history, save_session
 from app.database.pinecone import (
     search_vectors, 
     get_chain, 
@@ -103,7 +104,7 @@ async def create_embedding(request: EmbeddingRequest):
         logger.error(f"Error generating embedding: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to generate embedding: {str(e)}")
 
-# Main chat endpoint
+@timer_decorator
 @router.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
     """
@@ -118,6 +119,15 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
     """
     start_time = time.time()
     try:
+        # Tạo cache key cho request
+        cache_key = f"rag_chat:{request.user_id}:{request.question}:{request.include_history}:{request.use_rag}"
+        
+        # Kiểm tra cache
+        cached_response = cache.get(cache_key)
+        if cached_response is not None:
+            logger.info(f"Cache hit for RAG chat request from user {request.user_id}")
+            return cached_response
+        
         # Use the RAG pipeline
         if request.use_rag:
             # Get the retriever
@@ -200,15 +210,45 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
         response = model.generate_content(prompt_text)
         answer = response.text
         
+        # Lưu phản hồi vào session nếu có thông tin về user
+        if request.user_id and hasattr(request, 'session_id') and request.session_id:
+            try:
+                # Dùng chung session_id nếu đã được cung cấp từ request
+                session_id = request.session_id
+                
+                # Thêm session mới cho phản hồi RAG
+                background_tasks.add_task(
+                    save_session,
+                    session_id=session_id,
+                    factor="rag",
+                    action="RAG_response",
+                    first_name=getattr(request, 'first_name', "User"),
+                    last_name=getattr(request, 'last_name', ""),
+                    message=request.question,
+                    user_id=request.user_id,
+                    username=getattr(request, 'username', ""),
+                    response=answer
+                )
+                logger.info(f"RAG response saved for session {session_id}")
+            except Exception as e:
+                logger.error(f"Error saving RAG response to session: {e}")
+                # Không dừng xử lý chính nếu lưu session thất bại
+        
         # Calculate processing time
         processing_time = time.time() - start_time
         
-        # Return response
-        return ChatResponse(
+        # Tạo response object
+        chat_response = ChatResponse(
             answer=answer,
             sources=sources,
             processing_time=processing_time
         )
+        
+        # Cache kết quả trong 5 phút
+        cache.set(cache_key, chat_response, ttl=300)
+        
+        # Return response
+        return chat_response
     except Exception as e:
         logger.error(f"Error processing chat request: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to process chat request: {str(e)}")
@@ -227,7 +267,7 @@ async def health_check():
     # Check Gemini
     try:
         # Initialize simple model
-        model = genai.GenerativeModel("gemini-1.5-flash")
+        model = genai.GenerativeModel("gemini-2.0-flash")
         # Test generation
         response = model.generate_content("Hello")
         services["gemini"] = True

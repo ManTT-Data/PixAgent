@@ -1,7 +1,20 @@
+---
+title: PIX Project Backend
+emoji: 🤖
+colorFrom: blue
+colorTo: green
+sdk: docker
+sdk_version: "3.0.0"
+app_file: app.py
+pinned: false
+---
+
+Check out the configuration reference at https://huggingface.co/docs/hub/spaces-config-reference
+
 # PIX Project Backend
 
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.104.1-009688?style=flat&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
-[![Python 3.10](https://img.shields.io/badge/Python-3.10-3776AB?style=flat&logo=python&logoColor=white)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.103.1-009688?style=flat&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![Python 3.11](https://img.shields.io/badge/Python-3.11-3776AB?style=flat&logo=python&logoColor=white)](https://www.python.org/)
 [![HuggingFace Spaces](https://img.shields.io/badge/HuggingFace-Spaces-yellow?style=flat&logo=huggingface&logoColor=white)](https://huggingface.co/spaces)
 
 Backend API for PIX Project with MongoDB, PostgreSQL and RAG integration. This project provides a comprehensive backend solution for managing FAQ items, emergency contacts, events, and a RAG-based question answering system.
@@ -12,7 +25,8 @@ Backend API for PIX Project with MongoDB, PostgreSQL and RAG integration. This p
 - **PostgreSQL Integration**: Manage FAQ items, emergency contacts, and events
 - **Pinecone Vector Database**: Store and retrieve vector embeddings for RAG
 - **RAG Question Answering**: Answer questions using relevant information from the vector database
-- **API Documentation**: Automatic Swagger documentation
+- **WebSocket Notifications**: Real-time notifications for Admin Bot
+- **API Documentation**: Automatic OpenAPI documentation via Swagger
 - **Docker Support**: Easy deployment using Docker
 - **Auto-Debugging**: Built-in debugging, error tracking, and performance monitoring
 
@@ -37,13 +51,16 @@ Backend API for PIX Project with MongoDB, PostgreSQL and RAG integration. This p
 - `POST /postgres/emergency`: Create a new emergency contact item
 - `GET /postgres/emergency/{emergency_id}`: Get a specific emergency contact
 - `GET /postgres/events`: Get event items
-- (And more PostgreSQL endpoints for documents, vector databases, etc.)
 
 ### RAG Endpoints
 
 - `POST /rag/chat`: Get answer for a question using RAG
 - `POST /rag/embedding`: Generate embedding for text
 - `GET /rag/health`: Check RAG services health
+
+### WebSocket Endpoints
+
+- `WebSocket /notify`: Receive real-time notifications for new sessions
 
 ### Debug Endpoints (Available in Debug Mode Only)
 
@@ -176,27 +193,16 @@ PINECONE_ENVIRONMENT=gcp-starter
 # Google Gemini API key
 GOOGLE_API_KEY=your-google-api-key
 
+# WebSocket configuration
+WEBSOCKET_SERVER=localhost
+WEBSOCKET_PORT=7860
+WEBSOCKET_PATH=/notify
+
 # Application settings
-ENVIRONMENT=development
-DEBUG=true
-LOG_LEVEL=INFO
+ENVIRONMENT=production
+DEBUG=false
+PORT=7860
 ```
-
-## Auto-Debugging Features
-
-The project includes built-in debugging tools to help diagnose and fix issues:
-
-- **Error Tracking**: Automatic logging and tracking of exceptions
-- **Performance Monitoring**: Tracking of execution time for critical operations
-- **Database Health Checks**: Automatic validation of database connections
-- **System Monitoring**: Tracking system resources like CPU, memory, and disk usage
-- **Request Logging**: Comprehensive logging of all API requests and responses
-
-To enable debug mode, set `DEBUG=true` in your `.env` file. This will enable:
-- All debug endpoints
-- Automatic table creation
-- More verbose logging
-- Enhanced error responses
 
 ## Installation and Setup
 
@@ -204,8 +210,8 @@ To enable debug mode, set `DEBUG=true` in your `.env` file. This will enable:
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/yourusername/pix-project-backend.git
-   cd pix-project-backend
+   git clone https://github.com/ManTT-Data/PixAgent.git
+   cd PixAgent
    ```
 
 2. Create a virtual environment and install dependencies:
@@ -219,10 +225,10 @@ To enable debug mode, set `DEBUG=true` in your `.env` file. This will enable:
 
 4. Run the application:
    ```bash
-   uvicorn main:app --reload
+   uvicorn app:app --reload --port 7860
    ```
 
-5. Open your browser and navigate to [http://localhost:8000/docs](http://localhost:8000/docs) to see the API documentation
+5. Open your browser and navigate to [http://localhost:7860/docs](http://localhost:7860/docs) to see the API documentation
 
 ### Docker Deployment
 
@@ -233,7 +239,7 @@ To enable debug mode, set `DEBUG=true` in your `.env` file. This will enable:
 
 2. Run the Docker container:
    ```bash
-   docker run -p 8000:8000 --env-file .env pix-project-backend
+   docker run -p 7860:7860 --env-file .env pix-project-backend
    ```
 
 ## Deployment to HuggingFace Spaces
@@ -241,42 +247,49 @@ To enable debug mode, set `DEBUG=true` in your `.env` file. This will enable:
 1. Create a new Space on HuggingFace (Dockerfile type)
 2. Link your GitHub repository or push directly to the HuggingFace repo
 3. Add your environment variables in the Space settings
-4. Deploy and enjoy!
+4. The deployment will use `app.py` as the entry point, which is the standard for HuggingFace Spaces
+
+### Important Notes for HuggingFace Deployment
+
+- The application uses `app.py` with the FastAPI instance named `app` to avoid the "Error loading ASGI app. Attribute 'app' not found in module 'app'" error
+- Make sure all environment variables are set in the Space settings
+- The Dockerfile is configured to expose port 7860, which is the default port for HuggingFace Spaces
 
 ## Project Structure
 
 ```
 .
-├── app
-│   ├── api
+├── app                  # Main application package
+│   ├── api              # API endpoints
 │   │   ├── mongodb_routes.py
 │   │   ├── postgresql_routes.py
-│   │   └── rag_routes.py
-│   ├── database
-│   │   ├── models.py
+│   │   ├── rag_routes.py
+│   │   └── websocket_routes.py
+│   ├── database         # Database connections
 │   │   ├── mongodb.py
 │   │   ├── pinecone.py
 │   │   └── postgresql.py
-│   ├── models
+│   ├── models           # Pydantic models
 │   │   ├── mongodb_models.py
+│   │   ├── postgresql_models.py
 │   │   └── rag_models.py
-│   └── utils
-│       ├── middleware.py
+│   └── utils            # Utility functions
 │       ├── debug_utils.py
-│       └── utils.py
-├── .env
-├── .env.example
-├── .gitignore
-├── Dockerfile
-├── README.md
-├── create_tables.py
-├── main.py
-└── requirements.txt
+│       └── middleware.py
+├── tests                # Test directory
+│   └── test_api_endpoints.py
+├── .dockerignore        # Docker ignore file
+├── .env.example         # Example environment file
+├── .gitattributes       # Git attributes
+├── .gitignore           # Git ignore file
+├── app.py               # Application entry point
+├── docker-compose.yml   # Docker compose configuration
+├── Dockerfile           # Docker configuration
+├── pytest.ini           # Pytest configuration
+├── README.md            # Project documentation
+├── requirements.txt     # Project dependencies
+└── api_documentation.txt # API documentation for frontend engineers
 ```
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## License
 

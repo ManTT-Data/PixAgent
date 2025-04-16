@@ -6,6 +6,7 @@ from typing import Optional, List, Dict, Any
 import time
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 import google.generativeai as genai
+from app.utils.utils import cache
 
 # Cấu hình logging
 logger = logging.getLogger(__name__)
@@ -98,6 +99,17 @@ def check_db_connection():
 async def search_vectors(query_vector, top_k=3, namespace="", filter=None):
     """Search for most similar vectors in Pinecone"""
     try:
+        # Tạo cache key từ các tham số
+        vector_hash = hash(str(query_vector))
+        cache_key = f"pinecone_search:{vector_hash}:{top_k}:{namespace}:{filter}"
+        
+        # Kiểm tra cache trước
+        cached_result = cache.get(cache_key)
+        if cached_result is not None:
+            logger.info("Returning cached Pinecone search results")
+            return cached_result
+        
+        # Nếu không có trong cache, thực hiện tìm kiếm
         pinecone_index = get_pinecone_index()
         if pinecone_index is None:
             logger.error("Failed to get Pinecone index for search")
@@ -114,6 +126,9 @@ async def search_vectors(query_vector, top_k=3, namespace="", filter=None):
         # Log search result metrics
         match_count = len(results.matches) if hasattr(results, 'matches') else 0
         logger.info(f"Pinecone search returned {match_count} matches")
+        
+        # Lưu kết quả vào cache với thời gian sống 5 phút
+        cache.set(cache_key, results, ttl=300)
         
         return results
     except Exception as e:
@@ -190,6 +205,13 @@ def get_chain():
     try:
         if _retriever_instance is not None:
             return _retriever_instance
+        
+        # Kiểm tra xem chain đã được cache chưa
+        cached_retriever = cache.get("pinecone_retriever")
+        if cached_retriever is not None:
+            _retriever_instance = cached_retriever
+            logger.info("Retrieved cached Pinecone retriever")
+            return _retriever_instance
             
         start_time = time.time()
         # Initialize embeddings model
@@ -198,7 +220,7 @@ def get_chain():
         # Get index
         pinecone_index = get_pinecone_index()
         if not pinecone_index:
-            logger.error("Failed to get Pinecone index")
+            logger.error("Failed to get Pinecone index for retriever chain")
             return None
             
         # Use the PineconeVectorStore from langchain
@@ -211,18 +233,11 @@ def get_chain():
         
         _retriever_instance = vectorstore.as_retriever(search_kwargs={"k": 6})
         logger.info(f"Pinecone retriever initialized in {time.time() - start_time:.2f} seconds")
+        
+        # Cache the retriever with longer TTL (1 hour) since it rarely changes
+        cache.set("pinecone_retriever", _retriever_instance, ttl=3600)
+        
         return _retriever_instance
     except Exception as e:
-        logger.error(f"Error getting vector store from Pinecone: {e}")
-        # Fallback to a local vector store if available
-        try:
-            from langchain_community.vectorstores import FAISS
-            # Try to load a local FAISS index if it exists
-            start_time = time.time()
-            vectorstore = FAISS.load_local("faiss_index", embeddings)
-            _retriever_instance = vectorstore.as_retriever(search_kwargs={"k": 3})
-            logger.info(f"FAISS retriever initialized in {time.time() - start_time:.2f} seconds")
-            return _retriever_instance
-        except Exception as faiss_error:
-            logger.error(f"Error getting FAISS vector store: {faiss_error}")
-            return None
+        logger.error(f"Error creating retrieval chain: {e}")
+        return None

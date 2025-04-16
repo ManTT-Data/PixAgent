@@ -10,7 +10,8 @@ from app.database.mongodb import (
     save_session, 
     get_user_history,
     update_session_response,
-    check_db_connection
+    check_db_connection,
+    session_collection
 )
 from app.models.mongodb_models import (
     SessionCreate,
@@ -43,6 +44,7 @@ async def create_session(session: SessionCreate, response: Response):
     - **message**: User's message (optional)
     - **user_id**: User's ID from Telegram
     - **username**: User's username (optional)
+    - **response**: Response from RAG (optional)
     """
     try:
         # Kiểm tra kết nối MongoDB
@@ -62,7 +64,8 @@ async def create_session(session: SessionCreate, response: Response):
             last_name=session.last_name,
             message=session.message,
             user_id=session.user_id,
-            username=session.username
+            username=session.username,
+            response=session.response
         )
         
         # Chuẩn bị response object
@@ -209,4 +212,52 @@ async def health_check():
             "status": "error", 
             "message": f"MongoDB health check error: {str(e)}", 
             "timestamp": datetime.now().isoformat()
-        } 
+        }
+
+@router.get("/session/{session_id}")
+async def get_session(session_id: str):
+    """
+    Lấy thông tin session từ MongoDB theo session_id.
+    
+    - **session_id**: ID của session cần lấy
+    """
+    try:
+        # Kiểm tra kết nối MongoDB
+        if not check_db_connection():
+            logger.error("MongoDB connection failed when trying to get session")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="MongoDB connection failed"
+            )
+        
+        # Lấy thông tin từ MongoDB
+        session_data = session_collection.find_one({"session_id": session_id})
+        
+        if not session_data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Session with ID {session_id} not found"
+            )
+            
+        # Chuyển _id thành string để có thể JSON serialize
+        if "_id" in session_data:
+            session_data["_id"] = str(session_data["_id"])
+            
+        return session_data
+    except PyMongoError as e:
+        logger.error(f"MongoDB error getting session: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"MongoDB error: {str(e)}"
+        )
+    except HTTPException:
+        # Re-throw HTTP exceptions
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error getting session: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get session: {str(e)}"
+        ) 

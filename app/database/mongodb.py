@@ -60,7 +60,7 @@ def get_vietnam_datetime():
     return datetime.now(vietnam_tz)
 
 # Utility functions
-def save_session(session_id, factor, action, first_name, last_name, message, user_id, username):
+def save_session(session_id, factor, action, first_name, last_name, message, user_id, username, response=None):
     """Save user session to MongoDB"""
     try:
         session_data = {
@@ -73,7 +73,8 @@ def save_session(session_id, factor, action, first_name, last_name, message, use
             "last_name": last_name,
             "message": message,
             "user_id": user_id,
-            "username": username
+            "username": username,
+            "response": response
         }
         result = session_collection.insert_one(session_data)
         logger.info(f"Session saved with ID: {result.inserted_id}")
@@ -118,32 +119,31 @@ def get_recent_sessions(user_id, action, n=3):
         return []
 
 def get_user_history(user_id, n=3):
-    """Get user history combining free ask and RAG responses"""
+    """Get user history for a specific user"""
     try:
-        asking_freely = get_recent_sessions(user_id, "asking_freely", n)
-        rag_responses = get_recent_sessions(user_id, "RAG_response", n)
+        # Truy vấn trực tiếp các phiên gần nhất mà có cả message và response
+        sessions = list(
+            session_collection.find(
+                {
+                    "user_id": user_id, 
+                    "action": "asking_freely",
+                    "message": {"$exists": True, "$ne": None},
+                    "response": {"$exists": True, "$ne": None}
+                },
+                {"_id": 0, "message": 1, "response": 1, "created_at_datetime": 1}
+            ).sort("created_at_datetime", -1).limit(n)
+        )
         
-        # Combine and format both types of history
+        # Chuyển đổi định dạng
         history = []
-        
-        # Process asking_freely sessions
-        for session in asking_freely:
-            if "message" in session and "response" in session:
-                history.append({
-                    "question": session["message"],
-                    "answer": session["response"]
-                })
-                
-        # Process RAG_response sessions
-        for session in rag_responses:
-            if "message" in session and "response" in session:
-                history.append({
-                    "question": session["message"],
-                    "answer": session["response"]
-                })
+        for session in sessions:
+            history.append({
+                "question": session["message"],
+                "answer": session["response"]
+            })
         
         logger.info(f"Retrieved {len(history)} history items for user {user_id}")
-        return history[:n]  # Return at most n pairs
+        return history
     except Exception as e:
         logger.error(f"Error getting user history: {e}")
         return []
