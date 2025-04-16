@@ -41,9 +41,8 @@ class FAQResponse(FAQBase):
     created_at: datetime
     updated_at: datetime
     
-    # Use Config with orm_mode for Pydantic v1
-    class Config:
-        orm_mode = True
+    # Sử dụng ConfigDict thay vì class Config cho Pydantic V2
+    model_config = ConfigDict(from_attributes=True)
 
 # Emergency contact models
 class EmergencyBase(BaseModel):
@@ -363,8 +362,8 @@ async def get_faqs(
         for i, faq in enumerate(faqs[:3]):  # Log the first 3 items
             logger.info(f"FAQ item {i+1}: id={faq.id}, question={faq.question[:30]}...")
         
-        # Convert SQLAlchemy models to Pydantic models
-        result = [FAQResponse.from_orm(faq) for faq in faqs]
+        # Convert SQLAlchemy models to Pydantic models - updated for Pydantic v2
+        result = [FAQResponse.model_validate(faq, from_attributes=True) for faq in faqs]
         return result
     except SQLAlchemyError as e:
         logger.error(f"Database error in get_faqs: {e}")
@@ -388,12 +387,12 @@ async def create_faq(
     - **is_active**: Whether the FAQ is active (default: True)
     """
     try:
-        # Use dict() for Pydantic v1
-        db_faq = FAQItem(**faq.dict())
+        # Sử dụng model_dump thay vì dict
+        db_faq = FAQItem(**faq.model_dump())
         db.add(db_faq)
         db.commit()
         db.refresh(db_faq)
-        return FAQResponse.from_orm(db_faq)
+        return FAQResponse.model_validate(db_faq, from_attributes=True)
     except SQLAlchemyError as e:
         db.rollback()
         logger.error(f"Database error: {e}")
@@ -413,7 +412,7 @@ async def get_faq(
         faq = db.query(FAQItem).filter(FAQItem.id == faq_id).first()
         if not faq:
             raise HTTPException(status_code=404, detail="FAQ item not found")
-        return FAQResponse.from_orm(faq)
+        return FAQResponse.model_validate(faq, from_attributes=True)
     except SQLAlchemyError as e:
         logger.error(f"Database error: {e}")
         raise HTTPException(status_code=500, detail="Database error")
@@ -437,14 +436,14 @@ async def update_faq(
         if not faq:
             raise HTTPException(status_code=404, detail="FAQ item not found")
         
-        # Use dict(exclude_unset=True) for Pydantic v1
-        update_data = faq_update.dict(exclude_unset=True)
+        # Sử dụng model_dump thay vì dict
+        update_data = faq_update.model_dump(exclude_unset=True)
         for key, value in update_data.items():
             setattr(faq, key, value)
             
         db.commit()
         db.refresh(faq)
-        return FAQResponse.from_orm(faq)
+        return FAQResponse.model_validate(faq, from_attributes=True)
     except SQLAlchemyError as e:
         db.rollback()
         logger.error(f"Database error: {e}")
