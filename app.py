@@ -2,7 +2,7 @@ import os
 import logging
 import asyncio
 
-from fastapi import FastAPI, Request, BackgroundTasks
+from fastapi import FastAPI, Request, BackgroundTasks, Response
 from fastapi.responses import JSONResponse, HTMLResponse
 import telegram
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters
@@ -39,6 +39,7 @@ bot_app.add_handler(CommandHandler("help", help_command, block=False))
 bot_app.add_handler(CallbackQueryHandler(handle_button))
 bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
+
 @app.on_event("startup")
 async def startup():
     logger.info("🚀 Starting bot app...")
@@ -71,10 +72,12 @@ async def startup():
         except Exception as e:
             logger.error(f"❌ Failed to set webhook: {e}")
 
+
 @app.on_event("shutdown")
 async def shutdown():
     await bot_app.shutdown()
     logger.info("🛑 Bot shut down cleanly.")
+
 
 @app.post("/telegram-webhook")
 async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
@@ -90,6 +93,7 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
 
     return JSONResponse({"status": "ok"})
 
+
 @app.get("/", response_class=HTMLResponse)
 async def root():
     return """
@@ -99,6 +103,15 @@ async def root():
     </body></html>
     """
 
+
+@app.head("/", include_in_schema=False)
+async def root_head():
+    """
+    Trả về 200 OK cho HEAD /, giúp các công cụ ping like UptimeRobot không bị 405.
+    """
+    return Response(status_code=200)
+
+
 @app.get("/health")
 async def health():
     return {
@@ -107,6 +120,7 @@ async def health():
         "database_configured": bool(API_DATABASE_URL),
         "initialized": bot_app._initialized,
     }
+
 
 if __name__ == "__main__":
     import uvicorn
