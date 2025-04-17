@@ -1,18 +1,18 @@
-FROM python:3.10-slim
+# 1. Base image
+FROM python:3.11-slim
 
+# 2. Thiết lập working dir
 WORKDIR /app
 
-# Copy requirements file
+# 3. Copy requirements và cài
 COPY requirements.txt .
-
-# Install dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy source code
+# 4. Copy toàn bộ code
 COPY . .
 
-# Expose the port the app will run on
-EXPOSE 7860
+# 5. Expose (không bắt buộc, nhưng rõ ràng)
+EXPOSE  $PORT
 
-# Command to run the application
-CMD ["python", "app.py"] 
+# 6. Lệnh khởi động sử dụng biến PORT từ Render
+CMD ["sh", "-c", "uvicorn app:app --host 0.0.0.0 --port ${PORT:-7860}"]
