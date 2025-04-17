@@ -199,7 +199,7 @@ async def fetch_metadata(ids, namespace=""):
 
 # Functions imported from chatbot.py
 
-def get_chain():
+def get_chain(index_name = PINECONE_INDEX_NAME, namespace = "Default"):
     """Get the retrieval chain with Pinecone vector store (singleton pattern)"""
     global _retriever_instance
     try:
@@ -226,9 +226,10 @@ def get_chain():
         # Use the PineconeVectorStore from langchain
         from langchain_pinecone import PineconeVectorStore
         vectorstore = PineconeVectorStore.from_existing_index(
-            index_name=PINECONE_INDEX_NAME,
+            index_name=index_name,
             embedding=embeddings,
-            text_key="text"
+            text_key="text",
+            namespace=namespace
         )
         
         _retriever_instance = vectorstore.as_retriever(search_kwargs={"k": 6})

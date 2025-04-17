@@ -205,7 +205,7 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
             question=request.question,
             chat_history=chat_history
         )
-        
+        logger.info(f"Prompt: {prompt_text}")
         # Generate response
         response = model.generate_content(prompt_text)
         answer = response.text
