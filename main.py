@@ -215,7 +215,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Visit Solana SuperTeam Vietnam website: https://vn.superteam.fun/")
     else:
         # Send message to RAG API and get response
-        session_id = await log_session(update, "asking_naturally", text)
+        session_id = await log_session(update, "asking_freely", text)
         context.user_data["last_session_id"] = session_id
         await get_rag_response(update, context, text)
 
