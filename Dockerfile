@@ -11,8 +11,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # 4. Copy all code
 COPY . .
 
-# 5. Expose (not required, but for clarity)
-EXPOSE $PORT
+# 5. Expose port (metadata, not important with $PORT)
+EXPOSE 7860
 
 # 6. Startup command using PORT variable from Render
 CMD ["sh", "-c", "uvicorn app:app --host 0.0.0.0 --port ${PORT:-7860}"]
