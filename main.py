@@ -215,7 +215,44 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(bucket_list)
     elif text == "Solana Summit Event":
         await log_session(update, "solana_summit")
-        await update.message.reply_text("What do you want to know about Solana Summit 2025?")
+        
+        # Create beautifully formatted event information with emojis
+        solana_summit_info = (
+            "🌟 *Solana Summit APAC 2025* 🌟\n\n"
+            "Solana's biggest founder and developer conference returns to APAC!\n\n"
+            "📅 *Date & Time:*\n"
+            "Thursday, June 5, 2025, 9:00 AM –\n"
+            "Saturday, June 7, 2025, 6:00 PM (GMT+7)\n\n"
+            "📍 *Location:*\n"
+            "KOI Resort & Residence Da Nang\n"
+            "11 Trường Sa, Hòa Hải, Ngũ Hành Sơn, Đà Nẵng, Vietnam\n\n"
+            "🔍 *About the Event:*\n"
+            "• 1000+ attendees, ~100+ speakers & workshops\n"
+            "• Code, connect, collaborate, and conquer\n"
+            "• Networking with founders, developers, and creators\n"
+            "• Workshops and hands-on sessions with industry experts\n\n"
+            "🔗 *Event Link:*\n"
+            "[Register on Lu.ma](https://lu.ma/solana-summit-apac-2025)\n\n"
+            "📌 *Location Link:*\n"
+            "[View on Google Maps](https://maps.app.goo.gl/6z9UTCNKni83CQweA)"
+        )
+
+        # Send the formatted message with links
+        await update.message.reply_text(
+            solana_summit_info,
+            parse_mode="Markdown",
+            disable_web_page_preview=False  # Allow link previews
+        )
+        
+        # Ask if they want more specific information
+        await update.message.reply_text(
+            "Do you have any specific questions about the Solana Summit?",
+            reply_markup=ReplyKeyboardMarkup([
+                ["Events", "About Pixity"],
+                ["Emergency", "FAQ"],
+                ["Da Nang's bucket list"]
+            ], resize_keyboard=True)
+        )
     elif text == "Events":
         await log_session(update, "events")
         await get_events(update, context)
