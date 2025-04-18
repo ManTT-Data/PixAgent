@@ -123,7 +123,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     
     welcome_text = (
-        "Hello! This is PiXity, your local buddy. I can help you with every information about Da Nang, ask me!"
+        "Hello! This is PiXity, your local buddy. I can help you with every information about Da Nang, ask me!\n\n"
+        f"{commands_text}"
     )
     
     await update.message.reply_text(welcome_text, reply_markup=reply_markup)
@@ -456,14 +457,34 @@ async def get_rag_response(update: Update, context: ContextTypes.DEFAULT_TYPE, q
             result = response.json()
             answer = result.get("answer", "I couldn't find an answer to your question.")
             
+            # Xử lý định dạng HTML trong câu trả lời
+            # Nếu API trả về dữ liệu có thẻ HTML, chúng ta sẽ dùng parse_mode=HTML
+            use_html_mode = "<" in answer and ">" in answer
+            
+            # Xử lý trường hợp API trả về HTML không đúng cú pháp của Telegram
+            # Telegram không cho phép các thẻ lồng ghép không đúng chuẩn
+            if use_html_mode:
+                # Đảm bảo tên người dùng được hiển thị đúng trong các thẻ b, i, u
+                parse_mode = "HTML"
+                logger.info("Using HTML parse mode for RAG response")
+            else:
+                parse_mode = None
+                logger.info("Using default parse mode for RAG response")
+            
             # If there are sources, add them to the response
             sources = result.get("sources", [])
             if sources:
-                answer += "\n\nSources:"
-                for i, source in enumerate(sources[:3]):  # Limit to 3 sources
-                    answer += f"\n{i+1}. {source.get('source', 'Unknown')}"
+                # Nếu đang sử dụng HTML mode, hãy đảm bảo text sau đó không còn HTML tags
+                if use_html_mode:
+                    answer += "\n\n<b>Sources:</b>"
+                    for i, source in enumerate(sources[:3]):  # Limit to 3 sources
+                        answer += f"\n{i+1}. {source.get('source', 'Unknown')}"
+                else:
+                    answer += "\n\nSources:"
+                    for i, source in enumerate(sources[:3]):  # Limit to 3 sources
+                        answer += f"\n{i+1}. {source.get('source', 'Unknown')}"
             
-            await update.message.reply_text(answer)
+            await update.message.reply_text(answer, parse_mode=parse_mode)
             
             # Note: According to API documentation, RAG chat now automatically 
             # saves the answer to MongoDB for the given session_id
