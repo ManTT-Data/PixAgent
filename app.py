@@ -5,8 +5,12 @@ from fastapi import FastAPI, Request, BackgroundTasks, Response
 from fastapi.responses import HTMLResponse, JSONResponse
 import telegram
 from telegram.ext import Application, CommandHandler
+import nest_asyncio
 
-# Import các hàm từ main.py
+# Apply nest_asyncio to allow nested event loops
+nest_asyncio.apply()
+
+# Import functions from main.py
 from main import (
     start_command,
     help_command,
@@ -24,16 +28,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger("app")
 
-# Tạo FastAPI app và Telegram Application
+# Create FastAPI app and Telegram Application
 app = FastAPI(title="Solana SuperTeam Admin Bot")
 bot_app = Application.builder().token(ADMIN_TELEGRAM_BOT_TOKEN).build()
 
-# Đăng ký handler cho các command
+# Register handlers for commands
 bot_app.add_handler(CommandHandler("start", start_command))
 bot_app.add_handler(CommandHandler("help", help_command))
 bot_app.add_handler(CommandHandler("status", status_command))
 
-# Biến cho task WebSocket
+# WebSocket task variables
 websocket_task = None
 websocket_connection_error = None
 
@@ -46,7 +50,7 @@ async def startup():
         logger.info(f"🔗 Database API URL: {API_DATABASE_URL}")
     logger.info(f"👥 Admin Group Chat ID: {ADMIN_GROUP_CHAT_ID}")
 
-    # Khởi tạo Telegram bot
+    # Initialize Telegram bot
     try:
         await bot_app.initialize()
         await bot_app.start()
@@ -54,7 +58,7 @@ async def startup():
     except Exception as e:
         logger.error(f"❌ Failed to initialize bot application: {e}")
 
-    # Tự động set webhook nếu có biến WEBHOOK_URL
+    # Automatically set webhook if WEBHOOK_URL environment variable exists
     webhook_url = os.getenv("WEBHOOK_URL")
     if webhook_url:
         try:
@@ -63,7 +67,7 @@ async def startup():
         except Exception as e:
             logger.error(f"❌ Failed to set webhook: {e}")
 
-    # Khởi chạy WebSocket listener
+    # Start WebSocket listener
     try:
         websocket_task = asyncio.create_task(websocket_listener())
         logger.info("📡 WebSocket listener started")
@@ -75,7 +79,7 @@ async def startup():
 async def shutdown():
     global websocket_task
 
-    # Dừng task WebSocket nếu đang chạy
+    # Stop WebSocket task if running
     if websocket_task:
         websocket_task.cancel()
         try:
@@ -83,7 +87,7 @@ async def shutdown():
         except asyncio.CancelledError:
             logger.info("🛑 WebSocket listener cancelled")
 
-    # Tắt bot clean
+    # Shutdown bot cleanly
     try:
         await bot_app.stop()
         await bot_app.shutdown()
@@ -93,7 +97,7 @@ async def shutdown():
 
 @app.post("/telegram-webhook")
 async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
-    """Xử lý cập nhật từ Telegram qua webhook."""
+    """Process updates from Telegram via webhook."""
     try:
         update_data = await request.json()
         logger.info(f"📥 Received update: {update_data}")
@@ -104,7 +108,7 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
         return JSONResponse(content={"status": "error", "message": str(e)}, status_code=500)
 
 async def process_update(update_data):
-    """Chạy bot_app.process_update trong background."""
+    """Run bot_app.process_update in background."""
     try:
         update = telegram.Update.de_json(update_data, bot_app.bot)
         await bot_app.process_update(update)
@@ -113,7 +117,7 @@ async def process_update(update_data):
 
 @app.get("/", response_class=HTMLResponse)
 async def root():
-    """Trang status cơ bản."""
+    """Basic status page."""
     webhook_configured = bool(os.getenv("WEBHOOK_URL"))
     websocket_running = websocket_task is not None and not websocket_task.done()
 
@@ -130,7 +134,7 @@ async def root():
 
 @app.head("/", include_in_schema=False)
 async def root_head():
-    """HEAD / trả 200 OK cho các công cụ ping."""
+    """HEAD / returns 200 OK for ping tools."""
     return Response(status_code=200)
 
 @app.get("/health")
@@ -148,7 +152,7 @@ async def health_check():
 
 @app.get("/status")
 async def status():
-    """Chi tiết trạng thái bot."""
+    """Detailed bot status."""
     return {
         "bot": "admin_bot",
         "status": "running",
@@ -160,5 +164,5 @@ async def status():
 
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.getenv("PORT", 7860))
+    port = int(os.getenv("PORT", 10000))  # Changed default to 10000 to match logs
     uvicorn.run("app:app", host="0.0.0.0", port=port)

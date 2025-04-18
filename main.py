@@ -16,6 +16,10 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 import urllib.parse
 import threading
 import time
+import nest_asyncio
+
+# Apply nest_asyncio to allow nested event loops
+nest_asyncio.apply()
 
 # Configure logging
 logging.basicConfig(
@@ -187,14 +191,14 @@ async def websocket_listener():
         logger.error("Database URL not configured, cannot start WebSocket")
         return
     
-    # Đảm bảo có websocket-client module
+    # Make sure websocket-client module is available
     try:
         import websocket
     except ImportError:
         logger.error("websocket-client module not installed. Please install it with 'pip install websocket-client'")
         return
     
-    # Tạo đối tượng Bot để sử dụng trong các thread khác
+    # Create Bot instance for use in other threads
     try:
         bot = Bot(token=ADMIN_TELEGRAM_BOT_TOKEN)
         logger.info("Telegram Bot instance created for notifications")
@@ -202,50 +206,74 @@ async def websocket_listener():
         logger.error(f"Failed to create Telegram Bot instance: {e}")
         return
     
-    # Tạo queue để gửi thông báo từ thread WebSocket đến thread chính
+    # Create queue for notifications between WebSocket thread and main thread
     import queue
     notification_queue = queue.Queue()
     
-    # Xác định URL WebSocket từ API_DATABASE_URL
+    # Determine WebSocket URL from API_DATABASE_URL
     parsed_url = urllib.parse.urlparse(API_DATABASE_URL)
     
-    # Xác định protocol
+    # Determine protocol
     use_wss = parsed_url.scheme == "https"
     
-    # Lấy hostname và port
+    # Get hostname and port
     websocket_server = parsed_url.netloc.split(':')[0]
+    # Hugging Face Space sử dụng cổng 443 mặc định
     websocket_port = parsed_url.port if parsed_url.port else (443 if use_wss else 80)
     
-    # Đường dẫn của WebSocket
+    # WebSocket path
     websocket_path = "/notify"
     
-    # Tạo URL đầy đủ
+    # Create full URL
     if use_wss:
-        ws_url = f"wss://{websocket_server}{websocket_path}"
+        # Cho Hugging Face Space và các dịch vụ HTTPS khác,
+        # không cần chỉ định cổng nếu là 443
+        if websocket_port == 443:
+            ws_url = f"wss://{websocket_server}{websocket_path}"
+        else:
+            ws_url = f"wss://{websocket_server}:{websocket_port}{websocket_path}"
     else:
-        ws_url = f"ws://{websocket_server}:{websocket_port}{websocket_path}"
+        if websocket_port == 80:
+            ws_url = f"ws://{websocket_server}{websocket_path}"
+        else:
+            ws_url = f"ws://{websocket_server}:{websocket_port}{websocket_path}"
     
-    logger.info(f"WebSocket URL: {ws_url}")
+    logger.info(f"Connecting to WebSocket: {ws_url}")
     
-    # Định nghĩa các event handlers
+    # Create an event loop for the thread
+    thread_loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(thread_loop)
+    
+    # Define event handlers
     def on_message(ws, message):
         try:
+            # Kiểm tra xem đây có phải phản hồi keepalive không
+            if isinstance(message, str) and message.lower() == "keepalive" or "echo" in message:
+                logger.debug("Received keepalive response")
+                global websocket_connection
+                websocket_connection = True
+                return
+            
             # Parse JSON message
             data = json.loads(message)
             logger.info(f"Received notification: {data}")
             
-            # Xử lý thông báo theo loại
+            # Cập nhật trạng thái kết nối
+            global websocket_connection
+            websocket_connection = True
+            
+            # Process notification by type
             if data.get("type") == "new_session":
                 session_data = data.get("data", {})
                 user_question = session_data.get("message", "")
                 user_response = session_data.get("response", "")
                 user_name = session_data.get("first_name", "Unknown User")
                 
-                # Log thông tin câu hỏi
+                # Log question information
                 logger.info(f"User {user_name} asked: {user_question}")
                 logger.info(f"System response: {user_response}")
                 
-                # Thêm vào queue để xử lý thông báo trong thread chính
+                # Add to queue for processing in main thread
                 if ADMIN_GROUP_CHAT_ID:
                     notification = {
                         "type": "question",
@@ -259,16 +287,22 @@ async def websocket_listener():
                     }
                     notification_queue.put(notification)
         except json.JSONDecodeError:
-            # Xử lý tin nhắn không phải JSON (ví dụ: keepalive responses)
+            # Handle non-JSON messages (e.g., keepalive responses)
             logger.debug(f"Received non-JSON message: {message}")
+            
+            # Ngay cả khi không phải JSON, vẫn nhận được phản hồi từ server
+            # nên cập nhật trạng thái kết nối
+            global websocket_connection
+            websocket_connection = True
         except Exception as e:
             logger.error(f"Error processing message: {e}")
     
     def on_error(ws, error):
         logger.error(f"WebSocket error: {error}")
+        global websocket_connection
         websocket_connection = False
         
-        # Thêm thông báo lỗi vào queue
+        # Add error notification to queue
         if ADMIN_GROUP_CHAT_ID:
             notification_queue.put({
                 "type": "error",
@@ -277,39 +311,57 @@ async def websocket_listener():
     
     def on_close(ws, close_status_code, close_msg):
         logger.warning(f"WebSocket connection closed: code={close_status_code}, message={close_msg}")
+        global websocket_connection
         websocket_connection = False
     
     def on_open(ws):
         logger.info(f"WebSocket connection opened to {ws_url}")
+        global websocket_connection
         websocket_connection = True
         
-        # Thêm thông báo thành công vào queue
+        # Add success notification to queue
         if ADMIN_GROUP_CHAT_ID:
             notification_queue.put({
                 "type": "success",
                 "message": "WebSocket connected successfully! Now monitoring user questions."
             })
         
-        # Khởi động thread gửi keepalive
+        # Start keepalive thread
         def send_keepalive_thread():
             while True:
                 try:
                     if ws.sock and ws.sock.connected:
                         ws.send("keepalive")
                         logger.info("Sent keepalive message")
-                    time.sleep(300)  # 5 phút theo tài liệu API
+                    time.sleep(300)  # 5 minutes as per API docs
                 except Exception as e:
                     logger.error(f"Error sending keepalive: {e}")
-                    time.sleep(60)  # Thử lại sau 1 phút nếu có lỗi
+                    time.sleep(60)  # Retry after 1 minute if error
                     
         keepalive_thread = threading.Thread(target=send_keepalive_thread, daemon=True)
         keepalive_thread.start()
     
-    # Khởi tạo và chạy WebSocket client trong một vòng lặp để tự động kết nối lại
+    # Initialize and run WebSocket client in a loop for automatic reconnection
     def run_websocket_client():
+        # Set the event loop for this thread
+        asyncio.set_event_loop(thread_loop)
+        
+        # Thêm tính năng backoff để tránh thử kết nối lại quá nhanh
+        retry_count = 0
+        max_retry_count = 10
+        
         while True:
             try:
-                # Tạo WebSocket app với các handlers
+                # Reset kết nối nếu đã thử quá nhiều lần
+                if retry_count >= max_retry_count:
+                    logger.warning(f"Reached max retry count ({max_retry_count}). Resetting retry counter.")
+                    retry_count = 0
+                    time.sleep(30)  # Chờ lâu hơn trước khi thử lại
+                
+                # Tạo đối tượng websocket với các tùy chọn SSL nếu cần
+                websocket.enableTrace(True if retry_count > 5 else False)  # Bật trace nếu nhiều lần thử không thành công
+                
+                # Tạo WebSocket app với các đầu mục xử lý sự kiện
                 ws = websocket.WebSocketApp(
                     ws_url,
                     on_open=on_open,
@@ -318,33 +370,53 @@ async def websocket_listener():
                     on_close=on_close
                 )
                 
-                # Chạy với ping/pong để theo dõi kết nối
-                ws.run_forever(ping_interval=60, ping_timeout=30)
+                # Thêm các tùy chọn SSL nếu dùng wss://
+                if ws_url.startswith("wss://"):
+                    logger.info("Using secure WebSocket connection with SSL options")
+                    
+                    # Tùy chỉnh các tham số ping để giữ kết nối lâu dài
+                    ws.run_forever(
+                        ping_interval=60,   # Gửi ping mỗi 60 giây
+                        ping_timeout=30,    # Thời gian chờ pong
+                        sslopt={"cert_reqs": 0}  # Bỏ qua xác thực SSL certificate
+                    )
+                else:
+                    # Chạy với ping/pong bình thường
+                    ws.run_forever(ping_interval=60, ping_timeout=30)
                 
-                # Nếu tới đây, kết nối đã đóng
-                logger.warning("WebSocket connection lost, reconnecting in 5 seconds...")
-                time.sleep(5)
+                # Nếu code chạy đến đây, kết nối đã bị đóng
+                logger.warning("WebSocket connection lost, reconnecting...")
+                
+                # Tính backoff time dựa trên số lần thử
+                backoff_time = min(5 * (2 ** retry_count), 300)  # Tối đa 5 phút
+                logger.info(f"Waiting {backoff_time} seconds before reconnecting...")
+                time.sleep(backoff_time)
+                
+                # Tăng số lần thử kết nối
+                retry_count += 1
+                
             except Exception as e:
                 logger.error(f"WebSocket client error: {e}")
                 logger.info("Reconnecting in 5 seconds...")
                 time.sleep(5)
+                retry_count += 1
     
-    # Chạy WebSocket client trong một thread riêng
+    # Run WebSocket client in a separate thread
     websocket_thread = threading.Thread(target=run_websocket_client, daemon=True)
     websocket_thread.start()
     
-    # Vòng lặp chính để xử lý các thông báo từ queue
+    # Main loop to process notifications from queue
     while True:
         try:
-            # Kiểm tra nếu thread WebSocket đã chết
+            # Check if WebSocket thread has died
             if not websocket_thread.is_alive():
                 logger.warning("WebSocket thread died, restarting...")
                 websocket_thread = threading.Thread(target=run_websocket_client, daemon=True)
                 websocket_thread.start()
             
-            # Xử lý các thông báo trong queue
+            # Process notifications in queue
             try:
-                # Không chờ quá lâu để có thể kiểm tra thread định kỳ
+                # Don't wait too long to check thread periodically
                 notification = notification_queue.get(timeout=5)
                 
                 if ADMIN_GROUP_CHAT_ID:
@@ -352,12 +424,12 @@ async def websocket_listener():
                     
                     if notification["type"] == "question":
                         message_text = (
-                            f"❓ *Câu hỏi từ {notification['first_name']}*:\n{notification['question']}\n\n"
-                            f"🤖 *Phản hồi của hệ thống*:\n{notification['response']}\n\n"
+                            f"❓ *Question from {notification['first_name']}*:\n{notification['question']}\n\n"
+                            f"🤖 *System response*:\n{notification['response']}\n\n"
                             f"🆔 Session ID: `{notification['session_id']}`"
                         )
                     elif notification["type"] == "error":
-                        message_text = f"❌ {notification['message']}\nĐang thử kết nối lại sau 5 giây..."
+                        message_text = f"❌ {notification['message']}\nTrying to reconnect in 5 seconds..."
                     elif notification["type"] == "success":
                         message_text = f"✅ {notification['message']}"
                     
@@ -370,14 +442,14 @@ async def websocket_listener():
                         logger.info(f"Notification sent to admin group: {notification['type']}")
                 
             except queue.Empty:
-                # Timeout chỉ để kiểm tra thread, không phải lỗi
+                # Timeout is just for thread checking, not an error
                 pass
             except Exception as e:
                 logger.error(f"Error processing notification: {e}")
                 
-            # Chờ một chút trước khi kiểm tra lại
+            # Wait a bit before checking again
             await asyncio.sleep(1)
         
         except Exception as e:
             logger.error(f"Error in main websocket loop: {e}")
-            await asyncio.sleep(5)  # Đợi trước khi thử lại 
+            await asyncio.sleep(5)  # Wait before trying again 

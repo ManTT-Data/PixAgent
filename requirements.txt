@@ -1,10 +1,12 @@
-python-telegram-bot==20.7
+python-telegram-bot==20.5
 python-dotenv==1.0.0
 requests==2.31.0
 websockets==11.0.3
-fastapi==0.108.0
+fastapi==0.106.0
 uvicorn==0.25.0
 pydantic==2.5.2
 python-multipart==0.0.6
 aiohttp==3.9.1 
-websocket-client==1.6.2
+websocket-client==1.6.4
+nest-asyncio==1.5.8
+asyncio==3.4.3
