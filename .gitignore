@@ -58,8 +58,9 @@ out/
 # Tests
 tests/
 
+Admin_bot/
+
 # Hugging Face Spaces
-Pix-Agent/
 .gitattributes
 
 # OS specific

@@ -5,6 +5,7 @@ import threading
 from functools import wraps
 from datetime import datetime, timedelta
 import pytz
+from typing import Callable, Any, Dict, Optional
 
 # Configure logging
 logging.basicConfig(
@@ -13,8 +14,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Vietnam timezone
-vietnam_tz = pytz.timezone('Asia/Ho_Chi_Minh')
+# Asia/Ho_Chi_Minh timezone
+asia_tz = pytz.timezone('Asia/Ho_Chi_Minh')
 
 def generate_uuid():
     """Generate a unique identifier"""
@@ -24,23 +25,34 @@ def get_current_time():
     """Get current time in ISO format"""
     return datetime.now().isoformat()
 
-def get_vietnam_time():
-    """Get current time in Vietnam timezone and format as string"""
-    return datetime.now(vietnam_tz).strftime("%Y-%m-%d %H:%M:%S")
+def get_local_time():
+    """Get current time in Asia/Ho_Chi_Minh timezone"""
+    return datetime.now(asia_tz).strftime("%Y-%m-%d %H:%M:%S")
 
-def get_vietnam_datetime():
-    """Get current time in Vietnam timezone as datetime object"""
-    return datetime.now(vietnam_tz)
+def get_local_datetime():
+    """Get current datetime object in Asia/Ho_Chi_Minh timezone"""
+    return datetime.now(asia_tz)
 
-def timer_decorator(func):
-    """Decorator to measure function execution time"""
+# For backward compatibility
+get_vietnam_time = get_local_time
+get_vietnam_datetime = get_local_datetime
+
+def timer_decorator(func: Callable) -> Callable:
+    """
+    Decorator to time function execution and log results.
+    """
     @wraps(func)
     async def wrapper(*args, **kwargs):
         start_time = time.time()
-        result = await func(*args, **kwargs)
-        execution_time = time.time() - start_time
-        logger.info(f"Function {func.__name__} executed in {execution_time:.2f} seconds")
-        return result
+        try:
+            result = await func(*args, **kwargs)
+            elapsed_time = time.time() - start_time
+            logger.info(f"Function {func.__name__} executed in {elapsed_time:.4f} seconds")
+            return result
+        except Exception as e:
+            elapsed_time = time.time() - start_time
+            logger.error(f"Function {func.__name__} failed after {elapsed_time:.4f} seconds: {e}")
+            raise
     return wrapper
 
 def sanitize_input(text):
@@ -51,108 +63,64 @@ def sanitize_input(text):
     return text.strip()
 
 def truncate_text(text, max_length=100):
-    """Truncate text to a maximum length"""
+    """
+    Truncate text to given max length and add ellipsis.
+    """
     if not text or len(text) <= max_length:
         return text
     return text[:max_length] + "..."
 
-# Simple in-memory cache for frequent database queries
+# Simple in-memory cache implementation (replaces Redis dependency)
 class SimpleCache:
-    def __init__(self, default_ttl=300):  # Default TTL 5 minutes
-        self.cache = {}
-        self.locks = {}
-        self.default_ttl = default_ttl
-        self._cleanup_thread = threading.Thread(target=self._cleanup_loop, daemon=True)
-        self._cleanup_thread.start()
+    def __init__(self):
+        self._cache = {}
+        self._expiry = {}
     
-    def get(self, key):
-        """Get value from cache if it exists and is not expired"""
-        if key not in self.cache:
-            return None
-        
-        value, expiry = self.cache[key]
-        if expiry and datetime.now() > expiry:
-            # Expired
-            del self.cache[key]
-            if key in self.locks:
-                del self.locks[key]
-            return None
-            
-        return value
+    def get(self, key: str) -> Optional[Any]:
+        """Get value from cache if it exists and hasn't expired"""
+        if key in self._cache:
+            # Check if the key has expired
+            if key in self._expiry and self._expiry[key] > datetime.now():
+                return self._cache[key]
+            else:
+                # Clean up expired keys
+                if key in self._cache:
+                    del self._cache[key]
+                if key in self._expiry:
+                    del self._expiry[key]
+        return None
     
-    def set(self, key, value, ttl=None):
-        """Set value in cache with expiry time"""
-        ttl = ttl if ttl is not None else self.default_ttl
-        expiry = datetime.now() + timedelta(seconds=ttl) if ttl > 0 else None
-        self.cache[key] = (value, expiry)
-        return value
+    def set(self, key: str, value: Any, ttl: int = 300) -> None:
+        """Set a value in the cache with TTL in seconds"""
+        self._cache[key] = value
+        # Set expiry time
+        self._expiry[key] = datetime.now() + timedelta(seconds=ttl)
     
-    def delete(self, key):
-        """Delete key from cache"""
-        if key in self.cache:
-            del self.cache[key]
-        if key in self.locks:
-            del self.locks[key]
+    def delete(self, key: str) -> None:
+        """Delete a key from the cache"""
+        if key in self._cache:
+            del self._cache[key]
+        if key in self._expiry:
+            del self._expiry[key]
     
-    def clear(self):
-        """Clear entire cache"""
-        self.cache.clear()
-        self.locks.clear()
-    
-    def get_lock(self, key):
-        """Get lock for key to prevent thundering herd"""
-        if key not in self.locks:
-            self.locks[key] = threading.Lock()
-        return self.locks[key]
-    
-    def _cleanup_loop(self):
-        """Background thread to clean up expired entries"""
-        while True:
-            time.sleep(60)  # Run every minute
-            try:
-                now = datetime.now()
-                keys_to_delete = []
-                
-                for key, (_, expiry) in self.cache.items():
-                    if expiry and now > expiry:
-                        keys_to_delete.append(key)
-                
-                for key in keys_to_delete:
-                    self.delete(key)
-                    
-                logger.debug(f"Cache cleanup: removed {len(keys_to_delete)} expired entries")
-            except Exception as e:
-                logger.error(f"Error in cache cleanup: {e}")
-    
-    def cached(self, ttl=None):
-        """Decorator to cache function results"""
-        def decorator(func):
-            @wraps(func)
-            def wrapper(*args, **kwargs):
-                # Create cache key from function name and arguments
-                key_parts = [func.__name__]
-                key_parts.extend(str(arg) for arg in args)
-                key_parts.extend(f"{k}={v}" for k, v in sorted(kwargs.items()))
-                key = ":".join(key_parts)
-                
-                # Try to get from cache
-                result = self.get(key)
-                if result is not None:
-                    logger.debug(f"Cache hit for {key}")
-                    return result
-                
-                # Use lock to prevent multiple executions for same key
-                with self.get_lock(key):
-                    # Check cache again in case another thread filled it
-                    result = self.get(key)
-                    if result is not None:
-                        return result
-                    
-                    # Execute function and cache result
-                    result = func(*args, **kwargs)
-                    return self.set(key, result, ttl)
-            return wrapper
-        return decorator
+    def clear(self) -> None:
+        """Clear the entire cache"""
+        self._cache.clear()
+        self._expiry.clear()
 
-# Create global cache instance
-cache = SimpleCache() 
+# Initialize cache
+cache = SimpleCache()
+
+def get_host_url(request) -> str:
+    """
+    Get the host URL from a request object.
+    """
+    host = request.headers.get("host", "localhost")
+    scheme = request.headers.get("x-forwarded-proto", "http")
+    return f"{scheme}://{host}"
+
+def format_time(timestamp):
+    """
+    Format a timestamp into a human-readable string.
+    """
+    return timestamp.strftime("%Y-%m-%d %H:%M:%S") 

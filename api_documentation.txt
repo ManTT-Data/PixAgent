@@ -484,19 +484,14 @@ POST /rag/chat
 ```json
 {
   "answer": "string",
-  "sources": [
-    {
-      "text": "string",
-      "source": "string",
-      "score": 0.95,
-      "metadata": {}
-    }
-  ],
   "processing_time": 1.23
 }
 ```
 
-**Note**: RAG chat will now automatically save the answer to MongoDB for the given session_id.
+**Note**: 
+- RAG chat will automatically save the answer to MongoDB for the given session_id.
+- The response no longer includes source documents for better performance and lighter payload.
+- All source documents are still logged on the server for debugging purposes.
 
 ### RAG Health Check
 
@@ -518,29 +513,212 @@ GET /rag/health
 
 ## WebSocket API
 
+### WebSocket Connection Information
+
+To connect to the WebSocket API, use the following URL:
+
+```
+ws://{SERVER}:{PORT}/notify
+```
+
+For secure connections (HTTPS):
+```
+wss://{SERVER}/notify
+```
+
+For detailed WebSocket connection information, including examples and instructions:
+
+```
+GET /notify
+```
+
+**Response**:
+```json
+{
+  "websocket_endpoint": "/notify",
+  "connection_type": "WebSocket",
+  "protocol": "ws://",
+  "server": "localhost",
+  "port": "7860",
+  "full_url": "ws://localhost:7860/notify",
+  "description": "Endpoint nhận thông báo về các session mới cần chú ý",
+  "notification_format": {
+    "type": "new_session",
+    "timestamp": "YYYY-MM-DD HH:MM:SS",
+    "data": {
+      "session_id": "id của session",
+      "factor": "user",
+      "action": "loại hành động",
+      "message": "Câu hỏi người dùng",
+      "response": "I don't know...",
+      "user_id": "id người dùng",
+      "first_name": "tên người dùng",
+      "last_name": "họ người dùng",
+      "username": "tên đăng nhập",
+      "created_at": "thời gian tạo"
+    }
+  },
+  "client_example": "..."
+}
+```
+
 ### Notifications for New Sessions
 
 ```
 WebSocket /notify
 ```
 
-**Notifications Format**:
+**When are notifications sent?**
+- When the system generates a response that starts with "I don't know"
+- The original user question and the response are both included in the notification
+
+**Key WebSocket Client Requirements:**
+- Send "keepalive" messages every 5 minutes to maintain connection
+- Implement automatic reconnection logic
+- Use ping/pong for connection monitoring (ping_interval=60, ping_timeout=30)
+
+**Notification Format**:
 ```json
 {
   "type": "new_session",
   "timestamp": "2023-09-15T12:34:56",
   "data": {
     "session_id": "string",
-    "factor": "string",
+    "factor": "user",
     "action": "string",
     "created_at": "string",
     "first_name": "string",
     "last_name": "string",
     "message": "string",
+    "response": "I don't know...",
     "user_id": "string",
     "username": "string"
   }
 }
+```
+
+**Recommended WebSocket Client Implementation:**
+
+```python
+import websocket
+import json
+import os
+import time
+import threading
+import logging
+from dotenv import load_dotenv
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, 
+                   format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger("WebSocketClient")
+
+# Load environment variables
+load_dotenv()
+
+# WebSocket configuration
+WEBSOCKET_SERVER = os.getenv("WEBSOCKET_SERVER", "localhost")
+WEBSOCKET_PORT = os.getenv("WEBSOCKET_PORT", "7860")
+WEBSOCKET_PATH = os.getenv("WEBSOCKET_PATH", "/notify")
+USE_WSS = os.getenv("USE_WSS", "False").lower() in ("true", "1", "t")
+
+# Create full URL based on protocol
+if USE_WSS:
+    # For HTTPS deployments (HuggingFace, Render, etc.)
+    ws_url = f"wss://{WEBSOCKET_SERVER}{WEBSOCKET_PATH}"
+else:
+    # For HTTP deployments (local, direct port access)
+    ws_url = f"ws://{WEBSOCKET_SERVER}:{WEBSOCKET_PORT}{WEBSOCKET_PATH}"
+
+# Send keepalive messages periodically
+def send_keepalive(ws):
+    while True:
+        try:
+            if ws.sock and ws.sock.connected:
+                ws.send("keepalive")
+                logger.info("Sent keepalive message")
+            time.sleep(300)  # 5 minutes
+        except Exception as e:
+            logger.error(f"Error sending keepalive: {e}")
+            time.sleep(60)
+
+# WebSocket event handlers
+def on_message(ws, message):
+    try:
+        # Try to parse as JSON
+        data = json.loads(message)
+        logger.info(f"Received notification: {data}")
+        
+        # Process notification
+        if data.get("type") == "new_session":
+            session_data = data.get("data", {})
+            user_question = session_data.get("message", "")
+            user_response = session_data.get("response", "")
+            user_name = session_data.get("first_name", "Unknown User")
+            
+            # Log the question that couldn't be answered
+            logger.info(f"User {user_name} asked: {user_question}")
+            logger.info(f"System response: {user_response}")
+            
+            # Forward to Telegram admin group
+            # telegram_bot.send_message(
+            #    chat_id=ADMIN_GROUP_ID,
+            #    text=f"❓ *Question from {user_name}*:\n{user_question}\n\n" +
+            #         f"🤖 *AI response*:\n{user_response}",
+            #    parse_mode="Markdown"
+            # )
+    except json.JSONDecodeError:
+        # Handle non-JSON messages (like keepalive responses)
+        logger.debug(f"Received non-JSON message: {message}")
+    except Exception as e:
+        logger.error(f"Error processing message: {e}")
+
+def on_error(ws, error):
+    logger.error(f"WebSocket error: {error}")
+
+def on_close(ws, close_status_code, close_msg):
+    logger.warning(f"WebSocket connection closed: code={close_status_code}, message={close_msg}")
+
+def on_open(ws):
+    logger.info(f"WebSocket connection opened to {ws_url}")
+    # Start keepalive thread
+    keepalive_thread = threading.Thread(target=send_keepalive, args=(ws,), daemon=True)
+    keepalive_thread.start()
+
+# Main function to run WebSocket with reconnection logic
+def run_websocket_client():
+    while True:
+        try:
+            # Connect to WebSocket with ping/pong for connection monitoring
+            ws = websocket.WebSocketApp(
+                ws_url,
+                on_open=on_open,
+                on_message=on_message,
+                on_error=on_error,
+                on_close=on_close
+            )
+            
+            # Run with ping/pong enabled
+            ws.run_forever(ping_interval=60, ping_timeout=30)
+            
+            # If we get here, connection was closed
+            logger.warning("WebSocket connection lost, reconnecting in 5 seconds...")
+            time.sleep(5)
+        except Exception as e:
+            logger.error(f"WebSocket client error: {e}")
+            logger.info("Reconnecting in 5 seconds...")
+            time.sleep(5)
+
+# Start the WebSocket client in a background thread
+websocket_thread = threading.Thread(target=run_websocket_client, daemon=True)
+websocket_thread.start()
+
+# Keep the main thread running
+try:
+    while True:
+        time.sleep(1)
+except KeyboardInterrupt:
+    logger.info("Stopping WebSocket client...")
 ```
 
 ## Error Responses

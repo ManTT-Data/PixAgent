@@ -74,16 +74,29 @@ async def create_session(session: SessionCreate, response: Response):
             created_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         )
         
-        # Kiểm tra nếu session cần gửi thông báo (factor là RAG và tin nhắn bắt đầu bằng "I don't know")
-        if (session.factor.lower() == "rag" and 
-            session.message and 
-            session.message.strip().lower().startswith("i don't know")):
-            
+        # Kiểm tra nếu session cần gửi thông báo (response bắt đầu bằng "I don't know")
+        if session.response and session.response.strip().lower().startswith("i don't know"):
             # Gửi thông báo qua WebSocket
-            notification_data = session_response.model_dump()
-            # Thêm async task để gửi thông báo 
-            asyncio.create_task(send_notification(notification_data))
-            logger.info(f"Notification queued for session {session.session_id}")
+            try:
+                notification_data = {
+                    "session_id": session.session_id,
+                    "factor": session.factor,
+                    "action": session.action,
+                    "message": session.message,
+                    "user_id": session.user_id,
+                    "username": session.username,
+                    "first_name": session.first_name,
+                    "last_name": session.last_name,
+                    "response": session.response,
+                    "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                }
+                
+                # Khởi tạo task để gửi thông báo - sử dụng asyncio.create_task để đảm bảo không block quá trình chính
+                asyncio.create_task(send_notification(notification_data))
+                logger.info(f"Notification queued for session {session.session_id} - response starts with 'I don't know'")
+            except Exception as e:
+                logger.error(f"Error queueing notification: {e}")
+                # Không dừng xử lý chính khi gửi thông báo thất bại
         
         # Return response
         return session_response

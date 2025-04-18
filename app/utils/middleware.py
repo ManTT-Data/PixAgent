@@ -5,105 +5,105 @@ import logging
 import time
 import traceback
 import uuid
-from .utils import get_vietnam_time
+from .utils import get_local_time
 
-# Cấu hình logging
+# Configure logging
 logger = logging.getLogger(__name__)
 
 class RequestLoggingMiddleware(BaseHTTPMiddleware):
-    """Middleware để ghi log các request và response"""
+    """Middleware to log requests and responses"""
     
     async def dispatch(self, request: Request, call_next):
         request_id = str(uuid.uuid4())
         request.state.request_id = request_id
         
-        # Ghi log thông tin request
+        # Log request information
         client_host = request.client.host if request.client else "unknown"
         logger.info(f"Request [{request_id}]: {request.method} {request.url.path} from {client_host}")
         
-        # Đo thời gian xử lý
+        # Measure processing time
         start_time = time.time()
         
         try:
-            # Xử lý request
+            # Process request
             response = await call_next(request)
             
-            # Tính thời gian xử lý
+            # Calculate processing time
             process_time = time.time() - start_time
             logger.info(f"Response [{request_id}]: {response.status_code} processed in {process_time:.4f}s")
             
-            # Thêm headers
+            # Add headers
             response.headers["X-Request-ID"] = request_id
             response.headers["X-Process-Time"] = str(process_time)
             
             return response
             
         except Exception as e:
-            # Ghi log lỗi
+            # Log error
             process_time = time.time() - start_time
             logger.error(f"Error [{request_id}] after {process_time:.4f}s: {str(e)}")
             logger.error(traceback.format_exc())
             
-            # Trả về response lỗi
+            # Return error response
             return JSONResponse(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 content={
                     "detail": "Internal server error",
                     "request_id": request_id,
-                    "timestamp": get_vietnam_time()
+                    "timestamp": get_local_time()
                 }
             )
 
 class ErrorHandlingMiddleware(BaseHTTPMiddleware):
-    """Middleware để xử lý các lỗi không được bắt trong ứng dụng"""
+    """Middleware to handle uncaught exceptions in the application"""
     
     async def dispatch(self, request: Request, call_next):
         try:
             return await call_next(request)
         except Exception as e:
-            # Lấy request_id nếu có
+            # Get request_id if available
             request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
             
-            # Ghi log lỗi
+            # Log error
             logger.error(f"Uncaught exception [{request_id}]: {str(e)}")
             logger.error(traceback.format_exc())
             
-            # Trả về response lỗi
+            # Return error response
             return JSONResponse(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 content={
                     "detail": "Internal server error",
                     "request_id": request_id,
-                    "timestamp": get_vietnam_time()
+                    "timestamp": get_local_time()
                 }
             )
 
 class DatabaseCheckMiddleware(BaseHTTPMiddleware):
-    """Middleware để kiểm tra kết nối database trước mỗi request"""
+    """Middleware to check database connections before each request"""
     
     async def dispatch(self, request: Request, call_next):
-        # Bỏ qua các routes không cần kiểm tra database
+        # Skip paths that don't need database checks
         skip_paths = ["/", "/health", "/docs", "/redoc", "/openapi.json"]
         if request.url.path in skip_paths:
             return await call_next(request)
         
-        # Kiểm tra database connections
+        # Check database connections
         try:
-            # TODO: Thêm các kiểm tra đối với MongoDB và Pinecone nếu cần
-            # Việc kiểm tra PostgreSQL đã được thực hiện ở route handler với phương thức get_db()
+            # TODO: Add checks for MongoDB and Pinecone if needed
+            # PostgreSQL check is already done in route handler with get_db() method
             
-            # Xử lý request bình thường
+            # Process request normally
             return await call_next(request)
             
         except Exception as e:
-            # Ghi log lỗi
+            # Log error
             logger.error(f"Database connection check failed: {str(e)}")
             
-            # Trả về response lỗi
+            # Return error response
             return JSONResponse(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 content={
                     "detail": "Database connection failed",
-                    "timestamp": get_vietnam_time()
+                    "timestamp": get_local_time()
                 }
             ) 

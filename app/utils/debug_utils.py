@@ -7,7 +7,7 @@ import time
 from datetime import datetime
 import platform
 
-# Cố gắng import psutil, nếu không có thì cung cấp phương án dự phòng
+# Try to import psutil, provide fallback if not available
 try:
     import psutil
     PSUTIL_AVAILABLE = True
@@ -15,15 +15,15 @@ except ImportError:
     PSUTIL_AVAILABLE = False
     logging.warning("psutil module not available. System monitoring features will be limited.")
 
-# Cấu hình logging
+# Configure logging
 logger = logging.getLogger(__name__)
 
 class DebugInfo:
-    """Lớp chứa các thông tin debug"""
+    """Class containing debug information"""
     
     @staticmethod
     def get_system_info():
-        """Lấy thông tin hệ thống"""
+        """Get system information"""
         try:
             info = {
                 "os": platform.system(),
@@ -33,7 +33,7 @@ class DebugInfo:
                 "timestamp": datetime.now().isoformat()
             }
             
-            # Thêm thông tin từ psutil nếu có sẵn
+            # Add information from psutil if available
             if PSUTIL_AVAILABLE:
                 info.update({
                     "total_memory": round(psutil.virtual_memory().total / (1024 * 1024 * 1024), 2),  # GB
@@ -58,9 +58,9 @@ class DebugInfo:
     
     @staticmethod
     def get_env_info():
-        """Lấy thông tin biến môi trường (che giấu các thông tin nhạy cảm)"""
+        """Get environment variable information (masking sensitive information)"""
         try:
-            # Danh sách các biến môi trường cần che giấu giá trị
+            # List of environment variables to mask values
             sensitive_vars = [
                 "API_KEY", "SECRET", "PASSWORD", "TOKEN", "AUTH", "MONGODB_URL", 
                 "AIVEN_DB_URL", "PINECONE_API_KEY", "GOOGLE_API_KEY"
@@ -68,11 +68,11 @@ class DebugInfo:
             
             env_vars = {}
             for key, value in os.environ.items():
-                # Kiểm tra xem biến môi trường có chứa từ nhạy cảm không
+                # Check if environment variable contains sensitive words
                 is_sensitive = any(s in key.upper() for s in sensitive_vars)
                 
                 if is_sensitive and value:
-                    # Che giấu giá trị chỉ hiển thị 4 ký tự đầu tiên
+                    # Mask value displaying only the first 4 characters
                     masked_value = value[:4] + "****" if len(value) > 4 else "****"
                     env_vars[key] = masked_value
                 else:
@@ -85,7 +85,7 @@ class DebugInfo:
     
     @staticmethod
     def get_database_status():
-        """Lấy trạng thái kết nối database"""
+        """Get database connection status"""
         try:
             from app.database.postgresql import check_db_connection as check_postgresql
             from app.database.mongodb import check_db_connection as check_mongodb
@@ -102,14 +102,14 @@ class DebugInfo:
             return {"error": str(e)}
 
 class PerformanceMonitor:
-    """Lớp giám sát hiệu suất"""
+    """Performance monitoring class"""
     
     def __init__(self):
         self.start_time = time.time()
         self.checkpoints = []
     
     def checkpoint(self, name):
-        """Đánh dấu một checkpoint và ghi lại thời gian"""
+        """Mark a checkpoint and record the time"""
         current_time = time.time()
         elapsed = current_time - self.start_time
         self.checkpoints.append({
@@ -121,13 +121,13 @@ class PerformanceMonitor:
         return elapsed
     
     def get_report(self):
-        """Tạo báo cáo hiệu suất"""
+        """Generate performance report"""
         if not self.checkpoints:
             return {"error": "No checkpoints recorded"}
             
         total_time = time.time() - self.start_time
         
-        # Tính thời gian giữa các checkpoint
+        # Calculate time between checkpoints
         intervals = []
         prev_time = self.start_time
         
@@ -147,14 +147,14 @@ class PerformanceMonitor:
         }
 
 class ErrorTracker:
-    """Lớp theo dõi và ghi lại lỗi"""
+    """Class to track and record errors"""
     
     def __init__(self, max_errors=100):
         self.errors = []
         self.max_errors = max_errors
     
     def track_error(self, error, context=None):
-        """Ghi lại thông tin lỗi"""
+        """Record error information"""
         error_info = {
             "error_type": type(error).__name__,
             "error_message": str(error),
@@ -163,27 +163,27 @@ class ErrorTracker:
             "context": context or {}
         }
         
-        # Thêm vào danh sách lỗi
+        # Add to error list
         self.errors.append(error_info)
         
-        # Giới hạn số lượng lỗi được lưu trữ
+        # Limit the number of stored errors
         if len(self.errors) > self.max_errors:
-            self.errors.pop(0)  # Loại bỏ lỗi cũ nhất
+            self.errors.pop(0)  # Remove oldest error
             
         return error_info
     
     def get_errors(self, limit=None):
-        """Lấy danh sách lỗi đã ghi lại"""
+        """Get list of recorded errors"""
         if limit is None or limit >= len(self.errors):
             return self.errors
-        return self.errors[-limit:]  # Trả về các lỗi gần đây nhất
+        return self.errors[-limit:]  # Return most recent errors
 
-# Khởi tạo các đối tượng global
+# Initialize global objects
 error_tracker = ErrorTracker()
 performance_monitor = PerformanceMonitor()
 
 def debug_view(request=None):
-    """Tạo báo cáo debug đầy đủ"""
+    """Create a full debug report"""
     debug_data = {
         "system_info": DebugInfo.get_system_info(),
         "database_status": DebugInfo.get_database_status(),
@@ -192,7 +192,7 @@ def debug_view(request=None):
         "timestamp": datetime.now().isoformat()
     }
     
-    # Thêm thông tin request nếu có
+    # Add request information if available
     if request:
         debug_data["request"] = {
             "method": request.method,

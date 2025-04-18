@@ -30,6 +30,7 @@ python-multipart==0.0.6
 httpx==0.25.1
 requests==2.31.0
 beautifulsoup4==4.12.2
+redis==5.0.1
 
 # Testing
 prometheus-client==0.17.1

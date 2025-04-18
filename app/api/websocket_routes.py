@@ -7,25 +7,25 @@ import json
 import os
 from dotenv import load_dotenv
 from app.database.mongodb import session_collection
-from app.utils.utils import get_vietnam_time
+from app.utils.utils import get_local_time
 
 # Load environment variables
 load_dotenv()
 
-# Lấy cấu hình WebSocket từ biến môi trường
+# Get WebSocket configuration from environment variables
 WEBSOCKET_SERVER = os.getenv("WEBSOCKET_SERVER", "localhost")
 WEBSOCKET_PORT = os.getenv("WEBSOCKET_PORT", "7860")
 WEBSOCKET_PATH = os.getenv("WEBSOCKET_PATH", "/notify")
 
-# Cấu hình logging
+# Configure logging
 logger = logging.getLogger(__name__)
 
-# Tạo router
+# Create router
 router = APIRouter(
     tags=["WebSocket"],
 )
 
-# Lưu trữ các kết nối WebSocket đang hoạt động
+# Store active WebSocket connections
 class ConnectionManager:
     def __init__(self):
         self.active_connections: List[WebSocket] = []
@@ -33,7 +33,8 @@ class ConnectionManager:
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
         self.active_connections.append(websocket)
-        logger.info(f"New WebSocket connection added. Total connections: {len(self.active_connections)}")
+        client_info = f"{websocket.client.host}:{websocket.client.port}" if hasattr(websocket, 'client') else "Unknown"
+        logger.info(f"New WebSocket connection from {client_info}. Total connections: {len(self.active_connections)}")
 
     def disconnect(self, websocket: WebSocket):
         self.active_connections.remove(websocket)
@@ -48,48 +49,60 @@ class ConnectionManager:
         for connection in self.active_connections:
             try:
                 await connection.send_json(message)
+                logger.info(f"Message sent to WebSocket connection")
             except Exception as e:
                 logger.error(f"Error sending message to WebSocket: {e}")
                 disconnected.append(connection)
                 
-        # Xóa kết nối bị ngắt
+        # Remove disconnected connections
         for conn in disconnected:
             if conn in self.active_connections:
                 self.active_connections.remove(conn)
+                logger.info(f"Removed disconnected WebSocket. Remaining: {len(self.active_connections)}")
 
-# Khởi tạo connection manager
+# Initialize connection manager
 manager = ConnectionManager()
 
-# Tạo URL đầy đủ của WebSocket server từ biến môi trường
+# Create full URL of WebSocket server from environment variables
 def get_full_websocket_url(server_side=False):
     if server_side:
-        # URL tương đối (cho phía server)
+        # Relative URL (for server side)
         return WEBSOCKET_PATH
     else:
-        # URL đầy đủ (cho client)
-        return f"ws://{WEBSOCKET_SERVER}:{WEBSOCKET_PORT}{WEBSOCKET_PATH}"
+        # Full URL (for client)
+        # Check if should use wss:// for HTTPS
+        is_https = True if int(WEBSOCKET_PORT) == 443 else False
+        protocol = "wss" if is_https else "ws"
+        
+        # If using default port for protocol, don't include in URL
+        if (is_https and int(WEBSOCKET_PORT) == 443) or (not is_https and int(WEBSOCKET_PORT) == 80):
+            return f"{protocol}://{WEBSOCKET_SERVER}{WEBSOCKET_PATH}"
+        else:
+            return f"{protocol}://{WEBSOCKET_SERVER}:{WEBSOCKET_PORT}{WEBSOCKET_PATH}"
 
-# Thêm endpoint GET để hiển thị thông tin WebSocket trong Swagger
+# Add GET endpoint to display WebSocket information in Swagger
 @router.get("/notify", 
-    summary="WebSocket thông báo cho Admin Bot",
+    summary="WebSocket notifications for Admin Bot",
     description=f"""
-    Đây là tài liệu cho WebSocket endpoint.
+    This is documentation for the WebSocket endpoint.
     
-    Để kết nối WebSocket:
-    1. Sử dụng đường dẫn `{get_full_websocket_url()}`
-    2. Kết nối bằng thư viện WebSocket client
-    3. Khi có session mới cần thông báo, bạn sẽ nhận được thông báo qua kết nối này
+    To connect to WebSocket:
+    1. Use the path `{get_full_websocket_url()}`
+    2. Connect using a WebSocket client library
+    3. When there are new sessions requiring attention, you will receive notifications through this connection
     
-    Thông báo được gửi khi:
-    - Có session mới với factor "rag"
-    - Tin nhắn bắt đầu bằng "I don't know"
+    Notifications are sent when:
+    - Session response starts with "I don't know"
+    - The system cannot answer the user's question
+    
+    Make sure to send a "keepalive" message every 5 minutes to maintain the connection.
     """,
     status_code=status.HTTP_200_OK
 )
 async def websocket_documentation():
     """
-    Cung cấp thông tin về cách sử dụng WebSocket endpoint /notify.
-    Endpoint này chỉ dùng cho mục đích tài liệu. Để sử dụng WebSocket, vui lòng kết nối đến WebSocket URL.
+    Provides information about how to use the WebSocket endpoint /notify.
+    This endpoint is for documentation purposes only. To use WebSocket, please connect to the WebSocket URL.
     """
     ws_url = get_full_websocket_url()
     return {
@@ -99,80 +112,130 @@ async def websocket_documentation():
         "server": WEBSOCKET_SERVER,
         "port": WEBSOCKET_PORT,
         "full_url": ws_url,
-        "description": "Endpoint nhận thông báo về các session mới cần chú ý",
+        "description": "Endpoint to receive notifications about new sessions requiring attention",
         "notification_format": {
             "type": "new_session",
             "timestamp": "YYYY-MM-DD HH:MM:SS",
             "data": {
-                "session_id": "id của session",
-                "factor": "rag",
-                "action": "loại hành động",
-                "message": "I don't know...",
-                "user_id": "id người dùng",
-                "first_name": "tên người dùng",
-                "last_name": "họ người dùng",
-                "username": "tên đăng nhập",
-                "created_at": "thời gian tạo"
+                "session_id": "session id",
+                "factor": "user",
+                "action": "action type",
+                "message": "User question",
+                "response": "I don't know...",
+                "user_id": "user id",
+                "first_name": "user's first name",
+                "last_name": "user's last name",
+                "username": "username",
+                "created_at": "creation time"
             }
         },
-        "client_example": f"""
+        "client_example": """
         import websocket
         import json
         import os
+        import time
+        import threading
         from dotenv import load_dotenv
         
         # Load environment variables
         load_dotenv()
         
-        # Lấy cấu hình WebSocket từ biến môi trường
+        # Get WebSocket configuration from environment variables
         WEBSOCKET_SERVER = os.getenv("WEBSOCKET_SERVER", "localhost")
         WEBSOCKET_PORT = os.getenv("WEBSOCKET_PORT", "7860")
         WEBSOCKET_PATH = os.getenv("WEBSOCKET_PATH", "/notify")
         
-        # Tạo URL đầy đủ
-        ws_url = f"ws://{{WEBSOCKET_SERVER}}:{{WEBSOCKET_PORT}}{{WEBSOCKET_PATH}}"
+        # Create full URL
+        ws_url = f"ws://{WEBSOCKET_SERVER}:{WEBSOCKET_PORT}{WEBSOCKET_PATH}"
+        
+        # If using HTTPS, replace ws:// with wss://
+        # ws_url = f"wss://{WEBSOCKET_SERVER}{WEBSOCKET_PATH}"
+        
+        # Send keepalive periodically
+        def send_keepalive(ws):
+            while True:
+                try:
+                    if ws.sock and ws.sock.connected:
+                        ws.send("keepalive")
+                        print("Sent keepalive message")
+                    time.sleep(300)  # 5 minutes
+                except Exception as e:
+                    print(f"Error sending keepalive: {e}")
+                    time.sleep(60)
         
         def on_message(ws, message):
-            data = json.loads(message)
-            print(f"Received notification: {{data}}")
-            # Forward to Telegram Admin
+            try:
+                data = json.loads(message)
+                print(f"Received notification: {data}")
+                # Process notification, e.g.: send to Telegram Admin
+                if data.get("type") == "new_session":
+                    session_data = data.get("data", {})
+                    user_question = session_data.get("message", "")
+                    user_name = session_data.get("first_name", "Unknown User")
+                    print(f"User {user_name} asked: {user_question}")
+                    # Code to send message to Telegram Admin
+            except json.JSONDecodeError:
+                print(f"Received non-JSON message: {message}")
+            except Exception as e:
+                print(f"Error processing message: {e}")
         
         def on_error(ws, error):
-            print(f"Error: {{error}}")
+            print(f"WebSocket error: {error}")
         
         def on_close(ws, close_status_code, close_msg):
-            print("Connection closed")
+            print(f"WebSocket connection closed: code={close_status_code}, message={close_msg}")
         
         def on_open(ws):
-            print("Connection opened")
-            # Gửi message keepalive định kỳ
-            ws.send("keepalive")
+            print(f"WebSocket connection opened to {ws_url}")
+            # Send keepalive messages periodically in a separate thread
+            keepalive_thread = threading.Thread(target=send_keepalive, args=(ws,), daemon=True)
+            keepalive_thread.start()
         
-        # Kết nối WebSocket
-        ws = websocket.WebSocketApp(
-            ws_url,
-            on_open=on_open,
-            on_message=on_message,
-            on_error=on_error,
-            on_close=on_close
-        )
-        ws.run_forever()
+        def run_forever_with_reconnect():
+            while True:
+                try:
+                    # Connect WebSocket with ping to maintain connection
+                    ws = websocket.WebSocketApp(
+                        ws_url,
+                        on_open=on_open,
+                        on_message=on_message,
+                        on_error=on_error,
+                        on_close=on_close
+                    )
+                    ws.run_forever(ping_interval=60, ping_timeout=30)
+                    print("WebSocket connection lost, reconnecting in 5 seconds...")
+                    time.sleep(5)
+                except Exception as e:
+                    print(f"WebSocket connection error: {e}")
+                    time.sleep(5)
+        
+        # Start WebSocket client in a separate thread
+        websocket_thread = threading.Thread(target=run_forever_with_reconnect, daemon=True)
+        websocket_thread.start()
+        
+        # Keep the program running
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            print("Stopping WebSocket client...")
         """
     }
 
 @router.websocket("/notify")
 async def websocket_endpoint(websocket: WebSocket):
     """
-    WebSocket endpoint để nhận thông báo về các session mới.
-    Admin Bot sẽ kết nối đến endpoint này để nhận thông báo khi có session mới cần chú ý.
+    WebSocket endpoint to receive notifications about new sessions.
+    Admin Bot will connect to this endpoint to receive notifications when there are new sessions requiring attention.
     """
     await manager.connect(websocket)
     try:
         while True:
-            # Duy trì kết nối WebSocket
+            # Maintain WebSocket connection
             data = await websocket.receive_text()
-            # Echo lại để giữ kết nối
-            await websocket.send_json({"status": "connected", "echo": data})
+            # Echo back to keep connection active
+            await websocket.send_json({"status": "connected", "echo": data, "timestamp": datetime.now().isoformat()})
+            logger.info(f"Received message from WebSocket: {data}")
     except WebSocketDisconnect:
         logger.info("WebSocket client disconnected")
         manager.disconnect(websocket)
@@ -180,56 +243,64 @@ async def websocket_endpoint(websocket: WebSocket):
         logger.error(f"WebSocket error: {e}")
         manager.disconnect(websocket)
 
-# Hàm gửi thông báo qua WebSocket
-async def send_notification(session_data: Dict):
+# Function to send notifications over WebSocket
+async def send_notification(data: dict):
     """
-    Gửi thông báo qua WebSocket cho tất cả các kết nối đang hoạt động.
+    Send notification to all active WebSocket connections.
+    
+    This function is used to notify admin bots about new issues or questions that need attention.
+    It's triggered when the system cannot answer a user's question (response starts with "I don't know").
     
     Args:
-        session_data (Dict): Dữ liệu session cần gửi
+        data: The data to send as notification
     """
-    # Nếu đây là thông báo cho RAG và tin nhắn bắt đầu bằng "I don't know"
-    if (session_data.get("factor", "").lower() == "rag" and 
-        session_data.get("message", "").strip().lower().startswith("i don't know")):
+    try:
+        # Log number of active connections and notification attempt
+        logger.info(f"Attempting to send notification. Active connections: {len(manager.active_connections)}")
+        logger.info(f"Notification data: session_id={data.get('session_id')}, user_id={data.get('user_id')}")
+        logger.info(f"Response: {data.get('response', '')[:50]}...")
         
-        # Lấy thông tin đầy đủ từ MongoDB thay vì sử dụng dữ liệu từ session_data
-        # Tìm thông điệp có cùng session_id, cùng user_id nhưng với factor là "user"
-        try:
-            user_id = session_data.get("user_id")
-            session_id = session_data.get("session_id")
+        # Check if the response starts with "I don't know"
+        response = data.get('response', '')
+        if not response or not isinstance(response, str):
+            logger.warning(f"Invalid response format in notification data: {response}")
+            return
             
-            user_message = session_collection.find_one({
-                "user_id": user_id,
-                "session_id": session_id,
-                "factor": "user"
-            })
+        if not response.strip().lower().startswith("i don't know"):
+            logger.info(f"Response doesn't start with 'I don't know', notification not needed: {response[:50]}...")
+            return
             
-            # Nếu tìm thấy thông điệp, sử dụng thông tin từ đó để gửi thông báo
-            if user_message:
-                notification_data = {
-                    "type": "new_session",
-                    "timestamp": get_vietnam_time(),
-                    "data": {
-                        "session_id": session_id,
-                        "user_id": user_id,
-                        "message": user_message.get("message", ""),
-                        "first_name": user_message.get("first_name", ""),
-                        "last_name": user_message.get("last_name", ""),
-                        "username": user_message.get("username", ""),
-                        "created_at": user_message.get("created_at", ""),
-                        "action": user_message.get("action", ""),
-                        "factor": "user"  # Ghi đè factor để hiển thị từ người dùng
-                    }
-                }
-            else:
-                # Nếu không tìm thấy, sử dụng thông tin từ session_data
-                notification_data = {
-                    "type": "new_session",
-                    "timestamp": get_vietnam_time(),
-                    "data": session_data
-                }
-                
-            await manager.broadcast(notification_data)
-            logger.info(f"Notification sent for session {session_data.get('session_id')}")
-        except Exception as e:
-            logger.error(f"Error sending notification: {e}") 
+        logger.info(f"Response starts with 'I don't know', sending notification")
+        
+        # Format the notification data for admin
+        notification_data = {
+            "type": "new_session",
+            "timestamp": get_local_time(),
+            "data": {
+                "session_id": data.get('session_id', 'unknown'),
+                "user_id": data.get('user_id', 'unknown'),
+                "message": data.get('message', ''),
+                "response": response,
+                "first_name": data.get('first_name', 'User'),
+                "last_name": data.get('last_name', ''),
+                "username": data.get('username', ''),
+                "created_at": data.get('created_at', get_local_time()),
+                "action": data.get('action', 'unknown'),
+                "factor": "user"  # Always show as user for better readability
+            }
+        }
+        
+        # Check if there are active connections
+        if not manager.active_connections:
+            logger.warning("No active WebSocket connections for notification broadcast")
+            return
+        
+        # Broadcast notification to all active connections
+        logger.info(f"Broadcasting notification to {len(manager.active_connections)} connections")
+        await manager.broadcast(notification_data)
+        logger.info("Notification broadcast completed successfully")
+        
+    except Exception as e:
+        logger.error(f"Error sending notification: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
