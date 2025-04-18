@@ -17,6 +17,7 @@ import urllib.parse
 import threading
 import time
 import nest_asyncio
+import aiohttp
 
 # Apply nest_asyncio to allow nested event loops
 nest_asyncio.apply()
@@ -54,8 +55,8 @@ def fix_url(base_url, path):
         
     return f"{base_url}/{path}"
 
-def get_vietnam_time():
-    """Get current time in Vietnam timezone format."""
+def get_current_time():
+    """Get current time in standard format."""
     now = datetime.now()
     return now.strftime("%Y-%m-%d %H:%M:%S")
 
@@ -123,7 +124,7 @@ async def send_status_message(chat_id=None):
     
     status_message = (
         "🤖 *Admin Bot Status Report*\n\n"
-        f"🕒 Time: {get_vietnam_time()}\n"
+        f"🕒 Time: {get_current_time()}\n"
         f"🔌 API: {api_status}\n"
         f"📊 Databases: {db_status}\n"
         f"🧠 RAG System: {rag_status}\n"
@@ -205,7 +206,7 @@ async def websocket_listener():
     except Exception as e:
         logger.error(f"Failed to create Telegram Bot instance: {e}")
         return
-    
+        
     # Create queue for notifications between WebSocket thread and main thread
     import queue
     notification_queue = queue.Queue()
@@ -218,7 +219,7 @@ async def websocket_listener():
     
     # Get hostname and port
     websocket_server = parsed_url.netloc.split(':')[0]
-    # Hugging Face Space sử dụng cổng 443 mặc định
+    # Hugging Face Space uses port 443 by default
     websocket_port = parsed_url.port if parsed_url.port else (443 if use_wss else 80)
     
     # WebSocket path
@@ -226,8 +227,8 @@ async def websocket_listener():
     
     # Create full URL
     if use_wss:
-        # Cho Hugging Face Space và các dịch vụ HTTPS khác,
-        # không cần chỉ định cổng nếu là 443
+        # For Hugging Face Space and other HTTPS services,
+        # no need to specify port if it's 443
         if websocket_port == 443:
             ws_url = f"wss://{websocket_server}{websocket_path}"
         else:
@@ -246,11 +247,11 @@ async def websocket_listener():
     
     # Define event handlers
     def on_message(ws, message):
+        global websocket_connection
         try:
-            # Kiểm tra xem đây có phải phản hồi keepalive không
+            # Check if this is a keepalive response
             if isinstance(message, str) and message.lower() == "keepalive" or "echo" in message:
                 logger.debug("Received keepalive response")
-                global websocket_connection
                 websocket_connection = True
                 return
             
@@ -258,8 +259,7 @@ async def websocket_listener():
             data = json.loads(message)
             logger.info(f"Received notification: {data}")
             
-            # Cập nhật trạng thái kết nối
-            global websocket_connection
+            # Update connection status
             websocket_connection = True
             
             # Process notification by type
@@ -280,6 +280,7 @@ async def websocket_listener():
                         "first_name": session_data.get('first_name', ''),
                         "last_name": session_data.get('last_name', ''),
                         "user_id": session_data.get('user_id', ''),
+                        "username": session_data.get('username', ''),
                         "created_at": session_data.get('created_at', ''),
                         "question": user_question,
                         "response": user_response,
@@ -290,16 +291,15 @@ async def websocket_listener():
             # Handle non-JSON messages (e.g., keepalive responses)
             logger.debug(f"Received non-JSON message: {message}")
             
-            # Ngay cả khi không phải JSON, vẫn nhận được phản hồi từ server
-            # nên cập nhật trạng thái kết nối
-            global websocket_connection
+            # Even when not JSON, we still got a response from the server
+            # so update connection status
             websocket_connection = True
         except Exception as e:
             logger.error(f"Error processing message: {e}")
     
     def on_error(ws, error):
-        logger.error(f"WebSocket error: {error}")
         global websocket_connection
+        logger.error(f"WebSocket error: {error}")
         websocket_connection = False
         
         # Add error notification to queue
@@ -310,13 +310,13 @@ async def websocket_listener():
             })
     
     def on_close(ws, close_status_code, close_msg):
-        logger.warning(f"WebSocket connection closed: code={close_status_code}, message={close_msg}")
         global websocket_connection
+        logger.warning(f"WebSocket connection closed: code={close_status_code}, message={close_msg}")
         websocket_connection = False
     
     def on_open(ws):
-        logger.info(f"WebSocket connection opened to {ws_url}")
         global websocket_connection
+        logger.info(f"WebSocket connection opened to {ws_url}")
         websocket_connection = True
         
         # Add success notification to queue
@@ -346,22 +346,22 @@ async def websocket_listener():
         # Set the event loop for this thread
         asyncio.set_event_loop(thread_loop)
         
-        # Thêm tính năng backoff để tránh thử kết nối lại quá nhanh
+        # Add backoff feature to prevent reconnecting too quickly
         retry_count = 0
         max_retry_count = 10
         
         while True:
             try:
-                # Reset kết nối nếu đã thử quá nhiều lần
+                # Reset connection if tried too many times
                 if retry_count >= max_retry_count:
                     logger.warning(f"Reached max retry count ({max_retry_count}). Resetting retry counter.")
                     retry_count = 0
-                    time.sleep(30)  # Chờ lâu hơn trước khi thử lại
+                    time.sleep(30)  # Wait longer before retrying
                 
-                # Tạo đối tượng websocket với các tùy chọn SSL nếu cần
-                websocket.enableTrace(True if retry_count > 5 else False)  # Bật trace nếu nhiều lần thử không thành công
+                # Create websocket object with SSL options if needed
+                websocket.enableTrace(True if retry_count > 5 else False)  # Enable trace if many connection attempts failed
                 
-                # Tạo WebSocket app với các đầu mục xử lý sự kiện
+                # Create WebSocket app with event handlers
                 ws = websocket.WebSocketApp(
                     ws_url,
                     on_open=on_open,
@@ -370,29 +370,29 @@ async def websocket_listener():
                     on_close=on_close
                 )
                 
-                # Thêm các tùy chọn SSL nếu dùng wss://
+                # Add SSL options if using wss://
                 if ws_url.startswith("wss://"):
                     logger.info("Using secure WebSocket connection with SSL options")
                     
-                    # Tùy chỉnh các tham số ping để giữ kết nối lâu dài
+                    # Customize ping parameters for long-term connection
                     ws.run_forever(
-                        ping_interval=60,   # Gửi ping mỗi 60 giây
-                        ping_timeout=30,    # Thời gian chờ pong
-                        sslopt={"cert_reqs": 0}  # Bỏ qua xác thực SSL certificate
+                        ping_interval=60,   # Send ping every 60 seconds
+                        ping_timeout=30,    # Timeout for pong
+                        sslopt={"cert_reqs": 0}  # Skip SSL certificate validation
                     )
                 else:
-                    # Chạy với ping/pong bình thường
+                    # Run with normal ping/pong
                     ws.run_forever(ping_interval=60, ping_timeout=30)
                 
-                # Nếu code chạy đến đây, kết nối đã bị đóng
+                # If code reaches here, connection has been closed
                 logger.warning("WebSocket connection lost, reconnecting...")
                 
-                # Tính backoff time dựa trên số lần thử
-                backoff_time = min(5 * (2 ** retry_count), 300)  # Tối đa 5 phút
+                # Calculate backoff time based on retry count
+                backoff_time = min(5 * (2 ** retry_count), 300)  # Maximum 5 minutes
                 logger.info(f"Waiting {backoff_time} seconds before reconnecting...")
                 time.sleep(backoff_time)
                 
-                # Tăng số lần thử kết nối
+                # Increase connection retry count
                 retry_count += 1
                 
             except Exception as e:
@@ -423,9 +423,17 @@ async def websocket_listener():
                     message_text = ""
                     
                     if notification["type"] == "question":
+                        # Format full name
+                        user_full_name = f"{notification['first_name']} {notification['last_name']}".strip()
+                        # Format username with @ if available
+                        username_display = f" (@{notification['username']})" if notification['username'] else ""
+                        
                         message_text = (
-                            f"❓ *Question from {notification['first_name']}*:\n{notification['question']}\n\n"
-                            f"🤖 *System response*:\n{notification['response']}\n\n"
+                            f"🚨 *New announcement!*\n"
+                            f"👤 User: {user_full_name}{username_display}\n"
+                            f"💬 Question: {notification['question']}\n"
+                            f"🤖 System response: {notification['response']}\n"
+                            f"🕒 Time: {notification['created_at']}\n"
                             f"🆔 Session ID: `{notification['session_id']}`"
                         )
                     elif notification["type"] == "error":
@@ -452,4 +460,68 @@ async def websocket_listener():
         
         except Exception as e:
             logger.error(f"Error in main websocket loop: {e}")
-            await asyncio.sleep(5)  # Wait before trying again 
+            await asyncio.sleep(5)  # Wait before trying again
+
+async def check_websocket_connection():
+    """Check the health of the API and its services, log and alert if problems are found."""
+    try:
+        global websocket_connection
+        http_endpoint = API_DATABASE_URL.replace('ws://', 'http://').replace('wss://', 'https://')
+        
+        if not http_endpoint.endswith('/'):
+            health_endpoint = f"{http_endpoint}/health"
+        else:
+            health_endpoint = f"{http_endpoint}health"
+        
+        logger.debug(f"Checking health at: {health_endpoint}")
+        
+        # First check the API health
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(health_endpoint, timeout=10) as response:
+                    if response.status == 200:
+                        health_data = await response.json()
+                        logger.debug(f"Health data: {health_data}")
+                        
+                        # Check MongoDB and RAG status
+                        mongo_status = health_data.get('mongodb', False)
+                        rag_status = health_data.get('rag_system', False)
+                        
+                        status_message = f"📊 Backend Status:\n"
+                        status_message += f"🔄 API: Online ✅\n"
+                        status_message += f"🗄️ MongoDB: {'Online ✅' if mongo_status else 'Offline ❌'}\n"
+                        status_message += f"🧠 RAG System: {'Online ✅' if rag_status else 'Offline ❌'}\n"
+                        status_message += f"🔌 WebSocket: {'Connected ✅' if websocket_connection else 'Disconnected ❌'}"
+                        
+                        if not (mongo_status and rag_status and websocket_connection):
+                            logger.warning(f"Some services are down: MongoDB={mongo_status}, RAG={rag_status}, WebSocket={websocket_connection}")
+                            # Alert admin if we haven't sent an alert recently
+                            current_time = time.time()
+                            global last_alert_time
+                            if current_time - last_alert_time > ALERT_INTERVAL_SECONDS:
+                                await send_status_message(status_message, alert=True)
+                                last_alert_time = current_time
+                        else:
+                            websocket_connection = True
+                            logger.debug("All services are operational")
+                    else:
+                        logger.error(f"Health check failed with status code: {response.status}")
+                        # Alert about API being down
+                        current_time = time.time()
+                        global last_alert_time
+                        if current_time - last_alert_time > ALERT_INTERVAL_SECONDS:
+                            status_message = f"📊 Backend Status:\n🔄 API: Offline ❌ (Status code: {response.status})"
+                            await send_status_message(status_message, alert=True)
+                            last_alert_time = current_time
+        except aiohttp.ClientError as e:
+            logger.error(f"Health check request failed: {e}")
+            # Alert about connection error
+            current_time = time.time()
+            global last_alert_time
+            if current_time - last_alert_time > ALERT_INTERVAL_SECONDS:
+                status_message = f"📊 Backend Status:\n🔄 API: Offline ❌ (Connection error)"
+                await send_status_message(status_message, alert=True)
+                last_alert_time = current_time
+    except Exception as e:
+        logger.error(f"Error in check_websocket_connection: {e}")
+        websocket_connection = False 

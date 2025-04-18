@@ -188,23 +188,23 @@ This bot requires admin privileges and handles sensitive information. All data i
 
 ## Webhook vs. Long Polling
 
-Bot này hỗ trợ cả hai phương thức nhận cập nhật từ Telegram:
+This bot supports both methods for receiving updates from Telegram:
 
-1. **Webhook (Mặc định)**: Telegram gửi cập nhật đến URL của bot khi có tin nhắn mới.
-2. **Long Polling**: Bot liên tục kiểm tra Telegram để xem có cập nhật mới hay không.
+1. **Webhook (Default)**: Telegram sends updates to the bot's URL when new messages arrive.
+2. **Long Polling**: The bot continuously checks Telegram for new updates.
 
-Do các vấn đề với chứng chỉ SSL trên Hugging Face Space, bot hiện đang sử dụng **Long Polling** thay cho Webhook. Điều này được cấu hình tự động khi bot khởi động.
+Due to SSL certificate issues on Hugging Face Space, the bot currently uses **Long Polling** instead of Webhook. This is configured automatically when the bot starts.
 
-### Chuyển đổi giữa Webhook và Long Polling
+### Switching Between Webhook and Long Polling
 
-- Để gỡ bỏ webhook và sử dụng long polling:
+- To remove the webhook and use long polling:
   ```
   python fix_webhook.py
   ```
 
-- Để thiết lập webhook (nếu đã khắc phục vấn đề SSL):
+- To set up a webhook (if SSL issues have been resolved):
   ```
   python setup_webhook.py
   ```
 
-Lưu ý rằng việc sử dụng Long Polling sẽ không ảnh hưởng đến chức năng của bot. 
+Note that using Long Polling will not affect the functionality of the bot. 
