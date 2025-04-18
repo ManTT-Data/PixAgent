@@ -76,7 +76,8 @@ async def log_session(update: Update, action: str, message: str = ""):
             "last_name": user.last_name or "",
             "message": message,
             "user_id": str(user.id),
-            "username": user.username or ""
+            "username": user.username or "",
+            "response": ""  # Thêm trường response trống để tránh lỗi
         }
         
         if API_DATABASE_URL:
@@ -86,7 +87,7 @@ async def log_session(update: Update, action: str, message: str = ""):
             
             try:
                 response = requests.post(endpoint_url, json=session_data)
-                if response.status_code != 200:
+                if response.status_code not in [200, 201]:  # Chấp nhận cả 201 Created
                     logger.warning(f"Failed to log session: {response.status_code} - {response.text}")
                 return session_id
             except Exception as e:
@@ -105,8 +106,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Create main menu keyboard
     keyboard = [
-        [KeyboardButton("Knowledge Portal"), KeyboardButton("Solana Summit Event")],
-        [KeyboardButton("Events"), KeyboardButton("Solana Website")],
+        [KeyboardButton("Da Nang's bucket list"), KeyboardButton("Solana Summit Event")],
+        [KeyboardButton("Events"), KeyboardButton("About Pixity")],
         [KeyboardButton("Emergency"), KeyboardButton("FAQ")]
     ]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
@@ -122,9 +123,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     
     welcome_text = (
-        "Hello! Welcome to Solana SuperTeam Bot. I can help you with "
-        "information about Solana SuperTeam and events.\n\n"
-        f"{commands_text}"
+        "Hello! This is PiXity, your local buddy. I can help you with every information about Da Nang, ask me!"
     )
     
     await update.message.reply_text(welcome_text, reply_markup=reply_markup)
@@ -156,7 +155,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/emergency - List of emergency\n"
         "/help - Display this help\n\n"
         "Bot Features:\n"
-        "• Ask questions about Solana SuperTeam\n"
+        "• Ask questions about Da Nang\n"
         "• Get information about events\n"
         "• Browse through FAQs\n"
         "• Access emergency information"
@@ -164,8 +163,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Create main menu keyboard
     keyboard = [
-        [KeyboardButton("Knowledge Portal"), KeyboardButton("Solana Summit Event")],
-        [KeyboardButton("Events"), KeyboardButton("Solana Website")],
+        [KeyboardButton("Da Nang's bucket list"), KeyboardButton("Solana Summit Event")],
+        [KeyboardButton("Events"), KeyboardButton("About Pixity")],
         [KeyboardButton("Emergency"), KeyboardButton("FAQ")]
     ]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
@@ -195,9 +194,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     
     # Handle menu button presses
-    if text == "Knowledge Portal":
-        await log_session(update, "knowledge_portal")
-        await update.message.reply_text("What do you want to know about Solana?")
+    if text == "Da Nang's bucket list":
+        await log_session(update, "danang_bucket_list")
+        bucket_list = (
+            "📋 Da Nang's bucket list:\n\n"
+            "🏖️ Relax at My Khe Beach\n"
+            "🐉 Watch the Dragon Bridge Breathe Fire\n"
+            "⛰️ Explore the Marble Mountains\n"
+            "🍜 Join a Local Food Tour\n"
+            "🏄‍♂️ Go Stand-Up Paddleboarding (Chèo SUP) at Sunrise & Eat Squid instant noodles\n"
+            "🛒 Stroll Through Han Market\n"
+            "🚣‍♀️ Take a Basket Boat Ride in the Coconut Forest\n"
+            "🏍️ Ride motorbike on the Hai Van Pass\n"
+            "📸 Snap Photos at the Pink Cathedral (Da Nang Cathedral)\n"
+            "🍲 Try Night Street Food at Helio Market\n"
+            "☕ Chill with a Coffee at a Rooftop Café\n"
+            "🏮 Take a Day Trip to Hoi An Ancient Town"
+        )
+        await update.message.reply_text(bucket_list)
     elif text == "Solana Summit Event":
         await log_session(update, "solana_summit")
         await update.message.reply_text("What do you want to know about Solana Summit 2025?")
@@ -210,9 +224,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == "FAQ":
         await log_session(update, "faq")
         await get_faq(update, context)
-    elif text == "Solana Website":
-        await log_session(update, "solana_website")
-        await update.message.reply_text("Visit Solana SuperTeam Vietnam website: https://vn.superteam.fun/")
+    elif text == "About Pixity":
+        await log_session(update, "about_pixity")
+        about_text = (
+            "PiXity is your smart, AI-powered local companion designed to help foreigners navigate life in any city of "
+            "Vietnam with ease, starting with Da Nang. From finding late-night eats to handling visas, housing, and healthcare, "
+            "PiXity bridges the gap in language, culture, and local know-how — so you can explore the city like a true insider.\n\n"
+            "PiXity is proudly built by PiX.teq, the tech team behind PiX — a multidisciplinary collective based in Da Nang.\n\n"
+            "X: x.com/pixity_bot\n"
+            "Instagram: instagram.com/pixity.aibot/\n"
+            "Tiktok: tiktok.com/@pixity.aibot"
+        )
+        await update.message.reply_text(about_text)
     else:
         # Send message to RAG API and get response
         session_id = await log_session(update, "asking_freely", text)
