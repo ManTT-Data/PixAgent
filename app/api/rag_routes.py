@@ -284,7 +284,7 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
             question=request.question,
             chat_history=chat_history
         )
-        logger.info(f"Full prompt with history and context: {prompt_text[:200]}...")
+        logger.info(f"Full prompt with history and context: {prompt_text}")
         
         # Generate response
         response = model.generate_content(prompt_text)
@@ -509,7 +509,7 @@ async def process_rag(request: Request, user_data: UserMessageModel, background_
             question=message,
             chat_history=chat_history
         )
-        logger.info(f"Full prompt with history and context: {prompt_text[:200]}...")
+        logger.info(f"Full prompt with history and context: {prompt_text}")
         
         # Generate response
         response = model.generate_content(prompt_text)

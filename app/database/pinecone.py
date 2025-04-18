@@ -96,7 +96,7 @@ def check_db_connection():
         return False
 
 # Search vectors in Pinecone
-async def search_vectors(query_vector, top_k=3, namespace="", filter=None):
+async def search_vectors(query_vector, top_k=6, namespace="", filter=None):
     """Search for most similar vectors in Pinecone"""
     try:
         # Tạo cache key từ các tham số
@@ -244,10 +244,10 @@ def get_chain(index_name = PINECONE_INDEX_NAME, namespace = "Default"):
             text_key="text" 
         )
         
-        logger.info("Creating retriever with k=10")
+        logger.info("Creating retriever with k=6")
         _retriever_instance = vectorstore.as_retriever(
             search_kwargs={
-                "k": 10  # Tăng từ 6 lên 10 để lấy nhiều kết quả hơn
+                "k": 6  # Tăng từ 6 lên 10 để lấy nhiều kết quả hơn
             }
         )
         
@@ -259,25 +259,5 @@ def get_chain(index_name = PINECONE_INDEX_NAME, namespace = "Default"):
         return _retriever_instance
     except Exception as e:
         logger.error(f"Error creating retrieval chain: {e}")
-        
-        # Try to fall back to FAISS if Pinecone fails
-        try:
-            from langchain.vectorstores import FAISS
-            logger.info("Attempting to fall back to local FAISS index")
-            
-            # Initialize embeddings model
-            embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
-            
-            # Try to load a local FAISS index if it exists
-            vectorstore = FAISS.load_local("faiss_index", embeddings)
-            _retriever_instance = vectorstore.as_retriever(
-                search_kwargs={
-                    "k": 10
-                }
-            )
-            logger.info("FAISS retriever initialized as fallback")
-            return _retriever_instance
-        except Exception as faiss_error:
-            logger.error(f"Error setting up FAISS fallback: {faiss_error}")
             
         return None
