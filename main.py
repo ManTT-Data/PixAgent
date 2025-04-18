@@ -194,6 +194,18 @@ async def websocket_listener():
         logger.error("websocket-client module not installed. Please install it with 'pip install websocket-client'")
         return
     
+    # Tạo đối tượng Bot để sử dụng trong các thread khác
+    try:
+        bot = Bot(token=ADMIN_TELEGRAM_BOT_TOKEN)
+        logger.info("Telegram Bot instance created for notifications")
+    except Exception as e:
+        logger.error(f"Failed to create Telegram Bot instance: {e}")
+        return
+    
+    # Tạo queue để gửi thông báo từ thread WebSocket đến thread chính
+    import queue
+    notification_queue = queue.Queue()
+    
     # Xác định URL WebSocket từ API_DATABASE_URL
     parsed_url = urllib.parse.urlparse(API_DATABASE_URL)
     
@@ -233,16 +245,19 @@ async def websocket_listener():
                 logger.info(f"User {user_name} asked: {user_question}")
                 logger.info(f"System response: {user_response}")
                 
-                # Gửi thông báo đến nhóm admin
+                # Thêm vào queue để xử lý thông báo trong thread chính
                 if ADMIN_GROUP_CHAT_ID:
-                    asyncio.run_coroutine_threadsafe(
-                        send_admin_notification(
-                            session_data=session_data,
-                            user_question=user_question, 
-                            user_response=user_response
-                        ), 
-                        asyncio.get_event_loop()
-                    )
+                    notification = {
+                        "type": "question",
+                        "first_name": session_data.get('first_name', ''),
+                        "last_name": session_data.get('last_name', ''),
+                        "user_id": session_data.get('user_id', ''),
+                        "created_at": session_data.get('created_at', ''),
+                        "question": user_question,
+                        "response": user_response,
+                        "session_id": session_data.get('session_id', '')
+                    }
+                    notification_queue.put(notification)
         except json.JSONDecodeError:
             # Xử lý tin nhắn không phải JSON (ví dụ: keepalive responses)
             logger.debug(f"Received non-JSON message: {message}")
@@ -253,12 +268,12 @@ async def websocket_listener():
         logger.error(f"WebSocket error: {error}")
         websocket_connection = False
         
-        # Thông báo lỗi đến admin group
+        # Thêm thông báo lỗi vào queue
         if ADMIN_GROUP_CHAT_ID:
-            asyncio.run_coroutine_threadsafe(
-                send_error_notification(f"WebSocket error: {error}"),
-                asyncio.get_event_loop()
-            )
+            notification_queue.put({
+                "type": "error",
+                "message": f"WebSocket error: {error}"
+            })
     
     def on_close(ws, close_status_code, close_msg):
         logger.warning(f"WebSocket connection closed: code={close_status_code}, message={close_msg}")
@@ -268,12 +283,12 @@ async def websocket_listener():
         logger.info(f"WebSocket connection opened to {ws_url}")
         websocket_connection = True
         
-        # Thông báo kết nối thành công đến admin group
+        # Thêm thông báo thành công vào queue
         if ADMIN_GROUP_CHAT_ID:
-            asyncio.run_coroutine_threadsafe(
-                send_success_notification("WebSocket connected successfully! Now monitoring user questions."),
-                asyncio.get_event_loop()
-            )
+            notification_queue.put({
+                "type": "success",
+                "message": "WebSocket connected successfully! Now monitoring user questions."
+            })
         
         # Khởi động thread gửi keepalive
         def send_keepalive_thread():
@@ -289,46 +304,6 @@ async def websocket_listener():
                     
         keepalive_thread = threading.Thread(target=send_keepalive_thread, daemon=True)
         keepalive_thread.start()
-    
-    # Định nghĩa hàm hỗ trợ gửi thông báo
-    async def send_admin_notification(session_data, user_question, user_response):
-        try:
-            bot = Bot(token=ADMIN_TELEGRAM_BOT_TOKEN)
-            notification = (
-                f"❓ *Câu hỏi từ {session_data.get('first_name', '')}*:\n{user_question}\n\n"
-                f"🤖 *Phản hồi của hệ thống*:\n{user_response}\n\n"
-                f"🆔 Session ID: `{session_data.get('session_id', '')}`"
-            )
-            await bot.send_message(
-                chat_id=ADMIN_GROUP_CHAT_ID,
-                text=notification,
-                parse_mode="Markdown"
-            )
-            logger.info(f"Notification sent to admin group for session {session_data.get('session_id', '')}")
-        except Exception as e:
-            logger.error(f"Failed to send notification: {e}")
-    
-    async def send_error_notification(error_message):
-        try:
-            bot = Bot(token=ADMIN_TELEGRAM_BOT_TOKEN)
-            await bot.send_message(
-                chat_id=ADMIN_GROUP_CHAT_ID,
-                text=f"❌ {error_message}\nĐang thử kết nối lại sau 5 giây...",
-                parse_mode="Markdown"
-            )
-        except Exception as e:
-            logger.error(f"Failed to send error notification: {e}")
-    
-    async def send_success_notification(message):
-        try:
-            bot = Bot(token=ADMIN_TELEGRAM_BOT_TOKEN)
-            await bot.send_message(
-                chat_id=ADMIN_GROUP_CHAT_ID,
-                text=f"✅ {message}",
-                parse_mode="Markdown"
-            )
-        except Exception as e:
-            logger.error(f"Failed to send success notification: {e}")
     
     # Khởi tạo và chạy WebSocket client trong một vòng lặp để tự động kết nối lại
     def run_websocket_client():
@@ -358,10 +333,51 @@ async def websocket_listener():
     websocket_thread = threading.Thread(target=run_websocket_client, daemon=True)
     websocket_thread.start()
     
-    # Giữ coroutine chạy
+    # Vòng lặp chính để xử lý các thông báo từ queue
     while True:
-        await asyncio.sleep(60)  # Kiểm tra mỗi phút
-        if not websocket_thread.is_alive():
-            logger.warning("WebSocket thread died, restarting...")
-            websocket_thread = threading.Thread(target=run_websocket_client, daemon=True)
-            websocket_thread.start() 
+        try:
+            # Kiểm tra nếu thread WebSocket đã chết
+            if not websocket_thread.is_alive():
+                logger.warning("WebSocket thread died, restarting...")
+                websocket_thread = threading.Thread(target=run_websocket_client, daemon=True)
+                websocket_thread.start()
+            
+            # Xử lý các thông báo trong queue
+            try:
+                # Không chờ quá lâu để có thể kiểm tra thread định kỳ
+                notification = notification_queue.get(timeout=5)
+                
+                if ADMIN_GROUP_CHAT_ID:
+                    message_text = ""
+                    
+                    if notification["type"] == "question":
+                        message_text = (
+                            f"❓ *Câu hỏi từ {notification['first_name']}*:\n{notification['question']}\n\n"
+                            f"🤖 *Phản hồi của hệ thống*:\n{notification['response']}\n\n"
+                            f"🆔 Session ID: `{notification['session_id']}`"
+                        )
+                    elif notification["type"] == "error":
+                        message_text = f"❌ {notification['message']}\nĐang thử kết nối lại sau 5 giây..."
+                    elif notification["type"] == "success":
+                        message_text = f"✅ {notification['message']}"
+                    
+                    if message_text:
+                        await bot.send_message(
+                            chat_id=ADMIN_GROUP_CHAT_ID,
+                            text=message_text,
+                            parse_mode="Markdown"
+                        )
+                        logger.info(f"Notification sent to admin group: {notification['type']}")
+                
+            except queue.Empty:
+                # Timeout chỉ để kiểm tra thread, không phải lỗi
+                pass
+            except Exception as e:
+                logger.error(f"Error processing notification: {e}")
+                
+            # Chờ một chút trước khi kiểm tra lại
+            await asyncio.sleep(1)
+        
+        except Exception as e:
+            logger.error(f"Error in main websocket loop: {e}")
+            await asyncio.sleep(5)  # Đợi trước khi thử lại 
