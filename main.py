@@ -38,6 +38,8 @@ ADMIN_GROUP_CHAT_ID = os.getenv("ADMIN_GROUP_CHAT_ID")
 
 # Global state
 websocket_connection = False
+last_alert_time = 0
+ALERT_INTERVAL_SECONDS = 300  # 5 minutes between alerts
 
 # Helper function to fix URL paths
 def fix_url(base_url, path):
@@ -60,7 +62,7 @@ def get_current_time():
     now = datetime.now()
     return now.strftime("%Y-%m-%d %H:%M:%S")
 
-async def send_status_message(chat_id=None):
+async def send_status_message(chat_id=None, custom_message=None, alert=False):
     """Send a message about the backend connection status."""
     # If no chat ID is provided, use the admin group
     if not chat_id and ADMIN_GROUP_CHAT_ID:
@@ -70,67 +72,75 @@ async def send_status_message(chat_id=None):
         logger.error("No chat ID provided for status message")
         return
     
-    # Default statuses
-    api_status = "❌ Not Connected"
-    db_status = "❌ Not Connected"
-    rag_status = "❌ Not Connected"
-    
-    # Check API health
-    if API_DATABASE_URL:
-        try:
-            # Try health endpoint
-            url = fix_url(API_DATABASE_URL, "/health")
-            logger.info(f"Checking API health at: {url}")
-            
+    # Use custom message if provided, otherwise generate status report
+    if custom_message:
+        status_message = custom_message
+    else:
+        # Default statuses
+        api_status = "❌ Not Connected"
+        db_status = "❌ Not Connected"
+        rag_status = "❌ Not Connected"
+        
+        # Check API health
+        if API_DATABASE_URL:
             try:
-                response = requests.get(url, timeout=10)
-                if response.status_code == 200:
-                    api_status = "✅ Connected"
-                    db_status = "✅ Connected"  # Default if no detailed status
-                    rag_status = "✅ Connected"  # Default if no detailed status
-                    
-                    # Check more specific statuses if needed
-                    try:
-                        # Check MongoDB specific status
-                        mongo_url = fix_url(API_DATABASE_URL, "/mongodb/health")
-                        logger.info(f"Checking MongoDB health at: {mongo_url}")
+                # Try health endpoint
+                url = fix_url(API_DATABASE_URL, "/health")
+                logger.info(f"Checking API health at: {url}")
+                
+                try:
+                    response = requests.get(url, timeout=10)
+                    if response.status_code == 200:
+                        api_status = "✅ Connected"
+                        db_status = "✅ Connected"  # Default if no detailed status
+                        rag_status = "✅ Connected"  # Default if no detailed status
                         
-                        mongo_response = requests.get(mongo_url, timeout=5)
-                        if mongo_response.status_code != 200:
-                            db_status = "⚠️ Partial Connection"
+                        # Check more specific statuses if needed
+                        try:
+                            # Check MongoDB specific status
+                            mongo_url = fix_url(API_DATABASE_URL, "/mongodb/health")
+                            logger.info(f"Checking MongoDB health at: {mongo_url}")
                             
-                        # Check RAG specific status
-                        rag_url = fix_url(API_DATABASE_URL, "/rag/health")
-                        logger.info(f"Checking RAG health at: {rag_url}")
-                        
-                        rag_response = requests.get(rag_url, timeout=5)
-                        if rag_response.status_code == 200:
-                            rag_data = rag_response.json()
-                            rag_status = "✅ Connected" if rag_data.get('status') == "healthy" else "⚠️ Issues Detected"
-                        else:
-                            rag_status = "❌ Not Connected"
-                    except Exception as e:
-                        logger.error(f"Error checking specific health endpoints: {e}")
-                        pass
-                else:
-                    logger.error(f"Health check failed: {response.status_code} - {response.text}")
+                            mongo_response = requests.get(mongo_url, timeout=5)
+                            if mongo_response.status_code != 200:
+                                db_status = "⚠️ Partial Connection"
+                                
+                            # Check RAG specific status
+                            rag_url = fix_url(API_DATABASE_URL, "/rag/health")
+                            logger.info(f"Checking RAG health at: {rag_url}")
+                            
+                            rag_response = requests.get(rag_url, timeout=5)
+                            if rag_response.status_code == 200:
+                                rag_data = rag_response.json()
+                                rag_status = "✅ Connected" if rag_data.get('status') == "healthy" else "⚠️ Issues Detected"
+                            else:
+                                rag_status = "❌ Not Connected"
+                        except Exception as e:
+                            logger.error(f"Error checking specific health endpoints: {e}")
+                            pass
+                    else:
+                        logger.error(f"Health check failed: {response.status_code} - {response.text}")
+                except Exception as e:
+                    logger.error(f"Error checking API health: {e}")
             except Exception as e:
-                logger.error(f"Error checking API health: {e}")
-        except Exception as e:
-            logger.error(f"Error checking backend connection: {e}")
+                logger.error(f"Error checking backend connection: {e}")
+        
+        # Check websocket connection
+        ws_status = "✅ Connected" if websocket_connection else "❌ Not Connected"
+        
+        status_message = (
+            "🤖 *Admin Bot Status Report*\n\n"
+            f"🕒 Time: {get_current_time()}\n"
+            f"🔌 API: {api_status}\n"
+            f"📊 Databases: {db_status}\n"
+            f"🧠 RAG System: {rag_status}\n"
+            f"📡 WebSocket: {ws_status}\n\n"
+            "The bot is monitoring for user activities."
+        )
     
-    # Check websocket connection
-    ws_status = "✅ Connected" if websocket_connection else "❌ Not Connected"
-    
-    status_message = (
-        "🤖 *Admin Bot Status Report*\n\n"
-        f"🕒 Time: {get_current_time()}\n"
-        f"🔌 API: {api_status}\n"
-        f"📊 Databases: {db_status}\n"
-        f"🧠 RAG System: {rag_status}\n"
-        f"📡 WebSocket: {ws_status}\n\n"
-        "The bot is monitoring for user activities."
-    )
+    # Add alert prefix if this is an alert message
+    if alert:
+        status_message = f"⚠️ *ALERT* ⚠️\n\n{status_message}"
     
     try:
         bot = Bot(token=ADMIN_TELEGRAM_BOT_TOKEN)
@@ -181,7 +191,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Received /status command from {update.effective_user.id}")
     
     await update.message.reply_text("Checking backend connections...")
-    await send_status_message(update.effective_chat.id)
+    await send_status_message(chat_id=update.effective_chat.id)
 
 # WebSocket monitoring
 async def websocket_listener():
@@ -465,7 +475,7 @@ async def websocket_listener():
 async def check_websocket_connection():
     """Check the health of the API and its services, log and alert if problems are found."""
     try:
-        global websocket_connection
+        global websocket_connection, last_alert_time
         http_endpoint = API_DATABASE_URL.replace('ws://', 'http://').replace('wss://', 'https://')
         
         if not http_endpoint.endswith('/'):
@@ -497,9 +507,8 @@ async def check_websocket_connection():
                             logger.warning(f"Some services are down: MongoDB={mongo_status}, RAG={rag_status}, WebSocket={websocket_connection}")
                             # Alert admin if we haven't sent an alert recently
                             current_time = time.time()
-                            global last_alert_time
                             if current_time - last_alert_time > ALERT_INTERVAL_SECONDS:
-                                await send_status_message(status_message, alert=True)
+                                await send_status_message(custom_message=status_message, alert=True)
                                 last_alert_time = current_time
                         else:
                             websocket_connection = True
@@ -508,19 +517,17 @@ async def check_websocket_connection():
                         logger.error(f"Health check failed with status code: {response.status}")
                         # Alert about API being down
                         current_time = time.time()
-                        global last_alert_time
                         if current_time - last_alert_time > ALERT_INTERVAL_SECONDS:
                             status_message = f"📊 Backend Status:\n🔄 API: Offline ❌ (Status code: {response.status})"
-                            await send_status_message(status_message, alert=True)
+                            await send_status_message(custom_message=status_message, alert=True)
                             last_alert_time = current_time
         except aiohttp.ClientError as e:
             logger.error(f"Health check request failed: {e}")
             # Alert about connection error
             current_time = time.time()
-            global last_alert_time
             if current_time - last_alert_time > ALERT_INTERVAL_SECONDS:
                 status_message = f"📊 Backend Status:\n🔄 API: Offline ❌ (Connection error)"
-                await send_status_message(status_message, alert=True)
+                await send_status_message(custom_message=status_message, alert=True)
                 last_alert_time = current_time
     except Exception as e:
         logger.error(f"Error in check_websocket_connection: {e}")
