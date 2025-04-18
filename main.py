@@ -57,6 +57,16 @@ def fix_url(base_url, path):
         
     return f"{base_url}/{path}"
 
+def escape_markdown(text):
+    """Escape special characters for Markdown formatting."""
+    if text is None:
+        return ""
+    # Characters that need to be escaped in Markdown v2
+    escape_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
+    for char in escape_chars:
+        text = text.replace(char, f"\\{char}")
+    return text
+
 def get_current_time():
     """Get current time in standard format."""
     now = datetime.now()
@@ -138,8 +148,14 @@ async def send_status_message(chat_id=None, custom_message=None, alert=False):
             "The bot is monitoring for user activities."
         )
     
+    # For normal status messages, escape markdown if needed
+    if not custom_message:
+        status_message = escape_markdown(status_message)
+    
     # Add alert prefix if this is an alert message
     if alert:
+        # When adding alert prefix, make sure not to break Markdown formatting
+        # Use non-escaped asterisks for the ALERT text since we want it bold
         status_message = f"⚠️ *ALERT* ⚠️\n\n{status_message}"
     
     try:
@@ -152,6 +168,20 @@ async def send_status_message(chat_id=None, custom_message=None, alert=False):
         logger.info(f"Status message sent to chat {chat_id}")
     except Exception as e:
         logger.error(f"Failed to send status message: {e}")
+        
+        # If sending with Markdown failed, try again without formatting
+        try:
+            logger.info("Trying to send message without Markdown formatting")
+            # Replace backticks, asterisks and other special characters
+            plain_text = status_message.replace('*', '').replace('`', '').replace('_', '')
+            await bot.send_message(
+                chat_id=chat_id,
+                text=plain_text,
+                parse_mode=None
+            )
+            logger.info("Message sent without formatting")
+        except Exception as fallback_error:
+            logger.error(f"Failed to send even without formatting: {fallback_error}")
 
 # Command handlers
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -438,26 +468,48 @@ async def websocket_listener():
                         # Format username with @ if available
                         username_display = f" (@{notification['username']})" if notification['username'] else ""
                         
+                        # Escape special characters for Markdown
+                        escaped_question = escape_markdown(notification['question'])
+                        escaped_response = escape_markdown(notification['response'])
+                        escaped_session_id = escape_markdown(notification['session_id'])
+                        
                         message_text = (
                             f"🚨 *New announcement!*\n"
-                            f"👤 User: {user_full_name}{username_display}\n"
-                            f"💬 Question: {notification['question']}\n"
-                            f"🤖 System response: {notification['response']}\n"
+                            f"👤 User: {escape_markdown(user_full_name)}{escape_markdown(username_display)}\n"
+                            f"💬 Question: {escaped_question}\n"
+                            f"🤖 System response: {escaped_response}\n"
                             f"🕒 Time: {notification['created_at']}\n"
-                            f"🆔 Session ID: `{notification['session_id']}`"
+                            f"🆔 Session ID: `{escaped_session_id}`"
                         )
                     elif notification["type"] == "error":
-                        message_text = f"❌ {notification['message']}\nTrying to reconnect in 5 seconds..."
+                        message_text = f"❌ {escape_markdown(notification['message'])}\nTrying to reconnect in 5 seconds..."
                     elif notification["type"] == "success":
-                        message_text = f"✅ {notification['message']}"
+                        message_text = f"✅ {escape_markdown(notification['message'])}"
                     
                     if message_text:
-                        await bot.send_message(
-                            chat_id=ADMIN_GROUP_CHAT_ID,
-                            text=message_text,
-                            parse_mode="Markdown"
-                        )
-                        logger.info(f"Notification sent to admin group: {notification['type']}")
+                        try:
+                            await bot.send_message(
+                                chat_id=ADMIN_GROUP_CHAT_ID,
+                                text=message_text,
+                                parse_mode="Markdown"
+                            )
+                            logger.info(f"Notification sent to admin group: {notification['type']}")
+                        except Exception as e:
+                            logger.error(f"Error sending notification: {e}")
+                            
+                            # If sending with Markdown failed, try again without formatting
+                            try:
+                                logger.info("Trying to send notification without Markdown formatting")
+                                # Replace backticks, asterisks and other special characters
+                                plain_text = message_text.replace('*', '').replace('`', '').replace('_', '')
+                                await bot.send_message(
+                                    chat_id=ADMIN_GROUP_CHAT_ID,
+                                    text=plain_text,
+                                    parse_mode=None
+                                )
+                                logger.info("Notification sent without formatting")
+                            except Exception as fallback_error:
+                                logger.error(f"Failed to send notification even without formatting: {fallback_error}")
                 
             except queue.Empty:
                 # Timeout is just for thread checking, not an error
@@ -497,8 +549,9 @@ async def check_websocket_connection():
                         mongo_status = health_data.get('mongodb', False)
                         rag_status = health_data.get('rag_system', False)
                         
-                        status_message = f"📊 Backend Status:\n"
-                        status_message += f"🔄 API: Online ✅\n"
+                        # Create plain text status message (no Markdown formatting)
+                        status_message = "📊 Backend Status:\n"
+                        status_message += "🔄 API: Online ✅\n"
                         status_message += f"🗄️ MongoDB: {'Online ✅' if mongo_status else 'Offline ❌'}\n"
                         status_message += f"🧠 RAG System: {'Online ✅' if rag_status else 'Offline ❌'}\n"
                         status_message += f"🔌 WebSocket: {'Connected ✅' if websocket_connection else 'Disconnected ❌'}"
@@ -518,15 +571,15 @@ async def check_websocket_connection():
                         # Alert about API being down
                         current_time = time.time()
                         if current_time - last_alert_time > ALERT_INTERVAL_SECONDS:
-                            status_message = f"📊 Backend Status:\n🔄 API: Offline ❌ (Status code: {response.status})"
+                            status_message = "📊 Backend Status:\n🔄 API: Offline ❌ (Status code: " + str(response.status) + ")"
                             await send_status_message(custom_message=status_message, alert=True)
                             last_alert_time = current_time
         except aiohttp.ClientError as e:
             logger.error(f"Health check request failed: {e}")
-            # Alert about connection error
+            # Alert about connection error - avoid using the error message directly as it might contain special chars
             current_time = time.time()
             if current_time - last_alert_time > ALERT_INTERVAL_SECONDS:
-                status_message = f"📊 Backend Status:\n🔄 API: Offline ❌ (Connection error)"
+                status_message = "📊 Backend Status:\n🔄 API: Offline ❌ (Connection error)"
                 await send_status_message(custom_message=status_message, alert=True)
                 last_alert_time = current_time
     except Exception as e:
