@@ -63,7 +63,7 @@ async def startup():
     if API_DATABASE_URL:
         logger.info(f"🔗 Database API URL: {API_DATABASE_URL}")
 
-    # --- TỰ ĐỘNG SET TELEGRAM WEBHOOK ---
+    # --- AUTO SET TELEGRAM WEBHOOK ---
     webhook_url = os.getenv("WEBHOOK_URL")
     if webhook_url:
         try:
@@ -107,7 +107,7 @@ async def root():
 @app.head("/", include_in_schema=False)
 async def root_head():
     """
-    Trả về 200 OK cho HEAD /, giúp các công cụ ping like UptimeRobot không bị 405.
+    Returns 200 OK for HEAD /, helps ping tools like UptimeRobot to avoid 405 errors.
     """
     return Response(status_code=200)
 

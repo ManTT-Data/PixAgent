@@ -50,15 +50,15 @@ def fix_url(base_url, path):
     return urljoin(base_url.rstrip('/') + '/', path.lstrip('/'))
 
 # Helper functions
-def get_vietnam_time():
-    """Get current time in Vietnam timezone format."""
+def get_current_time():
+    """Get current time in standard format."""
     now = datetime.now()
     return now.strftime("%Y-%m-%d %H:%M:%S")
 
 def generate_session_id(user_id, timestamp=None):
     """Generate a consistent session ID format."""
     if timestamp is None:
-        timestamp = get_vietnam_time()
+        timestamp = get_current_time()
     return f"{user_id}_{timestamp.replace(' ', '_')}"
 
 async def log_session(update: Update, action: str, message: str = ""):
@@ -71,13 +71,13 @@ async def log_session(update: Update, action: str, message: str = ""):
             "session_id": session_id,
             "factor": "user",
             "action": action,
-            "created_at": get_vietnam_time(),
+            "created_at": get_current_time(),
             "first_name": user.first_name or "",
             "last_name": user.last_name or "",
             "message": message,
             "user_id": str(user.id),
             "username": user.username or "",
-            "response": ""  # Thêm trường response trống để tránh lỗi
+            "response": ""  # Add empty response field to avoid errors
         }
         
         if API_DATABASE_URL:
@@ -87,7 +87,7 @@ async def log_session(update: Update, action: str, message: str = ""):
             
             try:
                 response = requests.post(endpoint_url, json=session_data)
-                if response.status_code not in [200, 201]:  # Chấp nhận cả 201 Created
+                if response.status_code not in [200, 201]:  # Accept both 200 OK and 201 Created
                     logger.warning(f"Failed to log session: {response.status_code} - {response.text}")
                 return session_id
             except Exception as e:
@@ -457,14 +457,14 @@ async def get_rag_response(update: Update, context: ContextTypes.DEFAULT_TYPE, q
             result = response.json()
             answer = result.get("answer", "I couldn't find an answer to your question.")
             
-            # Xử lý định dạng HTML trong câu trả lời
-            # Nếu API trả về dữ liệu có thẻ HTML, chúng ta sẽ dùng parse_mode=HTML
+            # Process HTML formatting in the answer
+            # If the API returns data with HTML tags, we'll use parse_mode=HTML
             use_html_mode = "<" in answer and ">" in answer
             
-            # Xử lý trường hợp API trả về HTML không đúng cú pháp của Telegram
-            # Telegram không cho phép các thẻ lồng ghép không đúng chuẩn
+            # Handle cases where API returns HTML that doesn't comply with Telegram syntax
+            # Telegram doesn't allow improperly nested tags
             if use_html_mode:
-                # Đảm bảo tên người dùng được hiển thị đúng trong các thẻ b, i, u
+                # Ensure usernames are displayed correctly in b, i, u tags
                 parse_mode = "HTML"
                 logger.info("Using HTML parse mode for RAG response")
             else:
@@ -474,7 +474,7 @@ async def get_rag_response(update: Update, context: ContextTypes.DEFAULT_TYPE, q
             # If there are sources, add them to the response
             sources = result.get("sources", [])
             if sources:
-                # Nếu đang sử dụng HTML mode, hãy đảm bảo text sau đó không còn HTML tags
+                # If using HTML mode, ensure text after this doesn't contain HTML tags
                 if use_html_mode:
                     answer += "\n\n<b>Sources:</b>"
                     for i, source in enumerate(sources[:3]):  # Limit to 3 sources
