@@ -488,11 +488,11 @@ async def websocket_listener():
                     
                     if message_text:
                         try:
-                            await bot.send_message(
-                                chat_id=ADMIN_GROUP_CHAT_ID,
-                                text=message_text,
-                                parse_mode="Markdown"
-                            )
+                            # await bot.send_message(
+                            #     chat_id=ADMIN_GROUP_CHAT_ID,
+                            #     text=message_text,
+                            #     parse_mode="Markdown"
+                            # )
                             logger.info(f"Notification sent to admin group: {notification['type']}")
                         except Exception as e:
                             logger.error(f"Error sending notification: {e}")
@@ -502,11 +502,11 @@ async def websocket_listener():
                                 logger.info("Trying to send notification without Markdown formatting")
                                 # Replace backticks, asterisks and other special characters
                                 plain_text = message_text.replace('*', '').replace('`', '').replace('_', '')
-                                await bot.send_message(
-                                    chat_id=ADMIN_GROUP_CHAT_ID,
-                                    text=plain_text,
-                                    parse_mode=None
-                                )
+                                # await bot.send_message(
+                                #     chat_id=ADMIN_GROUP_CHAT_ID,
+                                #     text=plain_text,
+                                #     parse_mode=None
+                                # )
                                 logger.info("Notification sent without formatting")
                             except Exception as fallback_error:
                                 logger.error(f"Failed to send notification even without formatting: {fallback_error}")
