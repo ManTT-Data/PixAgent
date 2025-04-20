@@ -39,6 +39,7 @@ class EventItem(Base):
     date_start = Column(DateTime, nullable=False)
     date_end = Column(DateTime, nullable=True)
     price = Column(JSON, nullable=True)
+    url = Column(String, nullable=True)
     is_active = Column(Boolean, default=True)
     featured = Column(Boolean, default=False)
     created_at = Column(DateTime, server_default=func.now())

@@ -1,3 +1,8 @@
+import logging
+import json
+import traceback
+from datetime import datetime, timedelta, timezone
+
 from fastapi import APIRouter, HTTPException, Depends, Query, Path, Body
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
@@ -9,7 +14,7 @@ from sqlalchemy import text, inspect
 
 from app.database.postgresql import get_db
 from app.database.models import FAQItem, EmergencyItem, EventItem
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -41,8 +46,9 @@ class FAQResponse(FAQBase):
     created_at: datetime
     updated_at: datetime
     
-    # Sử dụng ConfigDict thay vì class Config cho Pydantic V2
-    model_config = ConfigDict(from_attributes=True)
+    # Use class Config for Pydantic v1
+    class Config:
+        orm_mode = True
 
 # Emergency contact models
 class EmergencyBase(BaseModel):
@@ -71,8 +77,9 @@ class EmergencyResponse(EmergencyBase):
     created_at: datetime
     updated_at: datetime
     
-    # Sử dụng ConfigDict thay vì class Config cho Pydantic V2
-    model_config = ConfigDict(from_attributes=True)
+    # Use class Config for Pydantic v1
+    class Config:
+        orm_mode = True
 
 # Event models
 class EventBase(BaseModel):
@@ -83,6 +90,7 @@ class EventBase(BaseModel):
     date_start: datetime
     date_end: Optional[datetime] = None
     price: Optional[List[dict]] = None
+    url: Optional[str] = None
     is_active: bool = True
     featured: bool = False
 
@@ -97,6 +105,7 @@ class EventUpdate(BaseModel):
     date_start: Optional[datetime] = None
     date_end: Optional[datetime] = None
     price: Optional[List[dict]] = None
+    url: Optional[str] = None
     is_active: Optional[bool] = None
     featured: Optional[bool] = None
 
@@ -105,8 +114,9 @@ class EventResponse(EventBase):
     created_at: datetime
     updated_at: datetime
     
-    # Sử dụng ConfigDict thay vì class Config cho Pydantic V2
-    model_config = ConfigDict(from_attributes=True)
+    # Use class Config for Pydantic v1
+    class Config:
+        orm_mode = True
 
 # --- FAQ endpoints ---
 
@@ -158,8 +168,8 @@ async def get_faqs(
         for i, faq in enumerate(faqs[:3]):  # Log the first 3 items
             logger.info(f"FAQ item {i+1}: id={faq.id}, question={faq.question[:30]}...")
         
-        # Convert SQLAlchemy models to Pydantic models - updated for Pydantic v2
-        result = [FAQResponse.model_validate(faq, from_attributes=True) for faq in faqs]
+        # Convert SQLAlchemy models to Pydantic models - for Pydantic v1
+        result = [FAQResponse.from_orm(faq) for faq in faqs]
         return result
     except SQLAlchemyError as e:
         logger.error(f"Database error in get_faqs: {e}")
@@ -183,12 +193,12 @@ async def create_faq(
     - **is_active**: Whether the FAQ is active (default: True)
     """
     try:
-        # Sử dụng model_dump thay vì dict
-        db_faq = FAQItem(**faq.model_dump())
+        # Sử dụng dict thay vì model_dump
+        db_faq = FAQItem(**faq.dict())
         db.add(db_faq)
         db.commit()
         db.refresh(db_faq)
-        return FAQResponse.model_validate(db_faq, from_attributes=True)
+        return FAQResponse.from_orm(db_faq)
     except SQLAlchemyError as e:
         db.rollback()
         logger.error(f"Database error: {e}")
@@ -208,7 +218,7 @@ async def get_faq(
         faq = db.query(FAQItem).filter(FAQItem.id == faq_id).first()
         if not faq:
             raise HTTPException(status_code=404, detail="FAQ item not found")
-        return FAQResponse.model_validate(faq, from_attributes=True)
+        return FAQResponse.from_orm(faq)
     except SQLAlchemyError as e:
         logger.error(f"Database error: {e}")
         raise HTTPException(status_code=500, detail="Database error")
@@ -232,14 +242,14 @@ async def update_faq(
         if not faq:
             raise HTTPException(status_code=404, detail="FAQ item not found")
         
-        # Sử dụng model_dump thay vì dict
-        update_data = faq_update.model_dump(exclude_unset=True)
+        # Sử dụng dict thay vì model_dump
+        update_data = faq_update.dict(exclude_unset=True)
         for key, value in update_data.items():
             setattr(faq, key, value)
             
         db.commit()
         db.refresh(faq)
-        return FAQResponse.model_validate(faq, from_attributes=True)
+        return FAQResponse.from_orm(faq)
     except SQLAlchemyError as e:
         db.rollback()
         logger.error(f"Database error: {e}")
@@ -318,7 +328,9 @@ async def get_emergency_contacts(
         for i, contact in enumerate(emergency_contacts[:3]):  # Log the first 3 items
             logger.info(f"Emergency contact {i+1}: id={contact.id}, name={contact.name}")
         
-        return emergency_contacts
+        # Convert SQLAlchemy models to Pydantic models - for Pydantic v1
+        result = [EmergencyResponse.from_orm(contact) for contact in emergency_contacts]
+        return result
     except SQLAlchemyError as e:
         logger.error(f"Database error in get_emergency_contacts: {e}")
         logger.error(traceback.format_exc())
@@ -345,15 +357,19 @@ async def create_emergency_contact(
     - **is_active**: Whether the contact is active (default: True)
     """
     try:
-        db_emergency = EmergencyItem(**emergency.model_dump())
+        db_emergency = EmergencyItem(**emergency.dict())
         db.add(db_emergency)
         db.commit()
         db.refresh(db_emergency)
-        return db_emergency
+        
+        # Convert SQLAlchemy model to Pydantic model before returning
+        result = EmergencyResponse.from_orm(db_emergency)
+        return result
     except SQLAlchemyError as e:
         db.rollback()
-        logger.error(f"Database error: {e}")
-        raise HTTPException(status_code=500, detail="Failed to create emergency contact")
+        logger.error(f"Database error in create_emergency_contact: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 @router.get("/emergency/{emergency_id}", response_model=EmergencyResponse)
 async def get_emergency_contact(
@@ -369,10 +385,14 @@ async def get_emergency_contact(
         emergency = db.query(EmergencyItem).filter(EmergencyItem.id == emergency_id).first()
         if not emergency:
             raise HTTPException(status_code=404, detail="Emergency contact not found")
-        return emergency
+        
+        # Convert SQLAlchemy model to Pydantic model before returning
+        result = EmergencyResponse.from_orm(emergency)
+        return result
     except SQLAlchemyError as e:
-        logger.error(f"Database error: {e}")
-        raise HTTPException(status_code=500, detail="Database error")
+        logger.error(f"Database error in get_emergency_contact: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 @router.put("/emergency/{emergency_id}", response_model=EmergencyResponse)
 async def update_emergency_contact(
@@ -398,17 +418,21 @@ async def update_emergency_contact(
             raise HTTPException(status_code=404, detail="Emergency contact not found")
         
         # Update fields if provided
-        update_data = emergency_update.model_dump(exclude_unset=True)
+        update_data = emergency_update.dict(exclude_unset=True)
         for key, value in update_data.items():
             setattr(emergency, key, value)
             
         db.commit()
         db.refresh(emergency)
-        return emergency
+        
+        # Convert SQLAlchemy model to Pydantic model before returning
+        result = EmergencyResponse.from_orm(emergency)
+        return result
     except SQLAlchemyError as e:
         db.rollback()
-        logger.error(f"Database error: {e}")
-        raise HTTPException(status_code=500, detail="Failed to update emergency contact")
+        logger.error(f"Database error in update_emergency_contact: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 @router.delete("/emergency/{emergency_id}", response_model=dict)
 async def delete_emergency_contact(
@@ -491,7 +515,9 @@ async def get_events(
         for i, event in enumerate(events[:3]):  # Log the first 3 items
             logger.info(f"Event {i+1}: id={event.id}, name={event.name}, price={type(event.price)}")
         
-        return events
+        # Convert SQLAlchemy models to Pydantic models - for Pydantic v1
+        result = [EventResponse.from_orm(event) for event in events]
+        return result
     except SQLAlchemyError as e:
         logger.error(f"Database error in get_events: {e}")
         logger.error(traceback.format_exc())
@@ -520,15 +546,18 @@ async def create_event(
     - **featured**: Whether the event is featured (default: False)
     """
     try:
-        db_event = EventItem(**event.model_dump())
+        db_event = EventItem(**event.dict())
         db.add(db_event)
         db.commit()
         db.refresh(db_event)
-        return db_event
+        
+        # Convert SQLAlchemy model to Pydantic model before returning
+        result = EventResponse.from_orm(db_event)
+        return result
     except SQLAlchemyError as e:
-        db.rollback()
-        logger.error(f"Database error: {e}")
-        raise HTTPException(status_code=500, detail="Failed to create event")
+        logger.error(f"Database error in create_event: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 @router.get("/events/{event_id}", response_model=EventResponse)
 async def get_event(
@@ -544,48 +573,36 @@ async def get_event(
         event = db.query(EventItem).filter(EventItem.id == event_id).first()
         if not event:
             raise HTTPException(status_code=404, detail="Event not found")
-        return event
+            
+        # Convert SQLAlchemy model to Pydantic model - for Pydantic v1
+        result = EventResponse.from_orm(event)
+        return result
     except SQLAlchemyError as e:
-        logger.error(f"Database error: {e}")
-        raise HTTPException(status_code=500, detail="Database error")
+        logger.error(f"Database error in get_event: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 @router.put("/events/{event_id}", response_model=EventResponse)
-async def update_event(
-    event_id: int = Path(..., gt=0),
-    event_update: EventUpdate = Body(...),
-    db: Session = Depends(get_db)
-):
-    """
-    Update a specific event.
-    
-    - **event_id**: ID of the event to update
-    - **name**: New name (optional)
-    - **description**: New description (optional)
-    - **address**: New address (optional)
-    - **location**: New location coordinates (optional)
-    - **date_start**: New start date and time (optional)
-    - **date_end**: New end date and time (optional)
-    - **price**: New price information (optional JSON object)
-    - **is_active**: New active status (optional)
-    - **featured**: New featured status (optional)
-    """
+def update_event(event_id: int, event: EventUpdate, db: Session = Depends(get_db)):
     try:
-        event = db.query(EventItem).filter(EventItem.id == event_id).first()
-        if not event:
+        db_event = db.query(EventItem).filter(EventItem.id == event_id).first()
+        if not db_event:
             raise HTTPException(status_code=404, detail="Event not found")
-        
-        # Update fields if provided
-        update_data = event_update.model_dump(exclude_unset=True)
-        for key, value in update_data.items():
-            setattr(event, key, value)
+            
+        # Update event fields
+        for key, value in event.dict(exclude_unset=True).items():
+            setattr(db_event, key, value)
             
         db.commit()
-        db.refresh(event)
-        return event
+        db.refresh(db_event)
+        
+        # Convert SQLAlchemy model to Pydantic model before returning
+        result = EventResponse.from_orm(db_event)
+        return result
     except SQLAlchemyError as e:
-        db.rollback()
-        logger.error(f"Database error: {e}")
-        raise HTTPException(status_code=500, detail="Failed to update event")
+        logger.error(f"Database error in update_event: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 @router.delete("/events/{event_id}", response_model=dict)
 async def delete_event(
