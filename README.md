@@ -293,4 +293,69 @@ PORT=7860
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details. 
+This project is licensed under the MIT License - see the LICENSE file for details.
+
+# Advanced Retrieval System
+
+This project now features an enhanced vector retrieval system that improves the quality and relevance of information retrieved from Pinecone using threshold-based filtering and multiple similarity metrics.
+
+## Features
+
+### 1. Threshold-Based Retrieval
+
+The system implements a threshold-based approach to vector retrieval, which:
+- Retrieves a larger candidate set from the vector database
+- Applies a similarity threshold to filter out less relevant results
+- Returns only the most relevant documents that exceed the threshold
+
+### 2. Multiple Similarity Metrics
+
+The system supports multiple similarity metrics:
+- **Cosine Similarity** (default): Measures the cosine of the angle between vectors
+- **Dot Product**: Calculates the dot product between vectors
+- **Euclidean Distance**: Measures the straight-line distance between vectors
+
+Each metric has different characteristics and may perform better for different types of data and queries.
+
+### 3. Score Normalization
+
+For metrics like Euclidean distance where lower values indicate higher similarity, the system automatically normalizes scores to a 0-1 scale where higher values always indicate higher similarity. This makes it easier to compare results across different metrics.
+
+## Configuration
+
+The retrieval system can be configured through environment variables:
+
+```
+# Pinecone retrieval configuration
+PINECONE_DEFAULT_LIMIT_K=10       # Maximum number of candidates to retrieve
+PINECONE_DEFAULT_TOP_K=6          # Number of results to return after filtering
+PINECONE_DEFAULT_SIMILARITY_METRIC=cosine  # Default similarity metric
+PINECONE_DEFAULT_SIMILARITY_THRESHOLD=0.75 # Similarity threshold (0-1)
+PINECONE_ALLOWED_METRICS=cosine,dotproduct,euclidean  # Available metrics
+```
+
+## API Usage
+
+You can customize the retrieval parameters when making API requests:
+
+```json
+{
+  "user_id": "user123",
+  "question": "What are the best restaurants in Da Nang?",
+  "similarity_top_k": 5,
+  "limit_k": 15,
+  "similarity_metric": "cosine",
+  "similarity_threshold": 0.8
+}
+```
+
+## Benefits
+
+1. **Quality Improvement**: Retrieves only the most relevant documents above a certain quality threshold
+2. **Flexibility**: Different similarity metrics can be used for different types of queries
+3. **Efficiency**: Avoids processing irrelevant documents, improving response time
+4. **Configurability**: All parameters can be adjusted via environment variables or at request time
+
+## Implementation Details
+
+The system is implemented as a custom retriever class `ThresholdRetriever` that integrates with LangChain's retrieval infrastructure while providing enhanced functionality. 
