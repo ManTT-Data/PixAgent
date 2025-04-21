@@ -30,8 +30,9 @@ router = APIRouter(
 # Simple memory cache implementation
 class Cache:
     """Simple in-memory cache with expiration"""
-    def __init__(self):
+    def __init__(self, ttl_seconds=300):  # Default TTL: 5 minutes
         self._cache = {}
+        self._ttl = ttl_seconds
     
     def get(self, key, default=None):
         """Get a value from the cache if it exists and is not expired"""
@@ -43,8 +44,10 @@ class Cache:
             del self._cache[key]
         return default
     
-    def set(self, key, value, ttl_seconds=60):
+    def set(self, key, value, ttl_seconds=None):
         """Set a value in the cache with expiry time"""
+        if ttl_seconds is None:
+            ttl_seconds = self._ttl
         expiry = time.time() + ttl_seconds
         self._cache[key] = (expiry, value)
         return value
@@ -54,14 +57,20 @@ class Cache:
         if key in self._cache:
             del self._cache[key]
     
+    def invalidate_by_prefix(self, prefix=""):
+        """Invalidate all cache entries that start with prefix"""
+        keys_to_delete = [k for k in self._cache.keys() if k.startswith(prefix)]
+        for k in keys_to_delete:
+            del self._cache[k]
+    
     def clear(self):
         """Clear the entire cache"""
         self._cache.clear()
 
 # Create cache instances for different entity types
-event_cache = Cache()
-faq_cache = Cache()
-emergency_cache = Cache()
+event_cache = Cache(ttl_seconds=300)  # 5 minutes TTL for events
+faq_cache = Cache(ttl_seconds=600)    # 10 minutes TTL for FAQs
+emergency_cache = Cache(ttl_seconds=600)  # 10 minutes TTL for emergency contacts
 
 # --- Pydantic models for request/response ---
 
@@ -173,6 +182,7 @@ async def get_faqs(
     skip: int = 0, 
     limit: int = 100,
     active_only: bool = False,
+    use_cache: bool = True,
     db: Session = Depends(get_db)
 ):
     """
@@ -181,8 +191,19 @@ async def get_faqs(
     - **skip**: Number of items to skip
     - **limit**: Maximum number of items to return
     - **active_only**: If true, only return active items
+    - **use_cache**: If true, use cached results when available
     """
     try:
+        # Generate cache key based on query parameters
+        cache_key = f"faqs_{skip}_{limit}_{active_only}"
+        
+        # Try to get from cache if caching is enabled
+        if use_cache:
+            cached_result = faq_cache.get(cache_key)
+            if cached_result:
+                logger.info(f"Cache hit for {cache_key}")
+                return cached_result
+        
         # Build query directly without excessive logging or inspection
         query = db.query(FAQItem)
         
@@ -199,6 +220,11 @@ async def get_faqs(
         
         # Convert to Pydantic models
         result = [FAQResponse.from_orm(faq) for faq in faqs]
+        
+        # Store in cache if caching is enabled
+        if use_cache:
+            faq_cache.set(cache_key, result)
+            
         return result
     except SQLAlchemyError as e:
         logger.error(f"Database error in get_faqs: {e}")
@@ -228,6 +254,9 @@ async def create_faq(
         db.commit()
         db.refresh(db_faq)
         
+        # Invalidate FAQ cache after creating a new item
+        faq_cache.clear()
+        
         # Convert to Pydantic model
         return FAQResponse.from_orm(db_faq)
     except SQLAlchemyError as e:
@@ -239,14 +268,26 @@ async def create_faq(
 @router.get("/faq/{faq_id}", response_model=FAQResponse)
 async def get_faq(
     faq_id: int = Path(..., gt=0),
+    use_cache: bool = True,
     db: Session = Depends(get_db)
 ):
     """
     Get a specific FAQ item by ID.
     
     - **faq_id**: ID of the FAQ item
+    - **use_cache**: If true, use cached results when available
     """
     try:
+        # Generate cache key
+        cache_key = f"faq_{faq_id}"
+        
+        # Try to get from cache if caching is enabled
+        if use_cache:
+            cached_result = faq_cache.get(cache_key)
+            if cached_result:
+                logger.info(f"Cache hit for {cache_key}")
+                return cached_result
+        
         # Use direct SQL query for better performance on single item lookup
         stmt = text("SELECT * FROM faq_item WHERE id = :id")
         result = db.execute(stmt, {"id": faq_id}).fetchone()
@@ -261,7 +302,13 @@ async def get_faq(
                 setattr(faq, key, value)
                 
         # Convert to Pydantic model
-        return FAQResponse.from_orm(faq)
+        response = FAQResponse.from_orm(faq)
+        
+        # Store in cache if caching is enabled
+        if use_cache:
+            faq_cache.set(cache_key, response)
+            
+        return response
     except SQLAlchemyError as e:
         logger.error(f"Database error in get_faq: {e}")
         logger.error(traceback.format_exc())
@@ -296,6 +343,10 @@ async def update_faq(
         db.commit()
         db.refresh(faq)
         
+        # Invalidate specific cache entries
+        faq_cache.delete(f"faq_{faq_id}")
+        faq_cache.clear()  # Clear all list caches
+        
         # Convert to Pydantic model
         return FAQResponse.from_orm(faq)
     except SQLAlchemyError as e:
@@ -325,6 +376,11 @@ async def delete_faq(
             raise HTTPException(status_code=404, detail="FAQ item not found")
         
         db.commit()
+        
+        # Invalidate cache entries
+        faq_cache.delete(f"faq_{faq_id}")
+        faq_cache.clear()  # Clear all list caches
+        
         return {"status": "success", "message": f"FAQ item {faq_id} deleted"}
     except SQLAlchemyError as e:
         db.rollback()
@@ -339,6 +395,7 @@ async def get_emergency_contacts(
     skip: int = 0, 
     limit: int = 100,
     active_only: bool = False,
+    use_cache: bool = True,
     db: Session = Depends(get_db)
 ):
     """
@@ -347,8 +404,19 @@ async def get_emergency_contacts(
     - **skip**: Number of items to skip
     - **limit**: Maximum number of items to return
     - **active_only**: If true, only return active items
+    - **use_cache**: If true, use cached results when available
     """
     try:
+        # Generate cache key based on query parameters
+        cache_key = f"emergency_{skip}_{limit}_{active_only}"
+        
+        # Try to get from cache if caching is enabled
+        if use_cache:
+            cached_result = emergency_cache.get(cache_key)
+            if cached_result:
+                logger.info(f"Cache hit for {cache_key}")
+                return cached_result
+                
         # Build query directly without excessive inspection and logging
         query = db.query(EmergencyItem)
         
@@ -365,6 +433,11 @@ async def get_emergency_contacts(
         
         # Convert to Pydantic models efficiently
         result = [EmergencyResponse.from_orm(contact) for contact in emergency_contacts]
+        
+        # Store in cache if caching is enabled
+        if use_cache:
+            emergency_cache.set(cache_key, result)
+            
         return result
     except SQLAlchemyError as e:
         logger.error(f"Database error in get_emergency_contacts: {e}")
@@ -397,6 +470,9 @@ async def create_emergency_contact(
         db.commit()
         db.refresh(db_emergency)
         
+        # Invalidate emergency cache after creating a new item
+        emergency_cache.clear()
+        
         # Convert SQLAlchemy model to Pydantic model before returning
         result = EmergencyResponse.from_orm(db_emergency)
         return result
@@ -409,14 +485,26 @@ async def create_emergency_contact(
 @router.get("/emergency/{emergency_id}", response_model=EmergencyResponse)
 async def get_emergency_contact(
     emergency_id: int = Path(..., gt=0),
+    use_cache: bool = True,
     db: Session = Depends(get_db)
 ):
     """
     Get a specific emergency contact by ID.
     
     - **emergency_id**: ID of the emergency contact
+    - **use_cache**: If true, use cached results when available
     """
     try:
+        # Generate cache key
+        cache_key = f"emergency_{emergency_id}"
+        
+        # Try to get from cache if caching is enabled
+        if use_cache:
+            cached_result = emergency_cache.get(cache_key)
+            if cached_result:
+                logger.info(f"Cache hit for {cache_key}")
+                return cached_result
+                
         # Use direct SQL query for better performance on single item lookup
         stmt = text("SELECT * FROM emergency_item WHERE id = :id")
         result = db.execute(stmt, {"id": emergency_id}).fetchone()
@@ -431,7 +519,13 @@ async def get_emergency_contact(
                 setattr(emergency, key, value)
                 
         # Convert to Pydantic model
-        return EmergencyResponse.from_orm(emergency)
+        response = EmergencyResponse.from_orm(emergency)
+        
+        # Store in cache if caching is enabled
+        if use_cache:
+            emergency_cache.set(cache_key, response)
+            
+        return response
     except SQLAlchemyError as e:
         logger.error(f"Database error in get_emergency_contact: {e}")
         logger.error(traceback.format_exc())
@@ -468,6 +562,10 @@ async def update_emergency_contact(
         db.commit()
         db.refresh(emergency)
         
+        # Invalidate specific cache entries
+        emergency_cache.delete(f"emergency_{emergency_id}")
+        emergency_cache.clear()  # Clear all list caches
+        
         # Convert to Pydantic model
         return EmergencyResponse.from_orm(emergency)
     except SQLAlchemyError as e:
@@ -497,6 +595,11 @@ async def delete_emergency_contact(
             raise HTTPException(status_code=404, detail="Emergency contact not found")
         
         db.commit()
+        
+        # Invalidate cache entries
+        emergency_cache.delete(f"emergency_{emergency_id}")
+        emergency_cache.clear()  # Clear all list caches
+        
         return {"status": "success", "message": f"Emergency contact {emergency_id} deleted"}
     except SQLAlchemyError as e:
         db.rollback()
@@ -839,4 +942,267 @@ async def health_check(db: Session = Depends(get_db)):
         return {"status": "healthy", "message": "PostgreSQL connection is working", "timestamp": datetime.now().isoformat()}
     except Exception as e:
         logger.error(f"PostgreSQL health check failed: {e}")
-        raise HTTPException(status_code=503, detail=f"PostgreSQL connection failed: {str(e)}") 
+        raise HTTPException(status_code=503, detail=f"PostgreSQL connection failed: {str(e)}")
+
+# Add BatchFAQCreate class to model definitions
+class BatchFAQCreate(BaseModel):
+    faqs: List[FAQCreate]
+
+# Add after delete_faq endpoint
+@router.post("/faqs/batch", response_model=List[FAQResponse])
+async def batch_create_faqs(
+    batch: BatchFAQCreate,
+    db: Session = Depends(get_db)
+):
+    """
+    Create multiple FAQ items in a single database transaction.
+    
+    This is much more efficient than creating FAQ items one at a time with separate API calls.
+    """
+    try:
+        db_faqs = []
+        for faq_data in batch.faqs:
+            db_faq = FAQItem(**faq_data.dict())
+            db.add(db_faq)
+            db_faqs.append(db_faq)
+        
+        # Commit all FAQ items in a single transaction
+        db.commit()
+        
+        # Refresh all FAQ items to get their IDs and other generated fields
+        for db_faq in db_faqs:
+            db.refresh(db_faq)
+        
+        # Invalidate FAQ cache
+        faq_cache.clear()
+        
+        # Convert SQLAlchemy models to Pydantic models
+        result = [FAQResponse.from_orm(faq) for faq in db_faqs]
+        return result
+    except SQLAlchemyError as e:
+        db.rollback()
+        logger.error(f"Database error in batch_create_faqs: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+@router.put("/faqs/batch-update-status", response_model=BatchUpdateResult)
+async def batch_update_faq_status(
+    faq_ids: List[int] = Body(..., embed=True),
+    is_active: bool = Body(..., embed=True),
+    db: Session = Depends(get_db)
+):
+    """
+    Update the active status of multiple FAQ items at once.
+    
+    This is much more efficient than updating FAQ items one at a time.
+    """
+    try:
+        if not faq_ids:
+            raise HTTPException(status_code=400, detail="No FAQ IDs provided")
+        
+        # Prepare the update statement
+        stmt = text("""
+            UPDATE faq_item 
+            SET is_active = :is_active, updated_at = NOW()
+            WHERE id = ANY(:faq_ids)
+            RETURNING id
+        """)
+        
+        # Execute the update in a single query
+        result = db.execute(stmt, {"is_active": is_active, "faq_ids": faq_ids})
+        updated_ids = [row[0] for row in result]
+        
+        # Commit the transaction
+        db.commit()
+        
+        # Determine which IDs weren't found
+        failed_ids = [id for id in faq_ids if id not in updated_ids]
+        
+        # Invalidate FAQ cache
+        faq_cache.clear()
+        
+        return BatchUpdateResult(
+            success_count=len(updated_ids),
+            failed_ids=failed_ids,
+            message=f"Updated {len(updated_ids)} FAQ items" if updated_ids else "No FAQ items were updated"
+        )
+    except SQLAlchemyError as e:
+        db.rollback()
+        logger.error(f"Database error in batch_update_faq_status: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+@router.delete("/faqs/batch", response_model=BatchUpdateResult)
+async def batch_delete_faqs(
+    faq_ids: List[int] = Body(..., embed=True),
+    db: Session = Depends(get_db)
+):
+    """
+    Delete multiple FAQ items at once.
+    
+    This is much more efficient than deleting FAQ items one at a time with separate API calls.
+    """
+    try:
+        if not faq_ids:
+            raise HTTPException(status_code=400, detail="No FAQ IDs provided")
+        
+        # Prepare and execute the delete statement with RETURNING to get deleted IDs
+        stmt = text("""
+            DELETE FROM faq_item
+            WHERE id = ANY(:faq_ids)
+            RETURNING id
+        """)
+        
+        result = db.execute(stmt, {"faq_ids": faq_ids})
+        deleted_ids = [row[0] for row in result]
+        
+        # Commit the transaction
+        db.commit()
+        
+        # Determine which IDs weren't found
+        failed_ids = [id for id in faq_ids if id not in deleted_ids]
+        
+        # Invalidate FAQ cache
+        faq_cache.clear()
+        
+        return BatchUpdateResult(
+            success_count=len(deleted_ids),
+            failed_ids=failed_ids,
+            message=f"Deleted {len(deleted_ids)} FAQ items" if deleted_ids else "No FAQ items were deleted"
+        )
+    except SQLAlchemyError as e:
+        db.rollback()
+        logger.error(f"Database error in batch_delete_faqs: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+# Add BatchEmergencyCreate class to the Pydantic models section
+class BatchEmergencyCreate(BaseModel):
+    emergency_contacts: List[EmergencyCreate]
+
+@router.post("/emergency/batch", response_model=List[EmergencyResponse])
+async def batch_create_emergency_contacts(
+    batch: BatchEmergencyCreate,
+    db: Session = Depends(get_db)
+):
+    """
+    Create multiple emergency contacts in a single database transaction.
+    
+    This is much more efficient than creating emergency contacts one at a time with separate API calls.
+    """
+    try:
+        db_emergency_contacts = []
+        for emergency_data in batch.emergency_contacts:
+            db_emergency = EmergencyItem(**emergency_data.dict())
+            db.add(db_emergency)
+            db_emergency_contacts.append(db_emergency)
+        
+        # Commit all emergency contacts in a single transaction
+        db.commit()
+        
+        # Refresh all items to get their IDs and other generated fields
+        for db_emergency in db_emergency_contacts:
+            db.refresh(db_emergency)
+        
+        # Invalidate emergency cache
+        emergency_cache.clear()
+        
+        # Convert SQLAlchemy models to Pydantic models
+        result = [EmergencyResponse.from_orm(emergency) for emergency in db_emergency_contacts]
+        return result
+    except SQLAlchemyError as e:
+        db.rollback()
+        logger.error(f"Database error in batch_create_emergency_contacts: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+@router.put("/emergency/batch-update-status", response_model=BatchUpdateResult)
+async def batch_update_emergency_status(
+    emergency_ids: List[int] = Body(..., embed=True),
+    is_active: bool = Body(..., embed=True),
+    db: Session = Depends(get_db)
+):
+    """
+    Update the active status of multiple emergency contacts at once.
+    
+    This is much more efficient than updating emergency contacts one at a time.
+    """
+    try:
+        if not emergency_ids:
+            raise HTTPException(status_code=400, detail="No emergency contact IDs provided")
+        
+        # Prepare the update statement
+        stmt = text("""
+            UPDATE emergency_item 
+            SET is_active = :is_active, updated_at = NOW()
+            WHERE id = ANY(:emergency_ids)
+            RETURNING id
+        """)
+        
+        # Execute the update in a single query
+        result = db.execute(stmt, {"is_active": is_active, "emergency_ids": emergency_ids})
+        updated_ids = [row[0] for row in result]
+        
+        # Commit the transaction
+        db.commit()
+        
+        # Determine which IDs weren't found
+        failed_ids = [id for id in emergency_ids if id not in updated_ids]
+        
+        # Invalidate emergency cache
+        emergency_cache.clear()
+        
+        return BatchUpdateResult(
+            success_count=len(updated_ids),
+            failed_ids=failed_ids,
+            message=f"Updated {len(updated_ids)} emergency contacts" if updated_ids else "No emergency contacts were updated"
+        )
+    except SQLAlchemyError as e:
+        db.rollback()
+        logger.error(f"Database error in batch_update_emergency_status: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+@router.delete("/emergency/batch", response_model=BatchUpdateResult)
+async def batch_delete_emergency_contacts(
+    emergency_ids: List[int] = Body(..., embed=True),
+    db: Session = Depends(get_db)
+):
+    """
+    Delete multiple emergency contacts at once.
+    
+    This is much more efficient than deleting emergency contacts one at a time with separate API calls.
+    """
+    try:
+        if not emergency_ids:
+            raise HTTPException(status_code=400, detail="No emergency contact IDs provided")
+        
+        # Prepare and execute the delete statement with RETURNING to get deleted IDs
+        stmt = text("""
+            DELETE FROM emergency_item
+            WHERE id = ANY(:emergency_ids)
+            RETURNING id
+        """)
+        
+        result = db.execute(stmt, {"emergency_ids": emergency_ids})
+        deleted_ids = [row[0] for row in result]
+        
+        # Commit the transaction
+        db.commit()
+        
+        # Determine which IDs weren't found
+        failed_ids = [id for id in emergency_ids if id not in deleted_ids]
+        
+        # Invalidate emergency cache
+        emergency_cache.clear()
+        
+        return BatchUpdateResult(
+            success_count=len(deleted_ids),
+            failed_ids=failed_ids,
+            message=f"Deleted {len(deleted_ids)} emergency contacts" if deleted_ids else "No emergency contacts were deleted"
+        )
+    except SQLAlchemyError as e:
+        db.rollback()
+        logger.error(f"Database error in batch_delete_emergency_contacts: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}") 
