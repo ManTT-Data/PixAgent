@@ -18,6 +18,9 @@ COPY requirements.txt .
 # Cài đặt các gói Python
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Ensure langchain-core is installed
+RUN pip install --no-cache-dir langchain-core==0.1.19
+
 # Sao chép toàn bộ code vào container
 COPY . .
 

@@ -7,8 +7,14 @@ class ChatRequest(BaseModel):
     question: str = Field(..., description="User's question")
     include_history: bool = Field(True, description="Whether to include user history in prompt")
     use_rag: bool = Field(True, description="Whether to use RAG")
-    similarity_top_k: int = Field(3, description="Number of top similar documents to retrieve")
-    vector_distance_threshold: float = Field(0.75, description="Threshold for vector similarity")
+    
+    # Advanced retrieval parameters
+    similarity_top_k: int = Field(6, description="Number of top similar documents to return (after filtering)")
+    limit_k: int = Field(10, description="Maximum number of documents to retrieve from vector store")
+    similarity_metric: str = Field("cosine", description="Similarity metric to use (cosine, dotproduct, euclidean)")
+    similarity_threshold: float = Field(0.75, description="Threshold for vector similarity (0-1)")
+    
+    # User information
     session_id: Optional[str] = Field(None, description="Session ID for tracking conversations")
     first_name: Optional[str] = Field(None, description="User's first name")
     last_name: Optional[str] = Field(None, description="User's last name")
@@ -18,7 +24,8 @@ class SourceDocument(BaseModel):
     """Model for source documents"""
     text: str = Field(..., description="Text content of the document")
     source: Optional[str] = Field(None, description="Source of the document")
-    score: Optional[float] = Field(None, description="Score of the document")
+    score: Optional[float] = Field(None, description="Raw similarity score of the document")
+    normalized_score: Optional[float] = Field(None, description="Normalized similarity score (0-1)")
     metadata: Optional[Dict[str, Any]] = Field(None, description="Metadata of the document")
 
 class ChatResponse(BaseModel):
@@ -52,4 +59,10 @@ class UserMessageModel(BaseModel):
     """Model for user messages sent to the RAG API"""
     user_id: str = Field(..., description="User ID from the client application")
     session_id: str = Field(..., description="Session ID for tracking the conversation")
-    message: str = Field(..., description="User's message/question") 
+    message: str = Field(..., description="User's message/question")
+    
+    # Advanced retrieval parameters (optional)
+    similarity_top_k: Optional[int] = Field(None, description="Number of top similar documents to return (after filtering)")
+    limit_k: Optional[int] = Field(None, description="Maximum number of documents to retrieve from vector store")
+    similarity_metric: Optional[str] = Field(None, description="Similarity metric to use (cosine, dotproduct, euclidean)")
+    similarity_threshold: Optional[float] = Field(None, description="Threshold for vector similarity (0-1)") 

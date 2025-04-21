@@ -17,6 +17,11 @@ from app.database.mongodb import get_user_history, get_chat_history, get_request
 from app.database.pinecone import (
     search_vectors, 
     get_chain, 
+    DEFAULT_TOP_K,
+    DEFAULT_LIMIT_K,
+    DEFAULT_SIMILARITY_METRIC,
+    DEFAULT_SIMILARITY_THRESHOLD,
+    ALLOWED_METRICS
 )
 from app.models.rag_models import (
     ChatRequest,
@@ -146,8 +151,10 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
     - **question**: User's question
     - **include_history**: Whether to include user history in prompt (default: True)
     - **use_rag**: Whether to use RAG (default: True)
-    - **similarity_top_k**: Number of top similar documents to retrieve (default: 3)
-    - **vector_distance_threshold**: Threshold for vector similarity (default: 0.75)
+    - **similarity_top_k**: Number of top similar documents to return after filtering (default: 6)
+    - **limit_k**: Maximum number of documents to retrieve from vector store (default: 10)
+    - **similarity_metric**: Similarity metric to use - cosine, dotproduct, euclidean (default: cosine)
+    - **similarity_threshold**: Threshold for vector similarity (default: 0.75)
     - **session_id**: Optional session ID for tracking conversations
     - **first_name**: User's first name
     - **last_name**: User's last name
@@ -156,7 +163,7 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
     start_time = time.time()
     try:
         # Create cache key for request
-        cache_key = f"rag_chat:{request.user_id}:{request.question}:{request.include_history}:{request.use_rag}"
+        cache_key = f"rag_chat:{request.user_id}:{request.question}:{request.include_history}:{request.use_rag}:{request.similarity_top_k}:{request.limit_k}:{request.similarity_metric}:{request.similarity_threshold}"
         
         # Check cache using redis_client instead of cache
         cached_response = await redis_client.get(cache_key)
@@ -207,8 +214,13 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
         
         # Use the RAG pipeline
         if request.use_rag:
-            # Get the retriever
-            retriever = get_chain()
+            # Get the retriever with custom parameters
+            retriever = get_chain(
+                top_k=request.similarity_top_k,
+                limit_k=request.limit_k,
+                similarity_metric=request.similarity_metric,
+                similarity_threshold=request.similarity_threshold
+            )
             if not retriever:
                 raise HTTPException(status_code=500, detail="Failed to initialize retriever")
             
@@ -228,12 +240,18 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
                 
                 if hasattr(doc, 'metadata'):
                     source = doc.metadata.get('source', None)
-                    metadata = {k: v for k, v in doc.metadata.items() if k not in ['text', 'source']}
+                    # Extract score information
+                    score = doc.metadata.get('score', None)
+                    normalized_score = doc.metadata.get('normalized_score', None)
+                    # Remove score info from metadata to avoid duplication
+                    metadata = {k: v for k, v in doc.metadata.items() 
+                               if k not in ['text', 'source', 'score', 'normalized_score']}
                 
                 sources.append(SourceDocument(
                     text=doc.page_content,
                     source=source,
-                    score=getattr(doc, 'score', None),
+                    score=score,
+                    normalized_score=normalized_score,
                     metadata=metadata
                 ))
         else:
@@ -374,7 +392,13 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
 @router.get("/health")
 async def health_check():
     """
-    Check health of RAG services.
+    Check health of RAG services and retrieval system.
+    
+    Returns:
+        - status: "healthy" if all services are working, "degraded" otherwise
+        - services: Status of each service (gemini, pinecone)
+        - retrieval_config: Current retrieval configuration
+        - timestamp: Current time
     """
     services = {
         "gemini": False,
@@ -403,28 +427,56 @@ async def health_check():
     except Exception as e:
         logger.error(f"Pinecone health check failed: {e}")
     
+    # Get retrieval configuration
+    retrieval_config = {
+        "default_top_k": DEFAULT_TOP_K,
+        "default_limit_k": DEFAULT_LIMIT_K,
+        "default_similarity_metric": DEFAULT_SIMILARITY_METRIC,
+        "default_similarity_threshold": DEFAULT_SIMILARITY_THRESHOLD,
+        "allowed_metrics": ALLOWED_METRICS
+    }
+    
     # Return health status
     status = "healthy" if all(services.values()) else "degraded"
     return {
         "status": status, 
-        "services": services, 
+        "services": services,
+        "retrieval_config": retrieval_config,
         "timestamp": datetime.now().isoformat()
     }
 
 @router.post("/rag")
 async def process_rag(request: Request, user_data: UserMessageModel, background_tasks: BackgroundTasks):
-    """Process a user message through the RAG pipeline and return a response."""
+    """
+    Process a user message through the RAG pipeline and return a response.
+    
+    Parameters:
+    - **user_id**: User ID from the client application
+    - **session_id**: Session ID for tracking the conversation
+    - **message**: User's message/question
+    - **similarity_top_k**: (Optional) Number of top similar documents to return after filtering
+    - **limit_k**: (Optional) Maximum number of documents to retrieve from vector store
+    - **similarity_metric**: (Optional) Similarity metric to use (cosine, dotproduct, euclidean)
+    - **similarity_threshold**: (Optional) Threshold for vector similarity (0-1)
+    """
     try:
         # Extract request data
         user_id = user_data.user_id
         session_id = user_data.session_id
         message = user_data.message
         
+        # Extract retrieval parameters (use defaults if not provided)
+        top_k = user_data.similarity_top_k or DEFAULT_TOP_K
+        limit_k = user_data.limit_k or DEFAULT_LIMIT_K
+        similarity_metric = user_data.similarity_metric or DEFAULT_SIMILARITY_METRIC
+        similarity_threshold = user_data.similarity_threshold or DEFAULT_SIMILARITY_THRESHOLD
+        
         logger.info(f"RAG request received for user_id={user_id}, session_id={session_id}")
         logger.info(f"Message: {message[:100]}..." if len(message) > 100 else f"Message: {message}")
+        logger.info(f"Retrieval parameters: top_k={top_k}, limit_k={limit_k}, metric={similarity_metric}, threshold={similarity_threshold}")
         
         # Create a cache key for this request to avoid reprocessing identical questions
-        cache_key = f"rag_{user_id}_{session_id}_{hashlib.md5(message.encode()).hexdigest()}"
+        cache_key = f"rag_{user_id}_{session_id}_{hashlib.md5(message.encode()).hexdigest()}_{top_k}_{limit_k}_{similarity_metric}_{similarity_threshold}"
         
         # Check if we have this response cached
         cached_result = await redis_client.get(cache_key)
@@ -448,141 +500,39 @@ async def process_rag(request: Request, user_data: UserMessageModel, background_
                 username="",
                 response=None  # No response yet
             )
-            logger.info(f"User message saved for session {session_id}")
+            logger.info(f"User message saved to MongoDB with session_id: {session_id}")
         except Exception as e:
-            logger.error(f"Error saving user message to MongoDB: {e}")
-            # Continue processing even if saving fails
+            logger.error(f"Error saving user message: {e}")
+            # Continue anyway to try to get a response
         
-        # Get relevant docs using retriever
-        retriever = get_chain()
-        if not retriever:
-            raise HTTPException(status_code=500, detail="Failed to initialize retriever")
-            
-        # Get request history for context
-        context_query = get_request_history(user_id) or message
-        logger.info(f"Using context query for retrieval: {context_query[:100]}...")
-        
-        # Retrieve relevant documents
-        retrieved_docs = retriever.invoke(context_query)
-        context = "\n".join([doc.page_content for doc in retrieved_docs])
-        
-        # Get chat history
-        chat_history = get_chat_history(user_id)
-        logger.info(f"Using chat history: {chat_history[:100]}...")
-        
-        # Initialize Gemini model
-        generation_config = {
-            "temperature": 0.9,
-            "top_p": 1,
-            "top_k": 1,
-            "max_output_tokens": 2048,
-        }
-
-        safety_settings = [
-            {
-                "category": "HARM_CATEGORY_HARASSMENT",
-                "threshold": "BLOCK_MEDIUM_AND_ABOVE"
-            },
-            {
-                "category": "HARM_CATEGORY_HATE_SPEECH",
-                "threshold": "BLOCK_MEDIUM_AND_ABOVE"
-            },
-            {
-                "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-                "threshold": "BLOCK_MEDIUM_AND_ABOVE"
-            },
-            {
-                "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
-                "threshold": "BLOCK_MEDIUM_AND_ABOVE"
-            },
-        ]
-
-        model = genai.GenerativeModel(
-            model_name='models/gemini-2.0-flash',
-            generation_config=generation_config,
-            safety_settings=safety_settings
-        )
-        
-        # Generate the prompt using template
-        prompt_text = prompt.format(
-            context=context,
+        # Create a ChatRequest object to reuse the existing chat endpoint
+        chat_request = ChatRequest(
+            user_id=user_id,
             question=message,
-            chat_history=chat_history
+            include_history=True,
+            use_rag=True,
+            similarity_top_k=top_k,
+            limit_k=limit_k,
+            similarity_metric=similarity_metric,
+            similarity_threshold=similarity_threshold,
+            session_id=session_id
         )
-        logger.info(f"Full prompt with history and context: {prompt_text}")
         
-        # Generate response
-        response = model.generate_content(prompt_text)
-        answer = response.text
+        # Process through the chat endpoint
+        response = await chat(chat_request, background_tasks)
         
-        # Save the RAG response
+        # Cache the response
         try:
-            # Now save the RAG response with the same session_id
-            save_session(
-                session_id=session_id,
-                factor="rag",
-                action="RAG_response",
-                first_name="User",
-                last_name="",
-                message=message,
-                user_id=user_id,
-                username="",
-                response=answer
-            )
-            logger.info(f"RAG response saved for session {session_id}")
-            
-            # Check if the response starts with "I don't know" and trigger notification
-            if answer.strip().lower().startswith("i don't know"):
-                from app.api.websocket_routes import send_notification
-                notification_data = {
-                    "session_id": session_id,
-                    "factor": "rag",
-                    "action": "RAG_response",
-                    "message": message,
-                    "user_id": user_id,
-                    "username": "",
-                    "first_name": "User",
-                    "last_name": "",
-                    "response": answer,
-                    "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                }
-                background_tasks.add_task(send_notification, notification_data)
-                logger.info(f"Notification queued for session {session_id} - response starts with 'I don't know'")
+            await redis_client.set(cache_key, json.dumps({
+                "answer": response.answer,
+                "processing_time": response.processing_time
+            }))
+            logger.info(f"Cached response for key: {cache_key}")
         except Exception as e:
-            logger.error(f"Error saving RAG response to session: {e}")
-            # Continue processing even if saving fails
+            logger.error(f"Failed to cache response: {e}")
         
-        # Prepare sources for the response
-        sources = []
-        for doc in retrieved_docs:
-            source = None
-            metadata = {}
-            
-            if hasattr(doc, 'metadata'):
-                source = doc.metadata.get('source', None)
-                metadata = {k: v for k, v in doc.metadata.items() if k not in ['text', 'source']}
-            
-            sources.append({
-                "text": doc.page_content[:200] + "..." if len(doc.page_content) > 200 else doc.page_content,
-                "source": source,
-                "score": getattr(doc, 'score', None),
-                "metadata": metadata
-            })
-        
-        # Create response
-        result = {
-            "answer": answer,
-            "sources": sources
-        }
-        
-        # Cache the result
-        result_json = json.dumps(result)
-        await redis_client.set(cache_key, result_json, ex=300)
-        logger.info(f"Result cached with key {cache_key}")
-        
-        return result
-    
+        return response
     except Exception as e:
-        logger.error(f"Error in RAG process: {str(e)}")
+        logger.error(f"Error processing RAG request: {e}")
         logger.error(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=f"RAG processing error: {str(e)}") 
+        raise HTTPException(status_code=500, detail=f"Error processing request: {str(e)}") 
