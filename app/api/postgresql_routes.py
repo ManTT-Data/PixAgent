@@ -2,6 +2,8 @@ import logging
 import json
 import traceback
 from datetime import datetime, timedelta, timezone
+import time
+from functools import lru_cache
 
 from fastapi import APIRouter, HTTPException, Depends, Query, Path, Body
 from sqlalchemy.orm import Session
@@ -10,7 +12,7 @@ from typing import List, Optional, Dict, Any
 import logging
 import traceback
 from datetime import datetime
-from sqlalchemy import text, inspect
+from sqlalchemy import text, inspect, func
 
 from app.database.postgresql import get_db
 from app.database.models import FAQItem, EmergencyItem, EventItem
@@ -24,6 +26,42 @@ router = APIRouter(
     prefix="/postgres",
     tags=["PostgreSQL"],
 )
+
+# Simple memory cache implementation
+class Cache:
+    """Simple in-memory cache with expiration"""
+    def __init__(self):
+        self._cache = {}
+    
+    def get(self, key, default=None):
+        """Get a value from the cache if it exists and is not expired"""
+        if key in self._cache:
+            expiry, value = self._cache[key]
+            if expiry > time.time():
+                return value
+            # Remove expired item
+            del self._cache[key]
+        return default
+    
+    def set(self, key, value, ttl_seconds=60):
+        """Set a value in the cache with expiry time"""
+        expiry = time.time() + ttl_seconds
+        self._cache[key] = (expiry, value)
+        return value
+    
+    def delete(self, key):
+        """Delete a key from the cache"""
+        if key in self._cache:
+            del self._cache[key]
+    
+    def clear(self):
+        """Clear the entire cache"""
+        self._cache.clear()
+
+# Create cache instances for different entity types
+event_cache = Cache()
+faq_cache = Cache()
+emergency_cache = Cache()
 
 # --- Pydantic models for request/response ---
 
@@ -118,6 +156,16 @@ class EventResponse(EventBase):
     class Config:
         orm_mode = True
 
+# --- Batch operations for better performance ---
+
+class BatchEventCreate(BaseModel):
+    events: List[EventCreate]
+
+class BatchUpdateResult(BaseModel):
+    success_count: int
+    failed_ids: List[int] = []
+    message: str
+
 # --- FAQ endpoints ---
 
 @router.get("/faq", response_model=List[FAQResponse])
@@ -135,40 +183,21 @@ async def get_faqs(
     - **active_only**: If true, only return active items
     """
     try:
-        # Log detailed connection info
-        logger.info(f"Attempting to fetch FAQs with skip={skip}, limit={limit}, active_only={active_only}")
-        
-        # Check if the FAQItem table exists
-        inspector = inspect(db.bind)
-        if not inspector.has_table("faq_item"):
-            logger.error("The faq_item table does not exist in the database")
-            raise HTTPException(status_code=500, detail="Table 'faq_item' does not exist")
-        
-        # Log table columns
-        columns = inspector.get_columns("faq_item")
-        logger.info(f"faq_item table columns: {[c['name'] for c in columns]}")
-        
-        # Query the FAQs with detailed logging
+        # Build query directly without excessive logging or inspection
         query = db.query(FAQItem)
+        
+        # Add filter if needed
         if active_only:
             query = query.filter(FAQItem.is_active == True)
         
-        # Try direct SQL to debug
-        try:
-            test_result = db.execute(text("SELECT COUNT(*) FROM faq_item")).scalar()
-            logger.info(f"SQL test query succeeded, found {test_result} FAQ items")
-        except Exception as sql_error:
-            logger.error(f"SQL test query failed: {sql_error}")
+        # Get total count for pagination
+        count_query = query.with_entities(func.count(FAQItem.id))
+        total_count = count_query.scalar()
         
-        # Execute the ORM query
+        # Execute query with pagination
         faqs = query.offset(skip).limit(limit).all()
-        logger.info(f"Successfully fetched {len(faqs)} FAQ items")
         
-        # Check what we're returning
-        for i, faq in enumerate(faqs[:3]):  # Log the first 3 items
-            logger.info(f"FAQ item {i+1}: id={faq.id}, question={faq.question[:30]}...")
-        
-        # Convert SQLAlchemy models to Pydantic models - for Pydantic v1
+        # Convert to Pydantic models
         result = [FAQResponse.from_orm(faq) for faq in faqs]
         return result
     except SQLAlchemyError as e:
@@ -193,16 +222,19 @@ async def create_faq(
     - **is_active**: Whether the FAQ is active (default: True)
     """
     try:
-        # Sử dụng dict thay vì model_dump
+        # Create new FAQ item
         db_faq = FAQItem(**faq.dict())
         db.add(db_faq)
         db.commit()
         db.refresh(db_faq)
+        
+        # Convert to Pydantic model
         return FAQResponse.from_orm(db_faq)
     except SQLAlchemyError as e:
         db.rollback()
-        logger.error(f"Database error: {e}")
-        raise HTTPException(status_code=500, detail="Failed to create FAQ item")
+        logger.error(f"Database error in create_faq: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 @router.get("/faq/{faq_id}", response_model=FAQResponse)
 async def get_faq(
@@ -215,13 +247,25 @@ async def get_faq(
     - **faq_id**: ID of the FAQ item
     """
     try:
-        faq = db.query(FAQItem).filter(FAQItem.id == faq_id).first()
-        if not faq:
+        # Use direct SQL query for better performance on single item lookup
+        stmt = text("SELECT * FROM faq_item WHERE id = :id")
+        result = db.execute(stmt, {"id": faq_id}).fetchone()
+        
+        if not result:
             raise HTTPException(status_code=404, detail="FAQ item not found")
+        
+        # Create a FAQItem model instance manually
+        faq = FAQItem()
+        for key, value in result._mapping.items():
+            if hasattr(faq, key):
+                setattr(faq, key, value)
+                
+        # Convert to Pydantic model
         return FAQResponse.from_orm(faq)
     except SQLAlchemyError as e:
-        logger.error(f"Database error: {e}")
-        raise HTTPException(status_code=500, detail="Database error")
+        logger.error(f"Database error in get_faq: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 @router.put("/faq/{faq_id}", response_model=FAQResponse)
 async def update_faq(
@@ -238,22 +282,27 @@ async def update_faq(
     - **is_active**: New active status (optional)
     """
     try:
+        # Check if FAQ exists
         faq = db.query(FAQItem).filter(FAQItem.id == faq_id).first()
         if not faq:
             raise HTTPException(status_code=404, detail="FAQ item not found")
         
-        # Sử dụng dict thay vì model_dump
+        # Update fields with optimized dict handling
         update_data = faq_update.dict(exclude_unset=True)
         for key, value in update_data.items():
             setattr(faq, key, value)
             
+        # Commit changes
         db.commit()
         db.refresh(faq)
+        
+        # Convert to Pydantic model
         return FAQResponse.from_orm(faq)
     except SQLAlchemyError as e:
         db.rollback()
-        logger.error(f"Database error: {e}")
-        raise HTTPException(status_code=500, detail="Failed to update FAQ item")
+        logger.error(f"Database error in update_faq: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 @router.delete("/faq/{faq_id}", response_model=dict)
 async def delete_faq(
@@ -266,17 +315,22 @@ async def delete_faq(
     - **faq_id**: ID of the FAQ item to delete
     """
     try:
-        faq = db.query(FAQItem).filter(FAQItem.id == faq_id).first()
-        if not faq:
+        # Use optimized query with proper error handling
+        result = db.execute(
+            text("DELETE FROM faq_item WHERE id = :id RETURNING id"),
+            {"id": faq_id}
+        ).fetchone()
+        
+        if not result:
             raise HTTPException(status_code=404, detail="FAQ item not found")
         
-        db.delete(faq)
         db.commit()
         return {"status": "success", "message": f"FAQ item {faq_id} deleted"}
     except SQLAlchemyError as e:
         db.rollback()
-        logger.error(f"Database error: {e}")
-        raise HTTPException(status_code=500, detail="Failed to delete FAQ item")
+        logger.error(f"Database error in delete_faq: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 # --- Emergency endpoints ---
 
@@ -295,40 +349,21 @@ async def get_emergency_contacts(
     - **active_only**: If true, only return active items
     """
     try:
-        # Log detailed connection info
-        logger.info(f"Attempting to fetch emergency contacts with skip={skip}, limit={limit}, active_only={active_only}")
-        
-        # Check if the EmergencyItem table exists
-        inspector = inspect(db.bind)
-        if not inspector.has_table("emergency_item"):
-            logger.error("The emergency_item table does not exist in the database")
-            raise HTTPException(status_code=500, detail="Table 'emergency_item' does not exist")
-        
-        # Log table columns
-        columns = inspector.get_columns("emergency_item")
-        logger.info(f"emergency_item table columns: {[c['name'] for c in columns]}")
-        
-        # Try direct SQL to debug
-        try:
-            test_result = db.execute(text("SELECT COUNT(*) FROM emergency_item")).scalar()
-            logger.info(f"SQL test query succeeded, found {test_result} emergency contacts")
-        except Exception as sql_error:
-            logger.error(f"SQL test query failed: {sql_error}")
-        
-        # Query the emergency contacts
+        # Build query directly without excessive inspection and logging
         query = db.query(EmergencyItem)
+        
+        # Add filters if needed
         if active_only:
             query = query.filter(EmergencyItem.is_active == True)
         
-        # Execute the ORM query
-        emergency_contacts = query.offset(skip).limit(limit).all()
-        logger.info(f"Successfully fetched {len(emergency_contacts)} emergency contacts")
+        # Get total count for pagination info
+        count_query = query.with_entities(func.count(EmergencyItem.id))
+        total_count = count_query.scalar()
         
-        # Check what we're returning
-        for i, contact in enumerate(emergency_contacts[:3]):  # Log the first 3 items
-            logger.info(f"Emergency contact {i+1}: id={contact.id}, name={contact.name}")
+        # Order by priority for proper sorting
+        emergency_contacts = query.order_by(EmergencyItem.priority.desc()).offset(skip).limit(limit).all()
         
-        # Convert SQLAlchemy models to Pydantic models - for Pydantic v1
+        # Convert to Pydantic models efficiently
         result = [EmergencyResponse.from_orm(contact) for contact in emergency_contacts]
         return result
     except SQLAlchemyError as e:
@@ -382,13 +417,21 @@ async def get_emergency_contact(
     - **emergency_id**: ID of the emergency contact
     """
     try:
-        emergency = db.query(EmergencyItem).filter(EmergencyItem.id == emergency_id).first()
-        if not emergency:
+        # Use direct SQL query for better performance on single item lookup
+        stmt = text("SELECT * FROM emergency_item WHERE id = :id")
+        result = db.execute(stmt, {"id": emergency_id}).fetchone()
+        
+        if not result:
             raise HTTPException(status_code=404, detail="Emergency contact not found")
         
-        # Convert SQLAlchemy model to Pydantic model before returning
-        result = EmergencyResponse.from_orm(emergency)
-        return result
+        # Create an EmergencyItem model instance manually
+        emergency = EmergencyItem()
+        for key, value in result._mapping.items():
+            if hasattr(emergency, key):
+                setattr(emergency, key, value)
+                
+        # Convert to Pydantic model
+        return EmergencyResponse.from_orm(emergency)
     except SQLAlchemyError as e:
         logger.error(f"Database error in get_emergency_contact: {e}")
         logger.error(traceback.format_exc())
@@ -425,9 +468,8 @@ async def update_emergency_contact(
         db.commit()
         db.refresh(emergency)
         
-        # Convert SQLAlchemy model to Pydantic model before returning
-        result = EmergencyResponse.from_orm(emergency)
-        return result
+        # Convert to Pydantic model
+        return EmergencyResponse.from_orm(emergency)
     except SQLAlchemyError as e:
         db.rollback()
         logger.error(f"Database error in update_emergency_contact: {e}")
@@ -445,17 +487,22 @@ async def delete_emergency_contact(
     - **emergency_id**: ID of the emergency contact to delete
     """
     try:
-        emergency = db.query(EmergencyItem).filter(EmergencyItem.id == emergency_id).first()
-        if not emergency:
+        # Use optimized direct SQL with RETURNING for better performance
+        result = db.execute(
+            text("DELETE FROM emergency_item WHERE id = :id RETURNING id"),
+            {"id": emergency_id}
+        ).fetchone()
+        
+        if not result:
             raise HTTPException(status_code=404, detail="Emergency contact not found")
         
-        db.delete(emergency)
         db.commit()
         return {"status": "success", "message": f"Emergency contact {emergency_id} deleted"}
     except SQLAlchemyError as e:
         db.rollback()
-        logger.error(f"Database error: {e}")
-        raise HTTPException(status_code=500, detail="Failed to delete emergency contact")
+        logger.error(f"Database error in delete_emergency_contact: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 # --- Event endpoints ---
 
@@ -465,6 +512,7 @@ async def get_events(
     limit: int = 100,
     active_only: bool = False,
     featured_only: bool = False,
+    use_cache: bool = True,
     db: Session = Depends(get_db)
 ):
     """
@@ -474,49 +522,41 @@ async def get_events(
     - **limit**: Maximum number of items to return
     - **active_only**: If true, only return active items
     - **featured_only**: If true, only return featured items
+    - **use_cache**: If true, use cached results when available
     """
     try:
-        # Log detailed connection info
-        logger.info(f"Attempting to fetch events with skip={skip}, limit={limit}, active_only={active_only}, featured_only={featured_only}")
+        # Generate cache key based on query parameters
+        cache_key = f"events_{skip}_{limit}_{active_only}_{featured_only}"
         
-        # Check if the EventItem table exists
-        inspector = inspect(db.bind)
-        if not inspector.has_table("event_item"):
-            logger.error("The event_item table does not exist in the database")
-            raise HTTPException(status_code=500, detail="Table 'event_item' does not exist")
+        # Try to get from cache if caching is enabled
+        if use_cache:
+            cached_result = event_cache.get(cache_key)
+            if cached_result:
+                return cached_result
         
-        # Log table columns
-        columns = inspector.get_columns("event_item")
-        logger.info(f"event_item table columns: {[c['name'] for c in columns]}")
-        
-        # Try direct SQL to debug
-        try:
-            test_result = db.execute(text("SELECT COUNT(*) FROM event_item")).scalar()
-            logger.info(f"SQL test query succeeded, found {test_result} events")
-        except Exception as sql_error:
-            logger.error(f"SQL test query failed: {sql_error}")
-        
-        # Query the events
+        # Build query directly without excessive inspection and logging
         query = db.query(EventItem)
+        
+        # Add filters if needed
         if active_only:
             query = query.filter(EventItem.is_active == True)
         if featured_only:
             query = query.filter(EventItem.featured == True)
         
-        # Execute the ORM query
-        events = query.offset(skip).limit(limit).all()
-        logger.info(f"Successfully fetched {len(events)} events")
+        # To improve performance, first fetch just IDs with COUNT
+        count_query = query.with_entities(func.count(EventItem.id))
+        total_count = count_query.scalar()
         
-        # Debug price field of first event
-        if events and len(events) > 0:
-            logger.info(f"First event price type: {type(events[0].price)}, value: {events[0].price}")
+        # Now get the actual data with pagination
+        events = query.order_by(EventItem.date_start.desc()).offset(skip).limit(limit).all()
         
-        # Check what we're returning
-        for i, event in enumerate(events[:3]):  # Log the first 3 items
-            logger.info(f"Event {i+1}: id={event.id}, name={event.name}, price={type(event.price)}")
-        
-        # Convert SQLAlchemy models to Pydantic models - for Pydantic v1
+        # Convert to Pydantic models efficiently
         result = [EventResponse.from_orm(event) for event in events]
+        
+        # Store in cache if caching is enabled (30 seconds TTL for events list)
+        if use_cache:
+            event_cache.set(cache_key, result, ttl_seconds=30)
+            
         return result
     except SQLAlchemyError as e:
         logger.error(f"Database error in get_events: {e}")
@@ -551,6 +591,9 @@ async def create_event(
         db.commit()
         db.refresh(db_event)
         
+        # Invalidate relevant caches on create
+        event_cache.clear()
+        
         # Convert SQLAlchemy model to Pydantic model before returning
         result = EventResponse.from_orm(db_event)
         return result
@@ -562,28 +605,59 @@ async def create_event(
 @router.get("/events/{event_id}", response_model=EventResponse)
 async def get_event(
     event_id: int = Path(..., gt=0),
+    use_cache: bool = True,
     db: Session = Depends(get_db)
 ):
     """
     Get a specific event by ID.
     
     - **event_id**: ID of the event
+    - **use_cache**: If true, use cached results when available
     """
     try:
-        event = db.query(EventItem).filter(EventItem.id == event_id).first()
-        if not event:
+        # Generate cache key
+        cache_key = f"event_{event_id}"
+        
+        # Try to get from cache if caching is enabled
+        if use_cache:
+            cached_result = event_cache.get(cache_key)
+            if cached_result:
+                return cached_result
+        
+        # Use direct SQL query for better performance on single item lookup
+        # This avoids SQLAlchemy overhead and takes advantage of primary key lookup
+        stmt = text("SELECT * FROM event_item WHERE id = :id")
+        result = db.execute(stmt, {"id": event_id}).fetchone()
+        
+        if not result:
             raise HTTPException(status_code=404, detail="Event not found")
+        
+        # Create an EventItem model instance manually from the result
+        event = EventItem()
+        for key, value in result._mapping.items():
+            if hasattr(event, key):
+                setattr(event, key, value)
+                
+        # Convert SQLAlchemy model to Pydantic model
+        response = EventResponse.from_orm(event)
+        
+        # Store in cache if caching is enabled (60 seconds TTL for single event)
+        if use_cache:
+            event_cache.set(cache_key, response, ttl_seconds=60)
             
-        # Convert SQLAlchemy model to Pydantic model - for Pydantic v1
-        result = EventResponse.from_orm(event)
-        return result
+        return response
     except SQLAlchemyError as e:
         logger.error(f"Database error in get_event: {e}")
         logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 @router.put("/events/{event_id}", response_model=EventResponse)
-def update_event(event_id: int, event: EventUpdate, db: Session = Depends(get_db)):
+def update_event(
+    event_id: int, 
+    event: EventUpdate, 
+    db: Session = Depends(get_db)
+):
+    """Update an existing event."""
     try:
         db_event = db.query(EventItem).filter(EventItem.id == event_id).first()
         if not db_event:
@@ -595,6 +669,10 @@ def update_event(event_id: int, event: EventUpdate, db: Session = Depends(get_db
             
         db.commit()
         db.refresh(db_event)
+        
+        # Invalidate specific cache entries
+        event_cache.delete(f"event_{event_id}")
+        event_cache.clear()  # Clear all list caches
         
         # Convert SQLAlchemy model to Pydantic model before returning
         result = EventResponse.from_orm(db_event)
@@ -609,11 +687,7 @@ async def delete_event(
     event_id: int = Path(..., gt=0),
     db: Session = Depends(get_db)
 ):
-    """
-    Delete a specific event.
-    
-    - **event_id**: ID of the event to delete
-    """
+    """Delete a specific event."""
     try:
         event = db.query(EventItem).filter(EventItem.id == event_id).first()
         if not event:
@@ -621,11 +695,136 @@ async def delete_event(
         
         db.delete(event)
         db.commit()
+        
+        # Invalidate cache entries
+        event_cache.delete(f"event_{event_id}")
+        event_cache.clear()  # Clear all list caches
+        
         return {"status": "success", "message": f"Event {event_id} deleted"}
     except SQLAlchemyError as e:
         db.rollback()
         logger.error(f"Database error: {e}")
         raise HTTPException(status_code=500, detail="Failed to delete event")
+
+# --- Batch operations for better performance ---
+
+@router.post("/events/batch", response_model=List[EventResponse])
+async def batch_create_events(
+    batch: BatchEventCreate,
+    db: Session = Depends(get_db)
+):
+    """
+    Create multiple events in a single database transaction.
+    
+    This is much more efficient than creating events one at a time with separate API calls.
+    """
+    try:
+        db_events = []
+        for event_data in batch.events:
+            db_event = EventItem(**event_data.dict())
+            db.add(db_event)
+            db_events.append(db_event)
+        
+        # Commit all events in a single transaction
+        db.commit()
+        
+        # Refresh all events to get their IDs and other generated fields
+        for db_event in db_events:
+            db.refresh(db_event)
+        
+        # Convert SQLAlchemy models to Pydantic models
+        result = [EventResponse.from_orm(event) for event in db_events]
+        return result
+    except SQLAlchemyError as e:
+        db.rollback()
+        logger.error(f"Database error in batch_create_events: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+@router.put("/events/batch-update-status", response_model=BatchUpdateResult)
+async def batch_update_event_status(
+    event_ids: List[int] = Body(..., embed=True),
+    is_active: bool = Body(..., embed=True),
+    db: Session = Depends(get_db)
+):
+    """
+    Update the active status of multiple events at once.
+    
+    This is much more efficient than updating events one at a time.
+    """
+    try:
+        if not event_ids:
+            raise HTTPException(status_code=400, detail="No event IDs provided")
+        
+        # Prepare the update statement
+        stmt = text("""
+            UPDATE event_item 
+            SET is_active = :is_active, updated_at = NOW()
+            WHERE id = ANY(:event_ids)
+            RETURNING id
+        """)
+        
+        # Execute the update in a single query
+        result = db.execute(stmt, {"is_active": is_active, "event_ids": event_ids})
+        updated_ids = [row[0] for row in result]
+        
+        # Commit the transaction
+        db.commit()
+        
+        # Determine which IDs weren't found
+        failed_ids = [id for id in event_ids if id not in updated_ids]
+        
+        return BatchUpdateResult(
+            success_count=len(updated_ids),
+            failed_ids=failed_ids,
+            message=f"Updated {len(updated_ids)} events" if updated_ids else "No events were updated"
+        )
+    except SQLAlchemyError as e:
+        db.rollback()
+        logger.error(f"Database error in batch_update_event_status: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+@router.delete("/events/batch", response_model=BatchUpdateResult)
+async def batch_delete_events(
+    event_ids: List[int] = Body(..., embed=True),
+    db: Session = Depends(get_db)
+):
+    """
+    Delete multiple events at once.
+    
+    This is much more efficient than deleting events one at a time with separate API calls.
+    """
+    try:
+        if not event_ids:
+            raise HTTPException(status_code=400, detail="No event IDs provided")
+        
+        # Prepare and execute the delete statement with RETURNING to get deleted IDs
+        stmt = text("""
+            DELETE FROM event_item
+            WHERE id = ANY(:event_ids)
+            RETURNING id
+        """)
+        
+        result = db.execute(stmt, {"event_ids": event_ids})
+        deleted_ids = [row[0] for row in result]
+        
+        # Commit the transaction
+        db.commit()
+        
+        # Determine which IDs weren't found
+        failed_ids = [id for id in event_ids if id not in deleted_ids]
+        
+        return BatchUpdateResult(
+            success_count=len(deleted_ids),
+            failed_ids=failed_ids,
+            message=f"Deleted {len(deleted_ids)} events" if deleted_ids else "No events were deleted"
+        )
+    except SQLAlchemyError as e:
+        db.rollback()
+        logger.error(f"Database error in batch_delete_events: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 # Health check endpoint
 @router.get("/health")
