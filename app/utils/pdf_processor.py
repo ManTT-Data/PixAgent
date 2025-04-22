@@ -36,7 +36,7 @@ class PDFProcessor:
             logger.error(f"Lỗi khi kết nối Pinecone: {str(e)}")
             return False
             
-    async def process_pdf(self, file_path, document_id=None, metadata=None):
+    async def process_pdf(self, file_path, document_id=None, metadata=None, progress_callback=None):
         """
         Xử lý file PDF, chia thành chunks và tạo embeddings
         
@@ -44,6 +44,7 @@ class PDFProcessor:
             file_path (str): Đường dẫn tới file PDF
             document_id (str, optional): ID của tài liệu, nếu không cung cấp sẽ tạo ID mới
             metadata (dict, optional): Metadata bổ sung cho tài liệu
+            progress_callback (callable, optional): Callback function để cập nhật tiến độ
             
         Returns:
             dict: Thông tin kết quả xử lý gồm document_id và số chunks đã xử lý
@@ -60,6 +61,9 @@ class PDFProcessor:
             
             # Đọc file PDF bằng PyPDFLoader
             logger.info(f"Đang đọc file PDF: {file_path}")
+            if progress_callback:
+                progress_callback("pdf_loading", 0.5, "Loading PDF file")
+                
             loader = PyPDFLoader(file_path)
             pages = loader.load()
             
@@ -68,15 +72,25 @@ class PDFProcessor:
             for page in pages:
                 all_text += page.page_content + "\n"
             
+            if progress_callback:
+                progress_callback("text_extraction", 0.6, "Extracted text from PDF")
+                
             # Chia văn bản thành các chunk
             text_splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=300)
             chunks = text_splitter.split_text(all_text)
             
             logger.info(f"Đã chia file PDF thành {len(chunks)} chunks")
+            if progress_callback:
+                progress_callback("chunking", 0.7, f"Split document into {len(chunks)} chunks")
             
             # Xử lý embedding cho từng chunk và upsert lên Pinecone
             vectors = []
             for i, chunk in enumerate(chunks):
+                # Cập nhật tiến độ embedding
+                if progress_callback and i % 5 == 0:  # Cập nhật sau mỗi 5 chunks để tránh quá nhiều thông báo
+                    embedding_progress = 0.7 + (0.3 * (i / len(chunks)))
+                    progress_callback("embedding", embedding_progress, f"Processing chunk {i+1}/{len(chunks)}")
+                
                 # Tạo vector embedding cho từng chunk
                 vector = embeddings_model.embed_query(chunk)
                 
@@ -111,6 +125,10 @@ class PDFProcessor:
             
             logger.info(f"Đã embedding và lưu {len(chunks)} chunks từ PDF với document_id: {document_id}")
             
+            # Final progress update
+            if progress_callback:
+                progress_callback("completed", 1.0, "PDF processing complete")
+            
             return {
                 "success": True,
                 "document_id": document_id,
@@ -120,6 +138,8 @@ class PDFProcessor:
             
         except Exception as e:
             logger.error(f"Lỗi khi xử lý PDF: {str(e)}")
+            if progress_callback:
+                progress_callback("error", 0, f"Error processing PDF: {str(e)}")
             return {
                 "success": False,
                 "error": str(e)

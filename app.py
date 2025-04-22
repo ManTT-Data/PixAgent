@@ -64,11 +64,9 @@ async def lifespan(app: FastAPI):
     # Startup: kiểm tra kết nối các database
     logger.info("Starting application...")
     db_status = check_database_connections()
-    if all(db_status.values()):
-        logger.info("All database connections are working")
     
     # Khởi tạo bảng trong cơ sở dữ liệu (nếu chưa tồn tại)
-    if DEBUG:  # Chỉ khởi tạo bảng trong chế độ debug
+    if DEBUG and all(db_status.values()):  # Chỉ khởi tạo bảng trong chế độ debug và khi tất cả kết nối DB thành công
         from app.database.postgresql import create_tables
         if create_tables():
             logger.info("Database tables created or already exist")
