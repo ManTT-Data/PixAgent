@@ -91,6 +91,9 @@ try:
     # Import debug utilities
     from app.utils.debug_utils import debug_view, DebugInfo, error_tracker, performance_monitor
     
+    # Import cache
+    from app.utils.cache import get_cache
+    
 except ImportError as e:
     logger.error(f"Error importing routes or middlewares: {e}")
     raise
@@ -149,6 +152,21 @@ def health_check():
         "databases": db_status
     }
 
+# Cache stats endpoint
+@app.get("/cache/stats")
+def cache_stats():
+    """Trả về thống kê về cache"""
+    cache = get_cache()
+    return cache.stats()
+
+# Cache clear endpoint
+@app.delete("/cache/clear")
+def cache_clear():
+    """Xóa tất cả dữ liệu trong cache"""
+    cache = get_cache()
+    cache.clear()
+    return {"message": "Cache cleared successfully"}
+
 # Debug endpoints (chỉ có trong chế độ debug)
 if DEBUG:
     @app.get("/debug/config")
@@ -190,6 +208,29 @@ if DEBUG:
     def debug_full_report(request: Request):
         """Hiển thị báo cáo debug đầy đủ (chỉ trong chế độ debug)"""
         return debug_view(request)
+    
+    @app.get("/debug/cache")
+    def debug_cache():
+        """Hiển thị thông tin chi tiết về cache (chỉ trong chế độ debug)"""
+        cache = get_cache()
+        cache_stats = cache.stats()
+        
+        # Thêm thông tin chi tiết về các key trong cache
+        cache_keys = list(cache.cache.keys())
+        history_users = list(cache.user_history_queues.keys())
+        
+        return {
+            "stats": cache_stats,
+            "keys": cache_keys,
+            "history_users": history_users,
+            "config": {
+                "ttl": cache.ttl,
+                "cleanup_interval": cache.cleanup_interval,
+                "max_size": cache.max_size,
+                "history_queue_size": os.getenv("HISTORY_QUEUE_SIZE", "10"),
+                "history_cache_ttl": os.getenv("HISTORY_CACHE_TTL", "3600"),
+            }
+        }
 
 # Run the app with uvicorn when executed directly
 if __name__ == "__main__":

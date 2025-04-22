@@ -60,6 +60,8 @@ tests/
 
 Admin_bot/
 
+Pix-Agent/
+
 # Hugging Face Spaces
 .gitattributes
 

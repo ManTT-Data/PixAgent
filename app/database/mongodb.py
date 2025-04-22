@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 from datetime import datetime, timedelta
 import pytz
 import logging
+from app.utils.cache import get_cache
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -19,6 +20,10 @@ COLLECTION_NAME = os.getenv("COLLECTION_NAME", "session_chat")
 
 # Set timeout for MongoDB connection
 MONGODB_TIMEOUT = int(os.getenv("MONGODB_TIMEOUT", "5000"))  # 5 seconds by default
+
+# Get cache settings
+HISTORY_CACHE_TTL = int(os.getenv("HISTORY_CACHE_TTL", "3600"))  # 1 hour by default
+HISTORY_QUEUE_SIZE = int(os.getenv("HISTORY_QUEUE_SIZE", "10"))  # 10 items by default
 
 # Create MongoDB connection with timeout
 try:
@@ -82,6 +87,23 @@ def save_session(session_id, factor, action, first_name, last_name, message, use
         }
         result = session_collection.insert_one(session_data)
         logger.info(f"Session saved with ID: {result.inserted_id}")
+        
+        # Nếu đây là session của user và có response, lưu vào cache lịch sử
+        if factor.lower() == "user" and response:
+            cache = get_cache()
+            history_item = {
+                "question": message,
+                "answer": response,
+                "timestamp": get_local_datetime()
+            }
+            cache.add_user_history(
+                user_id=user_id,
+                item=history_item,
+                queue_size=HISTORY_QUEUE_SIZE,
+                ttl=HISTORY_CACHE_TTL
+            )
+            logger.debug(f"Added user history to cache for user {user_id}")
+        
         return {
             "acknowledged": result.acknowledged,
             "inserted_id": str(result.inserted_id),
@@ -94,14 +116,36 @@ def save_session(session_id, factor, action, first_name, last_name, message, use
 def update_session_response(session_id, response):
     """Update a session with response"""
     try:
+        # Lấy session hiện có để có thể cập nhật vào cache nếu cần
+        existing_session = session_collection.find_one({"session_id": session_id})
+        
+        if not existing_session:
+            logger.warning(f"No session found with ID: {session_id}")
+            return False
+        
         result = session_collection.update_one(
             {"session_id": session_id},
             {"$set": {"response": response}}
         )
         
-        if result.matched_count == 0:
-            logger.warning(f"No session found with ID: {session_id}")
-            return False
+        # Nếu đây là session của user, thêm vào cache lịch sử
+        if existing_session.get('factor', '').lower() == 'user':
+            user_id = existing_session.get('user_id')
+            message = existing_session.get('message')
+            if user_id and message:
+                cache = get_cache()
+                history_item = {
+                    "question": message,
+                    "answer": response,
+                    "timestamp": get_local_datetime()
+                }
+                cache.add_user_history(
+                    user_id=user_id,
+                    item=history_item,
+                    queue_size=HISTORY_QUEUE_SIZE,
+                    ttl=HISTORY_CACHE_TTL
+                )
+                logger.debug(f"Updated user history in cache for user {user_id}")
             
         logger.info(f"Session {session_id} updated with response")
         return True
@@ -112,12 +156,28 @@ def update_session_response(session_id, response):
 def get_recent_sessions(user_id, action, n=3):
     """Get n most recent sessions for a specific user and action"""
     try:
-        return list(
+        # Thử lấy từ cache (tạo cache key)
+        cache_key = f"recent_sessions:{user_id}:{action}:{n}"
+        cache = get_cache()
+        
+        cached_result = cache.get(cache_key)
+        if cached_result is not None:
+            logger.debug(f"Cache hit for recent sessions: {user_id}, {action}")
+            return cached_result
+        
+        # Không có trong cache, truy vấn từ MongoDB
+        result = list(
             session_collection.find(
                 {"user_id": user_id, "action": action},
                 {"_id": 0, "message": 1, "response": 1}
             ).sort("created_at_datetime", -1).limit(n)
         )
+        
+        # Lưu kết quả vào cache
+        cache.set(cache_key, result)
+        logger.debug(f"Cached recent sessions for: {user_id}, {action}")
+        
+        return result
     except Exception as e:
         logger.error(f"Error getting recent sessions: {e}")
         return []
@@ -125,6 +185,18 @@ def get_recent_sessions(user_id, action, n=3):
 def get_user_history(user_id, n=3):
     """Get user history for a specific user"""
     try:
+        # Thử lấy từ cache
+        cache = get_cache()
+        cached_history = cache.get_user_history(user_id)
+        
+        if cached_history:
+            logger.debug(f"Cache hit for user history: {user_id}")
+            # Chỉ trả về n items
+            return cached_history[:n]
+        
+        # Không có trong cache, truy vấn từ MongoDB
+        logger.debug(f"Cache miss for user history: {user_id}")
+        
         # Find all messages of this user
         user_messages = list(
             session_collection.find(
@@ -155,13 +227,23 @@ def get_user_history(user_id, n=3):
             if "question" in data and "answer" in data and data.get("answer"):
                 history.append({
                     "question": data["question"],
-                    "answer": data["answer"]
+                    "answer": data["answer"],
+                    "timestamp": data.get("timestamp")
                 })
         
         # Sort by timestamp and limit to n
         history = sorted(history, key=lambda x: x.get("timestamp", 0), reverse=True)[:n]
         
-        logger.info(f"Retrieved {len(history)} history items for user {user_id}")
+        # Lưu kết quả vào cache
+        for item in history:
+            cache.add_user_history(
+                user_id=user_id,
+                item=item,
+                queue_size=HISTORY_QUEUE_SIZE,
+                ttl=HISTORY_CACHE_TTL
+            )
+        
+        logger.info(f"Retrieved and cached {len(history)} history items for user {user_id}")
         return history
     except Exception as e:
         logger.error(f"Error getting user history: {e}")
@@ -171,6 +253,7 @@ def get_user_history(user_id, n=3):
 def get_chat_history(user_id, n=5):
     """Get conversation history for a specific user from MongoDB in format suitable for LLM prompt"""
     try:
+        # Lấy lịch sử từ cache (thông qua get_user_history đã được cải tiến)
         history = get_user_history(user_id, n)
         
         # Format history for prompt context
@@ -186,6 +269,7 @@ def get_chat_history(user_id, n=5):
 def get_request_history(user_id, n=3):
     """Get the most recent user requests to use as context for retrieval"""
     try:
+        # Lấy lịch sử từ cache (thông qua get_user_history đã được cải tiến)
         history = get_user_history(user_id, n)
         
         # Just extract the questions for context

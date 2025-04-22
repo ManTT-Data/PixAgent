@@ -227,7 +227,7 @@ async def search_vectors(
         if pinecone_index is None:
             logger.error("Failed to get Pinecone index for search")
             return None
-        
+            
         # Query Pinecone with the provided metric and higher limit_k to allow for threshold filtering
         results = pinecone_index.query(
             vector=query_vector,

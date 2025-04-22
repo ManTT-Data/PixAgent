@@ -6,10 +6,19 @@ import logging
 import traceback
 from datetime import datetime
 from sqlalchemy import text, inspect
+import os
+from dotenv import load_dotenv
 
 from app.database.postgresql import get_db
 from app.database.models import FAQItem, EmergencyItem, EventItem
 from pydantic import BaseModel, Field, ConfigDict
+from app.utils.cache import get_cache
+
+# Load env variables
+load_dotenv()
+
+# Get cache settings
+CACHE_TTL_SECONDS = int(os.getenv("CACHE_TTL_SECONDS", "300"))  # 5 minutes by default
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -125,8 +134,18 @@ async def get_faqs(
     - **active_only**: If true, only return active items
     """
     try:
+        # Tạo cache key từ các tham số
+        cache_key = f"faqs:{skip}:{limit}:{active_only}"
+        cache = get_cache()
+        
+        # Thử lấy từ cache
+        cached_result = cache.get(cache_key)
+        if cached_result is not None:
+            logger.debug(f"Cache hit for FAQs: {cache_key}")
+            return cached_result
+        
         # Log detailed connection info
-        logger.info(f"Attempting to fetch FAQs with skip={skip}, limit={limit}, active_only={active_only}")
+        logger.info(f"Cache miss, fetching FAQs from database with skip={skip}, limit={limit}, active_only={active_only}")
         
         # Check if the FAQItem table exists
         inspector = inspect(db.bind)
@@ -160,6 +179,11 @@ async def get_faqs(
         
         # Convert SQLAlchemy models to Pydantic models - updated for Pydantic v2
         result = [FAQResponse.model_validate(faq, from_attributes=True) for faq in faqs]
+        
+        # Lưu kết quả vào cache
+        cache.set(cache_key, result, ttl=CACHE_TTL_SECONDS)
+        logger.debug(f"Cached FAQs result with key: {cache_key}")
+        
         return result
     except SQLAlchemyError as e:
         logger.error(f"Database error in get_faqs: {e}")
@@ -188,6 +212,16 @@ async def create_faq(
         db.add(db_faq)
         db.commit()
         db.refresh(db_faq)
+        
+        # Xóa các cache key liên quan đến FAQ để đảm bảo dữ liệu luôn mới
+        cache = get_cache()
+        # Xóa tất cả các cache key bắt đầu bằng "faqs:"
+        for key in list(cache.cache.keys()):
+            if key.startswith("faqs:"):
+                cache.delete(key)
+        
+        logger.debug("Cleared FAQ cache after creating new item")
+        
         return FAQResponse.model_validate(db_faq, from_attributes=True)
     except SQLAlchemyError as e:
         db.rollback()
@@ -200,18 +234,38 @@ async def get_faq(
     db: Session = Depends(get_db)
 ):
     """
-    Get a specific FAQ item by ID.
+    Get a single FAQ item by ID.
     
-    - **faq_id**: ID of the FAQ item
+    - **faq_id**: ID of the FAQ item to retrieve
     """
     try:
+        # Tạo cache key
+        cache_key = f"faq:{faq_id}"
+        cache = get_cache()
+        
+        # Thử lấy từ cache
+        cached_result = cache.get(cache_key)
+        if cached_result is not None:
+            logger.debug(f"Cache hit for FAQ item: {faq_id}")
+            return cached_result
+        
+        # Không có trong cache, truy vấn từ database
+        logger.debug(f"Cache miss for FAQ item: {faq_id}")
+        
         faq = db.query(FAQItem).filter(FAQItem.id == faq_id).first()
-        if not faq:
-            raise HTTPException(status_code=404, detail="FAQ item not found")
-        return FAQResponse.model_validate(faq, from_attributes=True)
+        if faq is None:
+            raise HTTPException(status_code=404, detail=f"FAQ with ID {faq_id} not found")
+        
+        result = FAQResponse.model_validate(faq, from_attributes=True)
+        
+        # Lưu kết quả vào cache
+        cache.set(cache_key, result, ttl=CACHE_TTL_SECONDS)
+        logger.debug(f"Cached FAQ item with ID: {faq_id}")
+        
+        return result
     except SQLAlchemyError as e:
         logger.error(f"Database error: {e}")
-        raise HTTPException(status_code=500, detail="Database error")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 @router.put("/faq/{faq_id}", response_model=FAQResponse)
 async def update_faq(
@@ -220,30 +274,44 @@ async def update_faq(
     db: Session = Depends(get_db)
 ):
     """
-    Update a specific FAQ item.
+    Update an existing FAQ item.
     
     - **faq_id**: ID of the FAQ item to update
-    - **question**: New question text (optional)
-    - **answer**: New answer text (optional)
-    - **is_active**: New active status (optional)
+    - **question**: Updated question text (optional)
+    - **answer**: Updated answer text (optional)
+    - **is_active**: Updated active status (optional)
     """
     try:
+        # Cập nhật trong database
         faq = db.query(FAQItem).filter(FAQItem.id == faq_id).first()
-        if not faq:
-            raise HTTPException(status_code=404, detail="FAQ item not found")
+        if faq is None:
+            raise HTTPException(status_code=404, detail=f"FAQ with ID {faq_id} not found")
         
-        # Sử dụng model_dump thay vì dict
+        # Cập nhật các trường từ faq_update nếu không phải là None
         update_data = faq_update.model_dump(exclude_unset=True)
         for key, value in update_data.items():
             setattr(faq, key, value)
-            
+        
+        db.add(faq)
         db.commit()
         db.refresh(faq)
+        
+        # Xóa các cache key liên quan
+        cache = get_cache()
+        # Xóa cache cho item riêng lẻ
+        cache.delete(f"faq:{faq_id}")
+        # Xóa tất cả các cache key bắt đầu bằng "faqs:" (danh sách FAQ)
+        for key in list(cache.cache.keys()):
+            if key.startswith("faqs:"):
+                cache.delete(key)
+        
+        logger.debug(f"Cleared FAQ cache after updating item with ID: {faq_id}")
+        
         return FAQResponse.model_validate(faq, from_attributes=True)
     except SQLAlchemyError as e:
         db.rollback()
         logger.error(f"Database error: {e}")
-        raise HTTPException(status_code=500, detail="Failed to update FAQ item")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 @router.delete("/faq/{faq_id}", response_model=dict)
 async def delete_faq(
@@ -251,24 +319,36 @@ async def delete_faq(
     db: Session = Depends(get_db)
 ):
     """
-    Delete a specific FAQ item.
+    Delete an FAQ item.
     
     - **faq_id**: ID of the FAQ item to delete
     """
     try:
         faq = db.query(FAQItem).filter(FAQItem.id == faq_id).first()
-        if not faq:
-            raise HTTPException(status_code=404, detail="FAQ item not found")
+        if faq is None:
+            raise HTTPException(status_code=404, detail=f"FAQ with ID {faq_id} not found")
         
         db.delete(faq)
         db.commit()
-        return {"status": "success", "message": f"FAQ item {faq_id} deleted"}
+        
+        # Xóa các cache key liên quan
+        cache = get_cache()
+        # Xóa cache cho item riêng lẻ
+        cache.delete(f"faq:{faq_id}")
+        # Xóa tất cả các cache key bắt đầu bằng "faqs:" (danh sách FAQ)
+        for key in list(cache.cache.keys()):
+            if key.startswith("faqs:"):
+                cache.delete(key)
+        
+        logger.debug(f"Cleared FAQ cache after deleting item with ID: {faq_id}")
+        
+        return {"message": f"FAQ with ID {faq_id} deleted"}
     except SQLAlchemyError as e:
         db.rollback()
         logger.error(f"Database error: {e}")
-        raise HTTPException(status_code=500, detail="Failed to delete FAQ item")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
-# --- Emergency endpoints ---
+# --- Emergency contact endpoints ---
 
 @router.get("/emergency", response_model=List[EmergencyResponse])
 async def get_emergency_contacts(
@@ -285,75 +365,36 @@ async def get_emergency_contacts(
     - **active_only**: If true, only return active items
     """
     try:
-        # Log detailed connection info
-        logger.info(f"Attempting to fetch emergency contacts with skip={skip}, limit={limit}, active_only={active_only}")
+        # Tạo cache key từ các tham số
+        cache_key = f"emergency:{skip}:{limit}:{active_only}"
+        cache = get_cache()
         
-        # Check if the EmergencyItem table exists
-        inspector = inspect(db.bind)
-        if not inspector.has_table("emergency_item"):
-            logger.error("The emergency_item table does not exist in the database")
-            raise HTTPException(status_code=500, detail="Table 'emergency_item' does not exist")
+        # Thử lấy từ cache
+        cached_result = cache.get(cache_key)
+        if cached_result is not None:
+            logger.debug(f"Cache hit for emergency contacts: {cache_key}")
+            return cached_result
         
-        # Log table columns
-        columns = inspector.get_columns("emergency_item")
-        logger.info(f"emergency_item table columns: {[c['name'] for c in columns]}")
+        # Không có trong cache, truy vấn từ database
+        logger.debug(f"Cache miss for emergency contacts: {cache_key}")
         
-        # Try direct SQL to debug
-        try:
-            test_result = db.execute(text("SELECT COUNT(*) FROM emergency_item")).scalar()
-            logger.info(f"SQL test query succeeded, found {test_result} emergency contacts")
-        except Exception as sql_error:
-            logger.error(f"SQL test query failed: {sql_error}")
-        
-        # Query the emergency contacts
         query = db.query(EmergencyItem)
         if active_only:
             query = query.filter(EmergencyItem.is_active == True)
         
-        # Execute the ORM query
+        query = query.order_by(EmergencyItem.priority.desc())
         emergency_contacts = query.offset(skip).limit(limit).all()
-        logger.info(f"Successfully fetched {len(emergency_contacts)} emergency contacts")
         
-        # Check what we're returning
-        for i, contact in enumerate(emergency_contacts[:3]):  # Log the first 3 items
-            logger.info(f"Emergency contact {i+1}: id={contact.id}, name={contact.name}")
+        result = [EmergencyResponse.model_validate(contact, from_attributes=True) for contact in emergency_contacts]
         
-        return emergency_contacts
+        # Lưu kết quả vào cache
+        cache.set(cache_key, result, ttl=CACHE_TTL_SECONDS)
+        logger.debug(f"Cached emergency contacts with key: {cache_key}")
+        
+        return result
     except SQLAlchemyError as e:
-        logger.error(f"Database error in get_emergency_contacts: {e}")
-        logger.error(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
-    except Exception as e:
-        logger.error(f"Unexpected error in get_emergency_contacts: {e}")
-        logger.error(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
-
-@router.post("/emergency", response_model=EmergencyResponse)
-async def create_emergency_contact(
-    emergency: EmergencyCreate,
-    db: Session = Depends(get_db)
-):
-    """
-    Create a new emergency contact.
-    
-    - **name**: Contact name
-    - **phone_number**: Phone number
-    - **description**: Description (optional)
-    - **address**: Address (optional)
-    - **location**: Location coordinates (optional)
-    - **priority**: Priority order (default: 0)
-    - **is_active**: Whether the contact is active (default: True)
-    """
-    try:
-        db_emergency = EmergencyItem(**emergency.model_dump())
-        db.add(db_emergency)
-        db.commit()
-        db.refresh(db_emergency)
-        return db_emergency
-    except SQLAlchemyError as e:
-        db.rollback()
         logger.error(f"Database error: {e}")
-        raise HTTPException(status_code=500, detail="Failed to create emergency contact")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 @router.get("/emergency/{emergency_id}", response_model=EmergencyResponse)
 async def get_emergency_contact(
@@ -361,77 +402,38 @@ async def get_emergency_contact(
     db: Session = Depends(get_db)
 ):
     """
-    Get a specific emergency contact by ID.
+    Get a single emergency contact by ID.
     
-    - **emergency_id**: ID of the emergency contact
+    - **emergency_id**: ID of the emergency contact to retrieve
     """
     try:
-        emergency = db.query(EmergencyItem).filter(EmergencyItem.id == emergency_id).first()
-        if not emergency:
-            raise HTTPException(status_code=404, detail="Emergency contact not found")
-        return emergency
-    except SQLAlchemyError as e:
-        logger.error(f"Database error: {e}")
-        raise HTTPException(status_code=500, detail="Database error")
-
-@router.put("/emergency/{emergency_id}", response_model=EmergencyResponse)
-async def update_emergency_contact(
-    emergency_id: int = Path(..., gt=0),
-    emergency_update: EmergencyUpdate = Body(...),
-    db: Session = Depends(get_db)
-):
-    """
-    Update a specific emergency contact.
-    
-    - **emergency_id**: ID of the emergency contact to update
-    - **name**: New name (optional)
-    - **phone_number**: New phone number (optional)
-    - **description**: New description (optional)
-    - **address**: New address (optional)
-    - **location**: New location coordinates (optional)
-    - **priority**: New priority order (optional)
-    - **is_active**: New active status (optional)
-    """
-    try:
-        emergency = db.query(EmergencyItem).filter(EmergencyItem.id == emergency_id).first()
-        if not emergency:
-            raise HTTPException(status_code=404, detail="Emergency contact not found")
+        # Tạo cache key
+        cache_key = f"emergency:{emergency_id}"
+        cache = get_cache()
         
-        # Update fields if provided
-        update_data = emergency_update.model_dump(exclude_unset=True)
-        for key, value in update_data.items():
-            setattr(emergency, key, value)
-            
-        db.commit()
-        db.refresh(emergency)
-        return emergency
-    except SQLAlchemyError as e:
-        db.rollback()
-        logger.error(f"Database error: {e}")
-        raise HTTPException(status_code=500, detail="Failed to update emergency contact")
-
-@router.delete("/emergency/{emergency_id}", response_model=dict)
-async def delete_emergency_contact(
-    emergency_id: int = Path(..., gt=0),
-    db: Session = Depends(get_db)
-):
-    """
-    Delete a specific emergency contact.
-    
-    - **emergency_id**: ID of the emergency contact to delete
-    """
-    try:
-        emergency = db.query(EmergencyItem).filter(EmergencyItem.id == emergency_id).first()
-        if not emergency:
-            raise HTTPException(status_code=404, detail="Emergency contact not found")
+        # Thử lấy từ cache
+        cached_result = cache.get(cache_key)
+        if cached_result is not None:
+            logger.debug(f"Cache hit for emergency contact: {emergency_id}")
+            return cached_result
         
-        db.delete(emergency)
-        db.commit()
-        return {"status": "success", "message": f"Emergency contact {emergency_id} deleted"}
+        # Không có trong cache, truy vấn từ database
+        logger.debug(f"Cache miss for emergency contact: {emergency_id}")
+        
+        contact = db.query(EmergencyItem).filter(EmergencyItem.id == emergency_id).first()
+        if contact is None:
+            raise HTTPException(status_code=404, detail=f"Emergency contact with ID {emergency_id} not found")
+        
+        result = EmergencyResponse.model_validate(contact, from_attributes=True)
+        
+        # Lưu kết quả vào cache
+        cache.set(cache_key, result, ttl=CACHE_TTL_SECONDS)
+        logger.debug(f"Cached emergency contact with ID: {emergency_id}")
+        
+        return result
     except SQLAlchemyError as e:
-        db.rollback()
         logger.error(f"Database error: {e}")
-        raise HTTPException(status_code=500, detail="Failed to delete emergency contact")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 # --- Event endpoints ---
 
@@ -452,83 +454,43 @@ async def get_events(
     - **featured_only**: If true, only return featured items
     """
     try:
-        # Log detailed connection info
-        logger.info(f"Attempting to fetch events with skip={skip}, limit={limit}, active_only={active_only}, featured_only={featured_only}")
+        # Tạo cache key từ các tham số
+        cache_key = f"events:{skip}:{limit}:{active_only}:{featured_only}"
+        cache = get_cache()
         
-        # Check if the EventItem table exists
-        inspector = inspect(db.bind)
-        if not inspector.has_table("event_item"):
-            logger.error("The event_item table does not exist in the database")
-            raise HTTPException(status_code=500, detail="Table 'event_item' does not exist")
+        # Thử lấy từ cache
+        cached_result = cache.get(cache_key)
+        if cached_result is not None:
+            logger.debug(f"Cache hit for events: {cache_key}")
+            return cached_result
         
-        # Log table columns
-        columns = inspector.get_columns("event_item")
-        logger.info(f"event_item table columns: {[c['name'] for c in columns]}")
+        # Không có trong cache, truy vấn từ database
+        logger.debug(f"Cache miss for events: {cache_key}")
         
-        # Try direct SQL to debug
-        try:
-            test_result = db.execute(text("SELECT COUNT(*) FROM event_item")).scalar()
-            logger.info(f"SQL test query succeeded, found {test_result} events")
-        except Exception as sql_error:
-            logger.error(f"SQL test query failed: {sql_error}")
-        
-        # Query the events
         query = db.query(EventItem)
+        
+        # Apply filters
         if active_only:
             query = query.filter(EventItem.is_active == True)
         if featured_only:
             query = query.filter(EventItem.featured == True)
         
-        # Execute the ORM query
+        # Order by date (upcoming events first)
+        query = query.order_by(EventItem.date_start.asc())
+        
+        # Get results
         events = query.offset(skip).limit(limit).all()
-        logger.info(f"Successfully fetched {len(events)} events")
         
-        # Debug price field of first event
-        if events and len(events) > 0:
-            logger.info(f"First event price type: {type(events[0].price)}, value: {events[0].price}")
+        result = [EventResponse.model_validate(event, from_attributes=True) for event in events]
         
-        # Check what we're returning
-        for i, event in enumerate(events[:3]):  # Log the first 3 items
-            logger.info(f"Event {i+1}: id={event.id}, name={event.name}, price={type(event.price)}")
+        # Lưu kết quả vào cache
+        cache.set(cache_key, result, ttl=CACHE_TTL_SECONDS)
+        logger.debug(f"Cached events with key: {cache_key}")
         
-        return events
+        return result
     except SQLAlchemyError as e:
-        logger.error(f"Database error in get_events: {e}")
-        logger.error(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
-    except Exception as e:
-        logger.error(f"Unexpected error in get_events: {e}")
-        logger.error(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
-
-@router.post("/events", response_model=EventResponse)
-async def create_event(
-    event: EventCreate,
-    db: Session = Depends(get_db)
-):
-    """
-    Create a new event.
-    
-    - **name**: Event name
-    - **description**: Event description
-    - **address**: Event address
-    - **location**: Location coordinates (optional)
-    - **date_start**: Start date and time
-    - **date_end**: End date and time (optional)
-    - **price**: Price information (optional JSON object)
-    - **is_active**: Whether the event is active (default: True)
-    - **featured**: Whether the event is featured (default: False)
-    """
-    try:
-        db_event = EventItem(**event.model_dump())
-        db.add(db_event)
-        db.commit()
-        db.refresh(db_event)
-        return db_event
-    except SQLAlchemyError as e:
-        db.rollback()
         logger.error(f"Database error: {e}")
-        raise HTTPException(status_code=500, detail="Failed to create event")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 @router.get("/events/{event_id}", response_model=EventResponse)
 async def get_event(
@@ -536,18 +498,38 @@ async def get_event(
     db: Session = Depends(get_db)
 ):
     """
-    Get a specific event by ID.
+    Get a single event by ID.
     
-    - **event_id**: ID of the event
+    - **event_id**: ID of the event to retrieve
     """
     try:
+        # Tạo cache key
+        cache_key = f"event:{event_id}"
+        cache = get_cache()
+        
+        # Thử lấy từ cache
+        cached_result = cache.get(cache_key)
+        if cached_result is not None:
+            logger.debug(f"Cache hit for event: {event_id}")
+            return cached_result
+        
+        # Không có trong cache, truy vấn từ database
+        logger.debug(f"Cache miss for event: {event_id}")
+        
         event = db.query(EventItem).filter(EventItem.id == event_id).first()
-        if not event:
-            raise HTTPException(status_code=404, detail="Event not found")
-        return event
+        if event is None:
+            raise HTTPException(status_code=404, detail=f"Event with ID {event_id} not found")
+        
+        result = EventResponse.model_validate(event, from_attributes=True)
+        
+        # Lưu kết quả vào cache
+        cache.set(cache_key, result, ttl=CACHE_TTL_SECONDS)
+        logger.debug(f"Cached event with ID: {event_id}")
+        
+        return result
     except SQLAlchemyError as e:
         logger.error(f"Database error: {e}")
-        raise HTTPException(status_code=500, detail="Database error")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 @router.put("/events/{event_id}", response_model=EventResponse)
 async def update_event(
@@ -556,36 +538,41 @@ async def update_event(
     db: Session = Depends(get_db)
 ):
     """
-    Update a specific event.
+    Update an existing event.
     
     - **event_id**: ID of the event to update
-    - **name**: New name (optional)
-    - **description**: New description (optional)
-    - **address**: New address (optional)
-    - **location**: New location coordinates (optional)
-    - **date_start**: New start date and time (optional)
-    - **date_end**: New end date and time (optional)
-    - **price**: New price information (optional JSON object)
-    - **is_active**: New active status (optional)
-    - **featured**: New featured status (optional)
+    - **event_update**: Data to update
     """
     try:
         event = db.query(EventItem).filter(EventItem.id == event_id).first()
-        if not event:
-            raise HTTPException(status_code=404, detail="Event not found")
+        if event is None:
+            raise HTTPException(status_code=404, detail=f"Event with ID {event_id} not found")
         
-        # Update fields if provided
+        # Cập nhật các trường từ event_update nếu không phải là None
         update_data = event_update.model_dump(exclude_unset=True)
         for key, value in update_data.items():
             setattr(event, key, value)
-            
+        
+        db.add(event)
         db.commit()
         db.refresh(event)
-        return event
+        
+        # Xóa các cache key liên quan
+        cache = get_cache()
+        # Xóa cache cho item riêng lẻ
+        cache.delete(f"event:{event_id}")
+        # Xóa tất cả các cache key bắt đầu bằng "events:" (danh sách events)
+        for key in list(cache.cache.keys()):
+            if key.startswith("events:"):
+                cache.delete(key)
+        
+        logger.debug(f"Cleared events cache after updating item with ID: {event_id}")
+        
+        return EventResponse.model_validate(event, from_attributes=True)
     except SQLAlchemyError as e:
         db.rollback()
         logger.error(f"Database error: {e}")
-        raise HTTPException(status_code=500, detail="Failed to update event")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 @router.delete("/events/{event_id}", response_model=dict)
 async def delete_event(
@@ -593,22 +580,34 @@ async def delete_event(
     db: Session = Depends(get_db)
 ):
     """
-    Delete a specific event.
+    Delete an event.
     
     - **event_id**: ID of the event to delete
     """
     try:
         event = db.query(EventItem).filter(EventItem.id == event_id).first()
-        if not event:
-            raise HTTPException(status_code=404, detail="Event not found")
+        if event is None:
+            raise HTTPException(status_code=404, detail=f"Event with ID {event_id} not found")
         
         db.delete(event)
         db.commit()
-        return {"status": "success", "message": f"Event {event_id} deleted"}
+        
+        # Xóa các cache key liên quan
+        cache = get_cache()
+        # Xóa cache cho item riêng lẻ
+        cache.delete(f"event:{event_id}")
+        # Xóa tất cả các cache key bắt đầu bằng "events:" (danh sách events)
+        for key in list(cache.cache.keys()):
+            if key.startswith("events:"):
+                cache.delete(key)
+        
+        logger.debug(f"Cleared events cache after deleting item with ID: {event_id}")
+        
+        return {"message": f"Event with ID {event_id} deleted"}
     except SQLAlchemyError as e:
         db.rollback()
         logger.error(f"Database error: {e}")
-        raise HTTPException(status_code=500, detail="Failed to delete event")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 # Health check endpoint
 @router.get("/health")

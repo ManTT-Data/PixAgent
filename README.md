@@ -358,4 +358,62 @@ You can customize the retrieval parameters when making API requests:
 
 ## Implementation Details
 
-The system is implemented as a custom retriever class `ThresholdRetriever` that integrates with LangChain's retrieval infrastructure while providing enhanced functionality. 
+The system is implemented as a custom retriever class `ThresholdRetriever` that integrates with LangChain's retrieval infrastructure while providing enhanced functionality.
+
+## In-Memory Cache
+
+Dự án bao gồm một hệ thống cache trong bộ nhớ để giảm thiểu truy cập đến cơ sở dữ liệu PostgreSQL và MongoDB.
+
+### Cấu hình Cache
+
+Cache được cấu hình thông qua các biến môi trường:
+
+```
+# Cache Configuration
+CACHE_TTL_SECONDS=300           # Thời gian tồn tại của cache item (giây)
+CACHE_CLEANUP_INTERVAL=60       # Chu kỳ xóa cache hết hạn (giây)
+CACHE_MAX_SIZE=1000             # Số lượng item tối đa trong cache
+HISTORY_QUEUE_SIZE=10           # Số lượng item tối đa trong queue lịch sử người dùng
+HISTORY_CACHE_TTL=3600          # Thời gian tồn tại của lịch sử người dùng (giây)
+```
+
+### Cơ chế Cache
+
+Hệ thống cache kết hợp hai cơ chế hết hạn:
+
+1. **Lazy Expiration**: Kiểm tra thời hạn khi truy cập cache item. Nếu item đã hết hạn, nó sẽ bị xóa và trả về kết quả là không tìm thấy.
+
+2. **Active Expiration**: Một background thread định kỳ quét và xóa các item đã hết hạn. Điều này giúp tránh tình trạng cache quá lớn với các item không còn được sử dụng.
+
+### Các loại dữ liệu được cache
+
+- **Dữ liệu PostgreSQL**: Thông tin từ các bảng FAQ, Emergency Contacts, và Events.
+- **Lịch sử người dùng từ MongoDB**: Lịch sử hội thoại người dùng được lưu trong queue với thời gian sống tính theo lần truy cập cuối cùng.
+
+### API Cache
+
+Dự án cung cấp các API endpoints để quản lý cache:
+
+- `GET /cache/stats`: Xem thống kê về cache (tổng số item, bộ nhớ sử dụng, v.v.)
+- `DELETE /cache/clear`: Xóa toàn bộ cache
+- `GET /debug/cache`: (Chỉ trong chế độ debug) Xem thông tin chi tiết về cache, bao gồm các keys và cấu hình
+
+### Cách hoạt động
+
+1. Khi một request đến, hệ thống sẽ kiểm tra dữ liệu trong cache trước.
+2. Nếu dữ liệu tồn tại và còn hạn, trả về từ cache.
+3. Nếu dữ liệu không tồn tại hoặc đã hết hạn, truy vấn từ database và lưu kết quả vào cache.
+4. Khi dữ liệu được cập nhật hoặc xóa, cache liên quan sẽ tự động được xóa.
+
+### Lịch sử người dùng
+
+Lịch sử hội thoại người dùng được lưu trong queue riêng với cơ chế đặc biệt:
+
+- Mỗi người dùng có một queue riêng với kích thước giới hạn (`HISTORY_QUEUE_SIZE`).
+- Thời gian sống của queue được làm mới mỗi khi có tương tác mới.
+- Khi queue đầy, các item cũ nhất sẽ bị loại bỏ.
+- Queue tự động bị xóa sau một thời gian không hoạt động.
+
+## Tác giả
+
+- **PIX Project Team** 
