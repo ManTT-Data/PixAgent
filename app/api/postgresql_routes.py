@@ -13,9 +13,12 @@ import logging
 import traceback
 from datetime import datetime
 from sqlalchemy import text, inspect, func
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy import desc, func
+from cachetools import TTLCache
 
 from app.database.postgresql import get_db
-from app.database.models import FAQItem, EmergencyItem, EventItem
+from app.database.models import FAQItem, EmergencyItem, EventItem, AboutPixity, SolanaSummit, DaNangBucketList
 from pydantic import BaseModel, Field
 
 # Configure logging
@@ -27,52 +30,34 @@ router = APIRouter(
     tags=["PostgreSQL"],
 )
 
-# Simple memory cache implementation
-class Cache:
-    """Simple in-memory cache with expiration"""
-    def __init__(self, ttl_seconds=300):  # Default TTL: 5 minutes
-        self._cache = {}
-        self._ttl = ttl_seconds
-    
-    def get(self, key, default=None):
-        """Get a value from the cache if it exists and is not expired"""
-        if key in self._cache:
-            expiry, value = self._cache[key]
-            if expiry > time.time():
-                return value
-            # Remove expired item
-            del self._cache[key]
-        return default
-    
-    def set(self, key, value, ttl_seconds=None):
-        """Set a value in the cache with expiry time"""
-        if ttl_seconds is None:
-            ttl_seconds = self._ttl
-        expiry = time.time() + ttl_seconds
-        self._cache[key] = (expiry, value)
-        return value
-    
-    def delete(self, key):
-        """Delete a key from the cache"""
-        if key in self._cache:
-            del self._cache[key]
-    
-    def invalidate_by_prefix(self, prefix=""):
-        """Invalidate all cache entries that start with prefix"""
-        keys_to_delete = [k for k in self._cache.keys() if k.startswith(prefix)]
-        for k in keys_to_delete:
-            del self._cache[k]
-    
-    def clear(self):
-        """Clear the entire cache"""
-        self._cache.clear()
-
-# Create cache instances for different entity types
-event_cache = Cache(ttl_seconds=300)  # 5 minutes TTL for events
-faq_cache = Cache(ttl_seconds=600)    # 10 minutes TTL for FAQs
-emergency_cache = Cache(ttl_seconds=600)  # 10 minutes TTL for emergency contacts
+# Initialize caches for frequently used data
+# Cache for 5 minutes (300 seconds)
+faqs_cache = TTLCache(maxsize=1, ttl=300)
+emergencies_cache = TTLCache(maxsize=1, ttl=300)
+events_cache = TTLCache(maxsize=10, ttl=300)  # Cache for different page sizes
+about_pixity_cache = TTLCache(maxsize=1, ttl=300)
+solana_summit_cache = TTLCache(maxsize=1, ttl=300)
+danang_bucket_list_cache = TTLCache(maxsize=1, ttl=300)
 
 # --- Pydantic models for request/response ---
+
+# Information models
+class InfoContentBase(BaseModel):
+    content: str
+
+class InfoContentCreate(InfoContentBase):
+    pass
+
+class InfoContentUpdate(InfoContentBase):
+    pass
+
+class InfoContentResponse(InfoContentBase):
+    id: int
+    created_at: datetime
+    updated_at: datetime
+    
+    class Config:
+        orm_mode = True
 
 # FAQ models
 class FAQBase(BaseModel):
@@ -199,7 +184,7 @@ async def get_faqs(
         
         # Try to get from cache if caching is enabled
         if use_cache:
-            cached_result = faq_cache.get(cache_key)
+            cached_result = faqs_cache.get(cache_key)
             if cached_result:
                 logger.info(f"Cache hit for {cache_key}")
                 return cached_result
@@ -223,7 +208,7 @@ async def get_faqs(
         
         # Store in cache if caching is enabled
         if use_cache:
-            faq_cache.set(cache_key, result)
+            faqs_cache.set(cache_key, result)
             
         return result
     except SQLAlchemyError as e:
@@ -255,7 +240,7 @@ async def create_faq(
         db.refresh(db_faq)
         
         # Invalidate FAQ cache after creating a new item
-        faq_cache.clear()
+        faqs_cache.clear()
         
         # Convert to Pydantic model
         return FAQResponse.from_orm(db_faq)
@@ -283,7 +268,7 @@ async def get_faq(
         
         # Try to get from cache if caching is enabled
         if use_cache:
-            cached_result = faq_cache.get(cache_key)
+            cached_result = faqs_cache.get(cache_key)
             if cached_result:
                 logger.info(f"Cache hit for {cache_key}")
                 return cached_result
@@ -306,7 +291,7 @@ async def get_faq(
         
         # Store in cache if caching is enabled
         if use_cache:
-            faq_cache.set(cache_key, response)
+            faqs_cache.set(cache_key, response)
             
         return response
     except SQLAlchemyError as e:
@@ -344,8 +329,8 @@ async def update_faq(
         db.refresh(faq)
         
         # Invalidate specific cache entries
-        faq_cache.delete(f"faq_{faq_id}")
-        faq_cache.clear()  # Clear all list caches
+        faqs_cache.delete(f"faq_{faq_id}")
+        faqs_cache.clear()  # Clear all list caches
         
         # Convert to Pydantic model
         return FAQResponse.from_orm(faq)
@@ -378,8 +363,8 @@ async def delete_faq(
         db.commit()
         
         # Invalidate cache entries
-        faq_cache.delete(f"faq_{faq_id}")
-        faq_cache.clear()  # Clear all list caches
+        faqs_cache.delete(f"faq_{faq_id}")
+        faqs_cache.clear()  # Clear all list caches
         
         return {"status": "success", "message": f"FAQ item {faq_id} deleted"}
     except SQLAlchemyError as e:
@@ -412,7 +397,7 @@ async def get_emergency_contacts(
         
         # Try to get from cache if caching is enabled
         if use_cache:
-            cached_result = emergency_cache.get(cache_key)
+            cached_result = emergencies_cache.get(cache_key)
             if cached_result:
                 logger.info(f"Cache hit for {cache_key}")
                 return cached_result
@@ -436,7 +421,7 @@ async def get_emergency_contacts(
         
         # Store in cache if caching is enabled
         if use_cache:
-            emergency_cache.set(cache_key, result)
+            emergencies_cache.set(cache_key, result)
             
         return result
     except SQLAlchemyError as e:
@@ -471,7 +456,7 @@ async def create_emergency_contact(
         db.refresh(db_emergency)
         
         # Invalidate emergency cache after creating a new item
-        emergency_cache.clear()
+        emergencies_cache.clear()
         
         # Convert SQLAlchemy model to Pydantic model before returning
         result = EmergencyResponse.from_orm(db_emergency)
@@ -500,7 +485,7 @@ async def get_emergency_contact(
         
         # Try to get from cache if caching is enabled
         if use_cache:
-            cached_result = emergency_cache.get(cache_key)
+            cached_result = emergencies_cache.get(cache_key)
             if cached_result:
                 logger.info(f"Cache hit for {cache_key}")
                 return cached_result
@@ -523,7 +508,7 @@ async def get_emergency_contact(
         
         # Store in cache if caching is enabled
         if use_cache:
-            emergency_cache.set(cache_key, response)
+            emergencies_cache.set(cache_key, response)
             
         return response
     except SQLAlchemyError as e:
@@ -563,8 +548,8 @@ async def update_emergency_contact(
         db.refresh(emergency)
         
         # Invalidate specific cache entries
-        emergency_cache.delete(f"emergency_{emergency_id}")
-        emergency_cache.clear()  # Clear all list caches
+        emergencies_cache.delete(f"emergency_{emergency_id}")
+        emergencies_cache.clear()  # Clear all list caches
         
         # Convert to Pydantic model
         return EmergencyResponse.from_orm(emergency)
@@ -597,8 +582,8 @@ async def delete_emergency_contact(
         db.commit()
         
         # Invalidate cache entries
-        emergency_cache.delete(f"emergency_{emergency_id}")
-        emergency_cache.clear()  # Clear all list caches
+        emergencies_cache.delete(f"emergency_{emergency_id}")
+        emergencies_cache.clear()  # Clear all list caches
         
         return {"status": "success", "message": f"Emergency contact {emergency_id} deleted"}
     except SQLAlchemyError as e:
@@ -633,7 +618,7 @@ async def get_events(
         
         # Try to get from cache if caching is enabled
         if use_cache:
-            cached_result = event_cache.get(cache_key)
+            cached_result = events_cache.get(cache_key)
             if cached_result:
                 return cached_result
         
@@ -658,7 +643,7 @@ async def get_events(
         
         # Store in cache if caching is enabled (30 seconds TTL for events list)
         if use_cache:
-            event_cache.set(cache_key, result, ttl_seconds=30)
+            events_cache.set(cache_key, result, ttl=30)
             
         return result
     except SQLAlchemyError as e:
@@ -695,7 +680,7 @@ async def create_event(
         db.refresh(db_event)
         
         # Invalidate relevant caches on create
-        event_cache.clear()
+        events_cache.clear()
         
         # Convert SQLAlchemy model to Pydantic model before returning
         result = EventResponse.from_orm(db_event)
@@ -723,7 +708,7 @@ async def get_event(
         
         # Try to get from cache if caching is enabled
         if use_cache:
-            cached_result = event_cache.get(cache_key)
+            cached_result = events_cache.get(cache_key)
             if cached_result:
                 return cached_result
         
@@ -746,7 +731,7 @@ async def get_event(
         
         # Store in cache if caching is enabled (60 seconds TTL for single event)
         if use_cache:
-            event_cache.set(cache_key, response, ttl_seconds=60)
+            events_cache.set(cache_key, response, ttl=60)
             
         return response
     except SQLAlchemyError as e:
@@ -774,8 +759,8 @@ def update_event(
         db.refresh(db_event)
         
         # Invalidate specific cache entries
-        event_cache.delete(f"event_{event_id}")
-        event_cache.clear()  # Clear all list caches
+        events_cache.delete(f"event_{event_id}")
+        events_cache.clear()  # Clear all list caches
         
         # Convert SQLAlchemy model to Pydantic model before returning
         result = EventResponse.from_orm(db_event)
@@ -800,8 +785,8 @@ async def delete_event(
         db.commit()
         
         # Invalidate cache entries
-        event_cache.delete(f"event_{event_id}")
-        event_cache.clear()  # Clear all list caches
+        events_cache.delete(f"event_{event_id}")
+        events_cache.clear()  # Clear all list caches
         
         return {"status": "success", "message": f"Event {event_id} deleted"}
     except SQLAlchemyError as e:
@@ -974,7 +959,7 @@ async def batch_create_faqs(
             db.refresh(db_faq)
         
         # Invalidate FAQ cache
-        faq_cache.clear()
+        faqs_cache.clear()
         
         # Convert SQLAlchemy models to Pydantic models
         result = [FAQResponse.from_orm(faq) for faq in db_faqs]
@@ -1019,7 +1004,7 @@ async def batch_update_faq_status(
         failed_ids = [id for id in faq_ids if id not in updated_ids]
         
         # Invalidate FAQ cache
-        faq_cache.clear()
+        faqs_cache.clear()
         
         return BatchUpdateResult(
             success_count=len(updated_ids),
@@ -1063,7 +1048,7 @@ async def batch_delete_faqs(
         failed_ids = [id for id in faq_ids if id not in deleted_ids]
         
         # Invalidate FAQ cache
-        faq_cache.clear()
+        faqs_cache.clear()
         
         return BatchUpdateResult(
             success_count=len(deleted_ids),
@@ -1105,7 +1090,7 @@ async def batch_create_emergency_contacts(
             db.refresh(db_emergency)
         
         # Invalidate emergency cache
-        emergency_cache.clear()
+        emergencies_cache.clear()
         
         # Convert SQLAlchemy models to Pydantic models
         result = [EmergencyResponse.from_orm(emergency) for emergency in db_emergency_contacts]
@@ -1150,7 +1135,7 @@ async def batch_update_emergency_status(
         failed_ids = [id for id in emergency_ids if id not in updated_ids]
         
         # Invalidate emergency cache
-        emergency_cache.clear()
+        emergencies_cache.clear()
         
         return BatchUpdateResult(
             success_count=len(updated_ids),
@@ -1194,7 +1179,7 @@ async def batch_delete_emergency_contacts(
         failed_ids = [id for id in emergency_ids if id not in deleted_ids]
         
         # Invalidate emergency cache
-        emergency_cache.clear()
+        emergencies_cache.clear()
         
         return BatchUpdateResult(
             success_count=len(deleted_ids),
@@ -1205,4 +1190,333 @@ async def batch_delete_emergency_contacts(
         db.rollback()
         logger.error(f"Database error in batch_delete_emergency_contacts: {e}")
         logger.error(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}") 
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+# --- About Pixity endpoints ---
+
+@router.get("/about-pixity", response_model=InfoContentResponse)
+async def get_about_pixity(
+    use_cache: bool = True,
+    db: Session = Depends(get_db)
+):
+    """
+    Get the About Pixity information.
+    
+    - **use_cache**: If true, use cached results when available
+    """
+    try:
+        # Try to get from cache if caching is enabled
+        if use_cache:
+            cached_result = about_pixity_cache.get("about_pixity")
+            if cached_result:
+                logger.info("Cache hit for about_pixity")
+                return cached_result
+        
+        # Get the first record (or create if none exists)
+        about = db.query(AboutPixity).first()
+        
+        if not about:
+            # Create default content if none exists
+            about = AboutPixity(
+                content="""PiXity is your smart, AI-powered local companion designed to help foreigners navigate life in any city of Vietnam with ease, starting with Da Nang. From finding late-night eats to handling visas, housing, and healthcare, PiXity bridges the gap in language, culture, and local know-how — so you can explore the city like a true insider.
+
+PiXity is proudly built by PiX.teq, the tech team behind PiX — a multidisciplinary collective based in Da Nang.
+
+X: x.com/pixity_bot
+Instagram: instagram.com/pixity.aibot/
+Tiktok: tiktok.com/@pixity.aibot"""
+            )
+            db.add(about)
+            db.commit()
+            db.refresh(about)
+        
+        # Convert to Pydantic model
+        response = InfoContentResponse(
+            id=about.id,
+            content=about.content,
+            created_at=about.created_at,
+            updated_at=about.updated_at
+        )
+        
+        # Store in cache if caching is enabled
+        if use_cache:
+            about_pixity_cache.set("about_pixity", response)
+            
+        return response
+    except SQLAlchemyError as e:
+        logger.error(f"Database error in get_about_pixity: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+@router.put("/about-pixity", response_model=InfoContentResponse)
+async def update_about_pixity(
+    data: InfoContentUpdate,
+    db: Session = Depends(get_db)
+):
+    """
+    Update the About Pixity information.
+    
+    - **content**: New content text
+    """
+    try:
+        # Get the first record (or create if none exists)
+        about = db.query(AboutPixity).first()
+        
+        if not about:
+            # Create new record if none exists
+            about = AboutPixity(content=data.content)
+            db.add(about)
+        else:
+            # Update existing record
+            about.content = data.content
+            
+        db.commit()
+        db.refresh(about)
+        
+        # Invalidate cache
+        about_pixity_cache.clear()
+        
+        # Convert to Pydantic model
+        response = InfoContentResponse(
+            id=about.id,
+            content=about.content,
+            created_at=about.created_at,
+            updated_at=about.updated_at
+        )
+        
+        return response
+    except SQLAlchemyError as e:
+        db.rollback()
+        logger.error(f"Database error in update_about_pixity: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+# --- Da Nang Bucket List Pydantic models ---
+class DaNangBucketListBase(BaseModel):
+    content: str
+
+class DaNangBucketListResponse(DaNangBucketListBase):
+    id: int
+    created_at: datetime
+    updated_at: datetime
+    
+    class Config:
+        orm_mode = True
+        
+class DaNangBucketListCreate(DaNangBucketListBase):
+    pass
+
+class DaNangBucketListUpdate(BaseModel):
+    content: str
+
+# --- Da Nang Bucket List Endpoints ---
+@router.get("/danang-bucket-list", response_model=DaNangBucketListResponse)
+async def get_danang_bucket_list(
+    db: Session = Depends(get_db),
+    use_cache: bool = True
+):
+    """
+    Retrieve the Da Nang Bucket List information.
+    If none exists, creates a default entry.
+    """
+    cache_key = "danang_bucket_list"
+    
+    # Try to get from cache if caching is enabled
+    if use_cache and cache_key in danang_bucket_list_cache:
+        cached_result = danang_bucket_list_cache[cache_key]
+        logger.info(f"Cache hit for {cache_key}")
+        return cached_result
+    
+    try:
+        # Try to get the first bucket list entry
+        db_bucket_list = db.query(DaNangBucketList).first()
+        
+        # If no entry exists, create a default one
+        if not db_bucket_list:
+            default_content = json.dumps({
+                "title": "Da Nang Bucket List",
+                "description": "Must-visit places and experiences in Da Nang",
+                "items": [
+                    {"name": "Ba Na Hills", "description": "Visit the famous Golden Bridge"},
+                    {"name": "Marble Mountains", "description": "Explore caves and temples"},
+                    {"name": "My Khe Beach", "description": "Relax at one of the most beautiful beaches in Vietnam"},
+                    {"name": "Dragon Bridge", "description": "Watch the fire-breathing show on weekends"},
+                    {"name": "Son Tra Peninsula", "description": "See the Lady Buddha statue and lookout point"}
+                ]
+            })
+            
+            new_bucket_list = DaNangBucketList(content=default_content)
+            db.add(new_bucket_list)
+            db.commit()
+            db.refresh(new_bucket_list)
+            db_bucket_list = new_bucket_list
+            
+        # Convert to Pydantic model
+        response = DaNangBucketListResponse.from_orm(db_bucket_list)
+        
+        # Store in cache if caching is enabled
+        if use_cache:
+            danang_bucket_list_cache[cache_key] = response
+            
+        return response
+        
+    except SQLAlchemyError as e:
+        error_msg = f"Database error in get_danang_bucket_list: {str(e)}"
+        logger.error(error_msg)
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=error_msg)
+
+@router.put("/danang-bucket-list", response_model=DaNangBucketListResponse)
+async def update_danang_bucket_list(
+    bucket_list_data: DaNangBucketListUpdate,
+    db: Session = Depends(get_db)
+):
+    """
+    Update the Da Nang Bucket List information.
+    If none exists, creates a new entry.
+    """
+    try:
+        # Try to get the first bucket list entry
+        db_bucket_list = db.query(DaNangBucketList).first()
+        
+        # If no entry exists, create a new one
+        if not db_bucket_list:
+            db_bucket_list = DaNangBucketList(content=bucket_list_data.content)
+            db.add(db_bucket_list)
+        else:
+            # Update existing entry
+            db_bucket_list.content = bucket_list_data.content
+            db_bucket_list.updated_at = datetime.utcnow()
+            
+        db.commit()
+        db.refresh(db_bucket_list)
+        
+        # Clear cache
+        if "danang_bucket_list" in danang_bucket_list_cache:
+            del danang_bucket_list_cache["danang_bucket_list"]
+        
+        # Convert to Pydantic model
+        return DaNangBucketListResponse.from_orm(db_bucket_list)
+        
+    except SQLAlchemyError as e:
+        error_msg = f"Database error in update_danang_bucket_list: {str(e)}"
+        logger.error(error_msg)
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=error_msg)
+
+# --- Solana Summit Pydantic models ---
+class SolanaSummitBase(BaseModel):
+    content: str
+
+class SolanaSummitResponse(SolanaSummitBase):
+    id: int
+    created_at: datetime
+    updated_at: datetime
+    
+    class Config:
+        orm_mode = True
+        
+class SolanaSummitCreate(SolanaSummitBase):
+    pass
+
+class SolanaSummitUpdate(BaseModel):
+    content: str
+
+# --- Solana Summit Endpoints ---
+@router.get("/solana-summit", response_model=SolanaSummitResponse)
+async def get_solana_summit(
+    db: Session = Depends(get_db),
+    use_cache: bool = True
+):
+    """
+    Retrieve the Solana Summit information.
+    If none exists, creates a default entry.
+    """
+    cache_key = "solana_summit"
+    
+    # Try to get from cache if caching is enabled
+    if use_cache and cache_key in solana_summit_cache:
+        cached_result = solana_summit_cache[cache_key]
+        logger.info(f"Cache hit for {cache_key}")
+        return cached_result
+    
+    try:
+        # Try to get the first solana summit entry
+        db_solana_summit = db.query(SolanaSummit).first()
+        
+        # If no entry exists, create a default one
+        if not db_solana_summit:
+            default_content = json.dumps({
+                "title": "Solana Summit Vietnam",
+                "description": "Information about Solana Summit Vietnam event in Da Nang",
+                "date": "2023-11-04T09:00:00+07:00",
+                "location": "Hyatt Regency, Da Nang",
+                "details": "The Solana Summit is a gathering of developers, entrepreneurs, and enthusiasts in the Solana ecosystem.",
+                "agenda": [
+                    {"time": "09:00", "activity": "Registration & Networking"},
+                    {"time": "10:00", "activity": "Opening Keynote"},
+                    {"time": "12:00", "activity": "Lunch Break"},
+                    {"time": "13:30", "activity": "Developer Workshops"},
+                    {"time": "17:00", "activity": "Closing Remarks & Networking"}
+                ],
+                "registration_url": "https://example.com/solana-summit-registration"
+            })
+            
+            new_solana_summit = SolanaSummit(content=default_content)
+            db.add(new_solana_summit)
+            db.commit()
+            db.refresh(new_solana_summit)
+            db_solana_summit = new_solana_summit
+            
+        # Convert to Pydantic model
+        response = SolanaSummitResponse.from_orm(db_solana_summit)
+        
+        # Store in cache if caching is enabled
+        if use_cache:
+            solana_summit_cache[cache_key] = response
+            
+        return response
+        
+    except SQLAlchemyError as e:
+        error_msg = f"Database error in get_solana_summit: {str(e)}"
+        logger.error(error_msg)
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=error_msg)
+
+@router.put("/solana-summit", response_model=SolanaSummitResponse)
+async def update_solana_summit(
+    summit_data: SolanaSummitUpdate,
+    db: Session = Depends(get_db)
+):
+    """
+    Update the Solana Summit information.
+    If none exists, creates a new entry.
+    """
+    try:
+        # Try to get the first solana summit entry
+        db_solana_summit = db.query(SolanaSummit).first()
+        
+        # If no entry exists, create a new one
+        if not db_solana_summit:
+            db_solana_summit = SolanaSummit(content=summit_data.content)
+            db.add(db_solana_summit)
+        else:
+            # Update existing entry
+            db_solana_summit.content = summit_data.content
+            db_solana_summit.updated_at = datetime.utcnow()
+            
+        db.commit()
+        db.refresh(db_solana_summit)
+        
+        # Clear cache
+        if "solana_summit" in solana_summit_cache:
+            del solana_summit_cache["solana_summit"]
+        
+        # Convert to Pydantic model
+        return SolanaSummitResponse.from_orm(db_solana_summit)
+        
+    except SQLAlchemyError as e:
+        error_msg = f"Database error in update_solana_summit: {str(e)}"
+        logger.error(error_msg)
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=error_msg) 
