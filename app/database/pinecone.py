@@ -73,23 +73,39 @@ def init_pinecone():
         if pc is None:
             logger.info(f"Initializing Pinecone connection to index {PINECONE_INDEX_NAME}...")
             
+            # Check if API key and index name are set
+            if not PINECONE_API_KEY:
+                logger.error("PINECONE_API_KEY is not set in environment variables")
+                return None
+                
+            if not PINECONE_INDEX_NAME:
+                logger.error("PINECONE_INDEX_NAME is not set in environment variables")
+                return None
+            
             # Initialize Pinecone client using the new API
             pc = Pinecone(api_key=PINECONE_API_KEY)
             
-            # Check if index exists
-            index_list = pc.list_indexes()
-            
-            if not hasattr(index_list, 'names') or PINECONE_INDEX_NAME not in index_list.names():
-                logger.error(f"Index {PINECONE_INDEX_NAME} does not exist in Pinecone")
+            try:
+                # Check if index exists
+                index_list = pc.list_indexes()
+                
+                if not hasattr(index_list, 'names') or PINECONE_INDEX_NAME not in index_list.names():
+                    logger.error(f"Index {PINECONE_INDEX_NAME} does not exist in Pinecone")
+                    return None
+                
+                # Get existing index
+                index = pc.Index(PINECONE_INDEX_NAME)
+                logger.info(f"Pinecone connection established to index {PINECONE_INDEX_NAME}")
+            except Exception as connection_error:
+                logger.error(f"Error connecting to Pinecone index: {connection_error}")
                 return None
             
-            # Get existing index
-            index = pc.Index(PINECONE_INDEX_NAME)
-            logger.info(f"Pinecone connection established to index {PINECONE_INDEX_NAME}")
-            
         return index
+    except ImportError as e:
+        logger.error(f"Required package for Pinecone is missing: {e}")
+        return None
     except Exception as e:
-        logger.error(f"Error initializing Pinecone: {e}")
+        logger.error(f"Unexpected error initializing Pinecone: {e}")
         return None
 
 # Get Pinecone index singleton

@@ -64,11 +64,9 @@ async def lifespan(app: FastAPI):
     # Startup: kiểm tra kết nối các database
     logger.info("Starting application...")
     db_status = check_database_connections()
-    if all(db_status.values()):
-        logger.info("All database connections are working")
     
     # Khởi tạo bảng trong cơ sở dữ liệu (nếu chưa tồn tại)
-    if DEBUG:  # Chỉ khởi tạo bảng trong chế độ debug
+    if DEBUG and all(db_status.values()):  # Chỉ khởi tạo bảng trong chế độ debug và khi tất cả kết nối DB thành công
         from app.database.postgresql import create_tables
         if create_tables():
             logger.info("Database tables created or already exist")
@@ -84,6 +82,7 @@ try:
     from app.api.postgresql_routes import router as postgresql_router
     from app.api.rag_routes import router as rag_router
     from app.api.websocket_routes import router as websocket_router
+    from app.api.pdf_routes import router as pdf_router
     
     # Import middlewares
     from app.utils.middleware import RequestLoggingMiddleware, ErrorHandlingMiddleware, DatabaseCheckMiddleware
@@ -129,6 +128,7 @@ app.include_router(mongodb_router)
 app.include_router(postgresql_router)
 app.include_router(rag_router)
 app.include_router(websocket_router)
+app.include_router(pdf_router)
 
 # Root endpoint
 @app.get("/")

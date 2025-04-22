@@ -39,8 +39,33 @@ class EventItem(Base):
     date_start = Column(DateTime, nullable=False)
     date_end = Column(DateTime, nullable=True)
     price = Column(JSON, nullable=True)
+    url = Column(String, nullable=True)
     is_active = Column(Boolean, default=True)
     featured = Column(Boolean, default=False)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+class AboutPixity(Base):
+    __tablename__ = "about_pixity"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    content = Column(Text, nullable=False)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+class SolanaSummit(Base):
+    __tablename__ = "solana_summit"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    content = Column(Text, nullable=False)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+class DaNangBucketList(Base):
+    __tablename__ = "danang_bucket_list"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    content = Column(Text, nullable=False)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
