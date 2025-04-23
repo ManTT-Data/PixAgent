@@ -122,7 +122,8 @@ async def update_session_with_response(session_id: str, response_text: str):
             "response": response_text
         }
         
-        response = requests.put(endpoint_url, json=update_data)
+        # Sử dụng POST thay vì PUT vì API trả về lỗi 405 Method Not Allowed
+        response = requests.post(endpoint_url, json=update_data)
         if response.status_code not in [200, 201, 204]:  # Accept success status codes
             logger.warning(f"Failed to update session with response: {response.status_code} - {response.text}")
             return False
