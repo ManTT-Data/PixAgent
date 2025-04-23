@@ -71,7 +71,7 @@ async def startup():
     logger.info(f"👉 Registered handlers: {len(bot_app.handlers[0])} handlers")
     for handler in bot_app.handlers[0]:
         if isinstance(handler, CommandHandler):
-            logger.info(f"📝 Command handler registered: /{handler.command[0]}")
+            logger.info(f"📝 Command handler registered: /{handler.commands[0]}")
         elif isinstance(handler, CallbackQueryHandler):
             logger.info(f"🔘 Callback handler registered: {handler.callback}")
         elif isinstance(handler, MessageHandler):
