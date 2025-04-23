@@ -23,9 +23,9 @@ router = APIRouter(
     tags=["PDF Processing"],
 )
 
-# Thư mục lưu file tạm
-TEMP_UPLOAD_DIR = "./uploads/temp"
-STORAGE_DIR = "./uploads/pdfs"
+# Thư mục lưu file tạm - sử dụng /tmp để tránh lỗi quyền truy cập
+TEMP_UPLOAD_DIR = "/tmp/uploads/temp"
+STORAGE_DIR = "/tmp/uploads/pdfs"
 
 # Đảm bảo thư mục upload tồn tại
 os.makedirs(TEMP_UPLOAD_DIR, exist_ok=True)
