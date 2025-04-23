@@ -248,9 +248,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Handle menu button presses
     if text == "Da Nang's bucket list":
-        await get_danang_bucket_list(update, context, "danang_bucket_list", text)
+        await get_danang_bucket_list(update, context)
     elif text == "Solana Summit Event":
-        await get_solana_summit(update, context, "solana_summit", text)
+        await get_solana_summit(update, context)
     elif text == "Events":
         await get_events(update, context, "events", text)
     elif text == "Emergency":
@@ -335,8 +335,7 @@ async def get_events(update: Update, context: ContextTypes.DEFAULT_TYPE, action:
                 [KeyboardButton("Emergency"), KeyboardButton("FAQ")]
             ]
             reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-            follow_up_text = "What else would you like to know?"
-            await update.effective_message.reply_text(follow_up_text, reply_markup=reply_markup)
+            await update.effective_message.reply_text("", reply_markup=reply_markup)
         else:
             error_text = f"Failed to fetch events. Status: {response.status_code}"
             logger.error(f"Failed to fetch events: {response.status_code} - {response.text}")
@@ -364,7 +363,7 @@ async def get_emergency(update: Update, context: ContextTypes.DEFAULT_TYPE, acti
             return
             
         # Using the emergency endpoint from PostgreSQL
-        endpoint_url = fix_url(API_DATABASE_URL, "/postgres/emergency-info")
+        endpoint_url = fix_url(API_DATABASE_URL, "/postgres/emergency")
         logger.info(f"Fetching emergency information from: {endpoint_url}")
         
         response = requests.get(endpoint_url)
@@ -414,8 +413,7 @@ async def get_emergency(update: Update, context: ContextTypes.DEFAULT_TYPE, acti
                 [KeyboardButton("Emergency"), KeyboardButton("FAQ")]
             ]
             reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-            follow_up_text = "What else would you like to know?"
-            await update.effective_message.reply_text(follow_up_text, reply_markup=reply_markup)
+            await update.effective_message.reply_text("", reply_markup=reply_markup)
         else:
             error_text = f"Failed to fetch emergency information. Status: {response.status_code}"
             logger.error(f"Failed to fetch emergency info: {response.status_code} - {response.text}")
@@ -736,7 +734,12 @@ async def get_about_pixity(update: Update, context: ContextTypes.DEFAULT_TYPE, a
                     "Tiktok: tiktok.com/@pixity.aibot"
                 )
             else:
-                about_text = about_data.get('content')
+                # Xử lý response có định dạng JSON
+                try:
+                    content_obj = json.loads(about_data.get('content'))
+                    about_text = content_obj.get('content', about_data.get('content'))
+                except:
+                    about_text = about_data.get('content')
                 
             # Send response to user
             await update.effective_message.reply_text(about_text)
@@ -751,8 +754,7 @@ async def get_about_pixity(update: Update, context: ContextTypes.DEFAULT_TYPE, a
                 [KeyboardButton("Emergency"), KeyboardButton("FAQ")]
             ]
             reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-            follow_up_text = "What else would you like to know?"
-            await update.effective_message.reply_text(follow_up_text, reply_markup=reply_markup)
+            await update.effective_message.reply_text("", reply_markup=reply_markup)
         else:
             error_text = f"Failed to fetch About Pixity information. Status: {response.status_code}"
             logger.error(f"Failed to fetch About Pixity info: {response.status_code} - {response.text}")
@@ -853,14 +855,10 @@ async def get_solana_summit(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [KeyboardButton("Emergency"), KeyboardButton("FAQ")]
             ]
             reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-            follow_up_text = "Do you have any specific questions about the Solana Summit?"
-            await update.effective_message.reply_text(
-                follow_up_text,
-                reply_markup=reply_markup
-            )
+            await update.effective_message.reply_text("", reply_markup=reply_markup)
             
             # Also update session with follow-up question
-            await update_session_with_response(session_id, solana_summit_info + "\n\n" + follow_up_text)
+            await update_session_with_response(session_id, solana_summit_info)
         else:
             error_text = f"Failed to fetch Solana Summit information. Status: {response.status_code}"
             logger.error(f"Failed to fetch Solana Summit info: {response.status_code} - {response.text}")
@@ -954,11 +952,10 @@ async def get_danang_bucket_list(update: Update, context: ContextTypes.DEFAULT_T
                 [KeyboardButton("Emergency"), KeyboardButton("FAQ")]
             ]
             reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-            follow_up_text = "What else would you like to know?"
-            await update.effective_message.reply_text(follow_up_text, reply_markup=reply_markup)
+            await update.effective_message.reply_text("", reply_markup=reply_markup)
             
             # Also update session with follow-up question
-            await update_session_with_response(session_id, bucket_list + "\n\n" + follow_up_text)
+            await update_session_with_response(session_id, bucket_list)
         else:
             error_text = f"Failed to fetch Da Nang's Bucket List information. Status: {response.status_code}"
             logger.error(f"Failed to fetch Da Nang's Bucket List info: {response.status_code} - {response.text}")
