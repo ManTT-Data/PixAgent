@@ -17,6 +17,9 @@ from main import (
     handle_message,
     TELEGRAM_BOT_TOKEN,
     API_DATABASE_URL,
+    verify_api_endpoints,
+    get_session_endpoint,
+    get_rag_endpoint,
 )
 
 # Logging setup
@@ -62,7 +65,8 @@ async def startup():
     # Log our Database API URL
     if API_DATABASE_URL:
         logger.info(f"🔗 Database API URL: {API_DATABASE_URL}")
-
+        logger.info("✅ Using legacy API endpoints: /mongodb/session and /rag/chat")
+    
     # --- AUTO SET TELEGRAM WEBHOOK ---
     webhook_url = os.getenv("WEBHOOK_URL")
     if webhook_url:
@@ -119,6 +123,10 @@ async def health():
         "webhook_url_configured": bool(os.getenv("WEBHOOK_URL")),
         "database_configured": bool(API_DATABASE_URL),
         "initialized": bot_app._initialized,
+        "api_endpoints": {
+            "session": "/mongodb/session",
+            "rag": "/rag/chat"
+        }
     }
 
 

@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from urllib.parse import urlparse, urljoin
+import asyncio
 
 # Configure logging
 logging.basicConfig(
@@ -66,40 +67,41 @@ async def log_session(update: Update, action: str, message: str = ""):
     try:
         user = update.effective_user
         timestamp = get_current_time()
+        session_id = generate_session_id(user.id, timestamp)
         
+        # Tạo dữ liệu theo định dạng API cũ
         session_data = {
+            "session_id": session_id,
+            "factor": "user",
+            "action": action,
+            "created_at": timestamp,
+            "first_name": user.first_name or "",
+            "last_name": user.last_name or "",
+            "message": message,
             "user_id": str(user.id),
-            "query": message or action,
-            "timestamp": timestamp,
-            "metadata": {
-                "first_name": user.first_name or "",
-                "last_name": user.last_name or "",
-                "username": user.username or "",
-                "action": action,
-                "client_info": "telegram"
-            }
+            "username": user.username or "",
+            "response": ""  # Thêm trường response rỗng để tránh lỗi
         }
         
         if API_DATABASE_URL:
-            # Use the /session endpoint according to API documentation
-            endpoint_url = fix_url(API_DATABASE_URL, "/session")
+            # Luôn sử dụng endpoint cũ vì nó đã được xác nhận hoạt động
+            endpoint_url = fix_url(API_DATABASE_URL, "/mongodb/session")
             logger.info(f"Attempting to log session to: {endpoint_url}")
             
             try:
                 response = requests.post(endpoint_url, json=session_data)
                 if response.status_code not in [200, 201]:  # Accept both 200 OK and 201 Created
                     logger.warning(f"Failed to log session: {response.status_code} - {response.text}")
-                    return generate_session_id(user.id, timestamp)
+                    return session_id
                 
-                # Extract session_id from response
-                session_data = response.json()
-                return session_data.get("session_id", generate_session_id(user.id, timestamp))
+                logger.info(f"Successfully logged session: {session_id}")
+                return session_id
             except Exception as e:
                 logger.error(f"Error posting to {endpoint_url}: {e}")
-                return generate_session_id(user.id, timestamp)
+                return session_id
         else:
             logger.warning("Database URL not configured, session not logged")
-            return generate_session_id(user.id, timestamp)
+            return session_id
     except Exception as e:
         logger.error(f"Error logging session: {e}")
         return generate_session_id(user.id) if user else None
@@ -111,24 +113,21 @@ async def update_session_with_response(session_id: str, response_text: str):
         return False
     
     try:
-        # Create endpoint URL for updating the session with response
-        endpoint_url = fix_url(API_DATABASE_URL, f"/session/{session_id}/response")
+        # Luôn sử dụng endpoint cũ vì nó đã được xác nhận hoạt động
+        endpoint_url = fix_url(API_DATABASE_URL, f"/mongodb/session/{session_id}")
         logger.info(f"Updating session with response at: {endpoint_url}")
         
-        # Update data with the response text according to API documentation
+        # Update data với định dạng API cũ
         update_data = {
-            "response": response_text,
-            "response_timestamp": get_current_time(),
-            "metadata": {
-                "source": "telegram_bot",
-                "response_type": "text"
-            }
+            "response": response_text
         }
         
         response = requests.put(endpoint_url, json=update_data)
         if response.status_code not in [200, 201, 204]:  # Accept success status codes
             logger.warning(f"Failed to update session with response: {response.status_code} - {response.text}")
             return False
+        
+        logger.info(f"Successfully updated session with response: {session_id}")
         return True
     except Exception as e:
         logger.error(f"Error updating session with response: {e}")
@@ -636,27 +635,29 @@ async def get_rag_response(update: Update, context: ContextTypes.DEFAULT_TYPE, q
             
         user = update.effective_user
         
-        # Select appropriate RAG endpoint
+        # Luôn sử dụng endpoint RAG cũ vì API mới chưa hoạt động
         if API_RAG_URL:
-            rag_url = fix_url(API_RAG_URL, "/chat")
+            rag_url = fix_url(API_RAG_URL, "/rag/chat")
         else:
-            rag_url = fix_url(API_DATABASE_URL, "/chat")
+            rag_url = fix_url(API_DATABASE_URL, "/rag/chat")
             
         logger.info(f"Sending question to RAG at: {rag_url}")
         
         # Get session ID from context if available
         session_id = context.user_data.get("last_session_id")
         
-        # Get chat history if available
-        chat_history = context.user_data.get("chat_history", [])
-        
-        # Add current query to chat history
-        chat_history.append({"role": "user", "content": query_text})
-        
-        # Prepare payload based on API documentation
+        # Sử dụng định dạng dữ liệu API cũ
         payload = {
-            "query": query_text,
-            "chat_history": chat_history
+            "user_id": str(user.id),
+            "question": query_text,
+            "include_history": True,
+            "use_rag": True,
+            "similarity_top_k": 3,
+            "vector_distance_threshold": 0.75,
+            "session_id": session_id,
+            "first_name": user.first_name or "",
+            "last_name": user.last_name or "",
+            "username": user.username or ""
         }
         
         response = requests.post(rag_url, json=payload)
@@ -683,27 +684,17 @@ async def get_rag_response(update: Update, context: ContextTypes.DEFAULT_TYPE, q
             response_with_sources = answer
             
             if sources:
-                # Format sources according to the API documentation
+                # Format sources theo định dạng API cũ
                 if use_html_mode:
                     response_with_sources += "\n\n<b>Sources:</b>"
                     for i, source in enumerate(sources[:3]):  # Limit to 3 sources
-                        doc_id = source.get('document_id', 'Unknown')
-                        chunk_text = source.get('chunk_text', 'No text available')
-                        score = source.get('relevance_score', 0)
-                        response_with_sources += f"\n{i+1}. {doc_id} (Score: {score:.2f})"
+                        source_text = source.get('source', 'Unknown')
+                        response_with_sources += f"\n{i+1}. {source_text}"
                 else:
                     response_with_sources += "\n\nSources:"
                     for i, source in enumerate(sources[:3]):  # Limit to 3 sources
-                        doc_id = source.get('document_id', 'Unknown')
-                        chunk_text = source.get('chunk_text', 'No text available')
-                        score = source.get('relevance_score', 0)
-                        response_with_sources += f"\n{i+1}. {doc_id} (Score: {score:.2f})"
-            
-            # Add assistant's response to chat history
-            chat_history.append({"role": "assistant", "content": answer})
-            
-            # Store updated chat history
-            context.user_data["chat_history"] = chat_history
+                        source_text = source.get('source', 'Unknown')
+                        response_with_sources += f"\n{i+1}. {source_text}"
             
             # Send response to user
             await update.message.reply_text(response_with_sources, parse_mode=parse_mode)
@@ -1012,4 +1003,97 @@ async def get_danang_bucket_list(update: Update, context: ContextTypes.DEFAULT_T
         
         # Update session with error response
         session_id = context.user_data.get("last_session_id")
-        await update_session_with_response(session_id, error_text) 
+        await update_session_with_response(session_id, error_text)
+
+async def verify_api_endpoints():
+    """Verify which API endpoints are available and update global configuration."""
+    global API_DATABASE_URL, API_RAG_URL
+    if not API_DATABASE_URL:
+        logger.warning("No API_DATABASE_URL configured, skipping endpoint verification")
+        return
+        
+    logger.info(f"Verifying API endpoints for {API_DATABASE_URL}...")
+    
+    # Check both API structures
+    session_endpoints = [
+        {"path": "/session", "version": "new"},
+        {"path": "/mongodb/session", "version": "legacy"}
+    ]
+    rag_endpoints = [
+        {"path": "/chat", "version": "new"},
+        {"path": "/rag/chat", "version": "legacy"}
+    ]
+    
+    # Test session endpoints
+    session_api_version = None
+    for endpoint in session_endpoints:
+        url = fix_url(API_DATABASE_URL, endpoint["path"])
+        try:
+            # Just check if the endpoint exists
+            response = requests.options(url, timeout=5)
+            if response.status_code != 404:
+                session_api_version = endpoint["version"]
+                logger.info(f"Found valid session API endpoint: {url} (version: {session_api_version})")
+                break
+        except Exception as e:
+            logger.warning(f"Error checking endpoint {url}: {e}")
+    
+    # Test RAG endpoints
+    rag_api_version = None
+    api_base = API_RAG_URL if API_RAG_URL else API_DATABASE_URL
+    for endpoint in rag_endpoints:
+        url = fix_url(api_base, endpoint["path"])
+        try:
+            # Just check if the endpoint exists
+            response = requests.options(url, timeout=5)
+            if response.status_code != 404:
+                rag_api_version = endpoint["version"]
+                logger.info(f"Found valid RAG API endpoint: {url} (version: {rag_api_version})")
+                break
+        except Exception as e:
+            logger.warning(f"Error checking endpoint {url}: {e}")
+    
+    # Log the results
+    if session_api_version:
+        logger.info(f"Using {session_api_version} version for session API")
+    else:
+        logger.warning("No valid session API endpoint found!")
+    
+    if rag_api_version:
+        logger.info(f"Using {rag_api_version} version for RAG API")
+    else:
+        logger.warning("No valid RAG API endpoint found!")
+        
+    # Store the versions in global variables for use by the API functions
+    return {
+        "session_api_version": session_api_version,
+        "rag_api_version": rag_api_version
+    }
+
+# Thêm vào hàm main() hoặc startup function
+async def get_session_endpoint():
+    """Get the correct session endpoint based on API verification."""
+    # Default to legacy endpoint if verification wasn't done
+    endpoint_base = "/mongodb/session"
+    # Check if verification was done
+    if hasattr(get_session_endpoint, "verified_endpoints"):
+        if get_session_endpoint.verified_endpoints.get("session_api_version") == "new":
+            endpoint_base = "/session"
+    return endpoint_base
+
+async def get_rag_endpoint():
+    """Get the correct RAG endpoint based on API verification."""
+    # Default to legacy endpoint if verification wasn't done
+    endpoint_base = "/rag/chat"
+    # Check if verification was done
+    if hasattr(get_rag_endpoint, "verified_endpoints"):
+        if get_rag_endpoint.verified_endpoints.get("rag_api_version") == "new":
+            endpoint_base = "/chat"
+    return endpoint_base
+
+# Thêm vào startup hoặc init
+if __name__ == "__main__":
+    # Verify API endpoints and store results
+    verified_endpoints = asyncio.run(verify_api_endpoints())
+    get_session_endpoint.verified_endpoints = verified_endpoints
+    get_rag_endpoint.verified_endpoints = verified_endpoints 
