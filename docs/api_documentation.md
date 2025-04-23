@@ -1,56 +1,81 @@
-# API Documentation for PostgreSQL Endpoints
+# API Documentation
 
-## Tổng quan
+## Frontend Setup
 
-API PostgreSQL cung cấp các điểm cuối để quản lý dữ liệu từ cơ sở dữ liệu PostgreSQL, bao gồm các loại dữ liệu sau:
+```javascript
+// Basic Axios setup
+import axios from 'axios';
 
-- FAQ (Câu hỏi thường gặp)
-- Emergency Contacts (Thông tin liên hệ khẩn cấp)
-- Events (Sự kiện)
-- About Pixity (Thông tin về Pixity)
-- Solana Summit (Thông tin về Solana Summit)
-- Da Nang Bucket List (Danh sách điểm đến ở Đà Nẵng)
+const api = axios.create({
+  baseURL: 'https://api.your-domain.com',
+  timeout: 10000,
+  headers: {
+    'Content-Type': 'application/json',
+    'Accept': 'application/json'
+  }
+});
 
-Tất cả các endpoint đều được triển khai với khả năng cache để tối ưu hiệu suất.
-
-## Cơ chế Cache
-
-Hệ thống sử dụng TTLCache từ thư viện `cachetools` để lưu trữ tạm thời kết quả, giảm thiểu thời gian truy cập cơ sở dữ liệu. Mỗi loại dữ liệu có một cache riêng với thời gian sống (TTL) là 300 giây (5 phút).
-
-## Base URL
-
+// Error handling
+api.interceptors.response.use(
+  response => response.data,
+  error => {
+    const errorMessage = error.response?.data?.detail || 'An error occurred';
+    console.error('API Error:', errorMessage);
+    return Promise.reject(errorMessage);
+  }
+);
 ```
-/postgres
+
+## Caching System
+
+- All GET endpoints support `use_cache=true` parameter (default)
+- Cache TTL: 300 seconds (5 minutes)
+- Cache is automatically invalidated on data changes
+
+## Authentication
+
+Currently no authentication is required. If implemented in the future, use JWT Bearer tokens:
+
+```javascript
+const api = axios.create({
+  // ...other config
+  headers: {
+    // ...other headers
+    'Authorization': `Bearer ${token}`
+  }
+});
 ```
 
-## Endpoints
+## Error Codes
+
+| Code | Description |
+|------|-------------|
+| 400 | Bad Request |
+| 404 | Not Found |
+| 500 | Internal Server Error |
+| 503 | Service Unavailable |
+
+## PostgreSQL Endpoints
 
 ### FAQ Endpoints
 
-#### Lấy danh sách FAQ
-
+#### Get FAQs List
 ```
 GET /postgres/faq
 ```
 
-**Tham số**
+Parameters:
+- `skip`: Number of items to skip (default: 0)
+- `limit`: Maximum items to return (default: 100)
+- `active_only`: Return only active items (default: false)
+- `use_cache`: Use cached data if available (default: true)
 
-| Tên | Kiểu | Mô tả | Mặc định |
-|-----|------|-------|----------|
-| skip | integer | Số lượng item bỏ qua | 0 |
-| limit | integer | Số lượng item tối đa trả về | 100 |
-| active_only | boolean | Chỉ trả về các item đang hoạt động | false |
-| use_cache | boolean | Sử dụng cache nếu có sẵn | true |
-
-**Response**
-
-Mảng các đối tượng FAQ:
-
+Response:
 ```json
 [
   {
-    "question": "Làm thế nào để đặt phòng khách sạn?",
-    "answer": "Bạn có thể đặt phòng khách sạn thông qua ứng dụng hoặc website của chúng tôi.",
+    "question": "How do I book a hotel?",
+    "answer": "You can book a hotel through our app or website.",
     "is_active": true,
     "id": 1,
     "created_at": "2023-01-01T00:00:00",
@@ -59,110 +84,68 @@ Mảng các đối tượng FAQ:
 ]
 ```
 
-#### Tạo FAQ mới
+Example:
+```javascript
+async function getFAQs() {
+  try {
+    const data = await api.get('/postgres/faq', {
+      params: { active_only: true, limit: 20 }
+    });
+    return data;
+  } catch (error) {
+    console.error('Error fetching FAQs:', error);
+    throw error;
+  }
+}
+```
 
+#### Create FAQ
 ```
 POST /postgres/faq
 ```
 
-**Request Body**
-
+Request Body:
 ```json
 {
-  "question": "Làm thế nào để đặt phòng khách sạn?",
-  "answer": "Bạn có thể đặt phòng khách sạn thông qua ứng dụng hoặc website của chúng tôi.",
+  "question": "How do I book a hotel?",
+  "answer": "You can book a hotel through our app or website.",
   "is_active": true
 }
 ```
 
-**Response**
+Response: Created FAQ object
 
-```json
-{
-  "question": "Làm thế nào để đặt phòng khách sạn?",
-  "answer": "Bạn có thể đặt phòng khách sạn thông qua ứng dụng hoặc website của chúng tôi.",
-  "is_active": true,
-  "id": 1,
-  "created_at": "2023-01-01T00:00:00",
-  "updated_at": "2023-01-01T00:00:00"
-}
-```
-
-#### Lấy thông tin một FAQ
-
+#### Get FAQ Detail
 ```
 GET /postgres/faq/{faq_id}
 ```
 
-**Tham số**
+Parameters:
+- `faq_id`: ID of FAQ (required)
+- `use_cache`: Use cached data if available (default: true)
 
-| Tên | Kiểu | Mô tả | Mặc định |
-|-----|------|-------|----------|
-| faq_id | integer | ID của FAQ cần lấy | Required |
-| use_cache | boolean | Sử dụng cache nếu có sẵn | true |
+Response: FAQ object
 
-**Response**
-
-```json
-{
-  "question": "Làm thế nào để đặt phòng khách sạn?",
-  "answer": "Bạn có thể đặt phòng khách sạn thông qua ứng dụng hoặc website của chúng tôi.",
-  "is_active": true,
-  "id": 1,
-  "created_at": "2023-01-01T00:00:00",
-  "updated_at": "2023-01-01T00:00:00"
-}
-```
-
-#### Cập nhật FAQ
-
+#### Update FAQ
 ```
 PUT /postgres/faq/{faq_id}
 ```
 
-**Tham số**
+Parameters:
+- `faq_id`: ID of FAQ to update (required)
 
-| Tên | Kiểu | Mô tả | Mặc định |
-|-----|------|-------|----------|
-| faq_id | integer | ID của FAQ cần cập nhật | Required |
+Request Body: Partial or complete FAQ object
+Response: Updated FAQ object
 
-**Request Body**
-
-```json
-{
-  "question": "Cách đặt phòng khách sạn?",
-  "answer": "Bạn có thể đặt phòng khách sạn thông qua ứng dụng hoặc website của chúng tôi.",
-  "is_active": true
-}
-```
-
-**Response**
-
-```json
-{
-  "question": "Cách đặt phòng khách sạn?",
-  "answer": "Bạn có thể đặt phòng khách sạn thông qua ứng dụng hoặc website của chúng tôi.",
-  "is_active": true,
-  "id": 1,
-  "created_at": "2023-01-01T00:00:00",
-  "updated_at": "2023-01-01T00:00:00"
-}
-```
-
-#### Xóa FAQ
-
+#### Delete FAQ
 ```
 DELETE /postgres/faq/{faq_id}
 ```
 
-**Tham số**
+Parameters:
+- `faq_id`: ID of FAQ to delete (required)
 
-| Tên | Kiểu | Mô tả | Mặc định |
-|-----|------|-------|----------|
-| faq_id | integer | ID của FAQ cần xóa | Required |
-
-**Response**
-
+Response:
 ```json
 {
   "status": "success",
@@ -170,306 +153,117 @@ DELETE /postgres/faq/{faq_id}
 }
 ```
 
-#### Tạo nhiều FAQ cùng lúc
+#### Batch Operations
 
+Create multiple FAQs:
 ```
 POST /postgres/faqs/batch
 ```
 
-**Request Body**
-
-```json
-{
-  "faqs": [
-    {
-      "question": "Câu hỏi 1?",
-      "answer": "Trả lời 1",
-      "is_active": true
-    },
-    {
-      "question": "Câu hỏi 2?",
-      "answer": "Trả lời 2",
-      "is_active": true
-    }
-  ]
-}
-```
-
-**Response**
-
-Mảng các đối tượng FAQ đã tạo.
-
-#### Cập nhật trạng thái của nhiều FAQ
-
+Update status of multiple FAQs:
 ```
 PUT /postgres/faqs/batch-update-status
 ```
 
-**Request Body**
-
-```json
-{
-  "faq_ids": [1, 2, 3],
-  "is_active": false
-}
-```
-
-**Response**
-
-```json
-{
-  "success_count": 3,
-  "failed_ids": [],
-  "message": "Updated 3 FAQ items"
-}
-```
-
-#### Xóa nhiều FAQ
-
+Delete multiple FAQs:
 ```
 DELETE /postgres/faqs/batch
 ```
 
-**Request Body**
-
-```json
-{
-  "faq_ids": [1, 2, 3]
-}
-```
-
-**Response**
-
-```json
-{
-  "success_count": 3,
-  "failed_ids": [],
-  "message": "Deleted 3 FAQ items"
-}
-```
-
 ### Emergency Contact Endpoints
 
-#### Lấy danh sách liên hệ khẩn cấp
-
+#### Get Emergency Contacts
 ```
 GET /postgres/emergency
 ```
 
-**Tham số**
+Parameters:
+- `skip`: Number of items to skip (default: 0)
+- `limit`: Maximum items to return (default: 100)
+- `active_only`: Return only active items (default: false)
+- `use_cache`: Use cached data if available (default: true)
 
-| Tên | Kiểu | Mô tả | Mặc định |
-|-----|------|-------|----------|
-| skip | integer | Số lượng item bỏ qua | 0 |
-| limit | integer | Số lượng item tối đa trả về | 100 |
-| active_only | boolean | Chỉ trả về các item đang hoạt động | false |
-| use_cache | boolean | Sử dụng cache nếu có sẵn | true |
+Response: Array of Emergency Contact objects
 
-**Response**
-
-Mảng các đối tượng Emergency Contact.
-
-#### Tạo Emergency Contact mới
-
+#### Create Emergency Contact
 ```
 POST /postgres/emergency
 ```
 
-**Request Body**
-
+Request Body:
 ```json
 {
-  "name": "Cứu hỏa",
+  "name": "Fire Department",
   "phone_number": "114",
-  "description": "Dịch vụ cứu hỏa",
-  "address": "Đà Nẵng",
+  "description": "Fire rescue services",
+  "address": "Da Nang",
   "location": "16.0544, 108.2022",
   "priority": 1,
   "is_active": true
 }
 ```
 
-**Response**
+Response: Created Emergency Contact object
 
-Chi tiết Emergency Contact đã tạo.
-
-#### Xem chi tiết Emergency Contact
-
+#### Get Emergency Contact
 ```
 GET /postgres/emergency/{emergency_id}
 ```
 
-**Tham số**
-
-| Tên | Kiểu | Mô tả | Mặc định |
-|-----|------|-------|----------|
-| emergency_id | integer | ID của Emergency Contact | Required |
-| use_cache | boolean | Sử dụng cache nếu có sẵn | true |
-
-**Response**
-
-Chi tiết Emergency Contact.
-
-#### Cập nhật Emergency Contact
-
+#### Update Emergency Contact
 ```
 PUT /postgres/emergency/{emergency_id}
 ```
 
-**Tham số**
-
-| Tên | Kiểu | Mô tả | Mặc định |
-|-----|------|-------|----------|
-| emergency_id | integer | ID của Emergency Contact | Required |
-
-**Request Body**
-
-```json
-{
-  "name": "Cứu hỏa Đà Nẵng",
-  "phone_number": "114",
-  "priority": 2
-}
-```
-
-**Response**
-
-Chi tiết Emergency Contact đã cập nhật.
-
-#### Xóa Emergency Contact
-
+#### Delete Emergency Contact
 ```
 DELETE /postgres/emergency/{emergency_id}
 ```
 
-**Tham số**
+#### Batch Operations
 
-| Tên | Kiểu | Mô tả | Mặc định |
-|-----|------|-------|----------|
-| emergency_id | integer | ID của Emergency Contact | Required |
-
-**Response**
-
-```json
-{
-  "status": "success",
-  "message": "Emergency contact 1 deleted"
-}
-```
-
-#### Tạo nhiều Emergency Contact
-
+Create multiple Emergency Contacts:
 ```
 POST /postgres/emergency/batch
 ```
 
-**Request Body**
-
-```json
-{
-  "emergency_contacts": [
-    {
-      "name": "Cứu hỏa",
-      "phone_number": "114",
-      "priority": 1
-    },
-    {
-      "name": "Cảnh sát",
-      "phone_number": "113",
-      "priority": 2
-    }
-  ]
-}
-```
-
-**Response**
-
-Mảng các Emergency Contact đã tạo.
-
-#### Cập nhật trạng thái của nhiều Emergency Contact
-
+Update status of multiple Emergency Contacts:
 ```
 PUT /postgres/emergency/batch-update-status
 ```
 
-**Request Body**
-
-```json
-{
-  "emergency_ids": [1, 2, 3],
-  "is_active": false
-}
-```
-
-**Response**
-
-```json
-{
-  "success_count": 3,
-  "failed_ids": [],
-  "message": "Updated 3 emergency contacts"
-}
-```
-
-#### Xóa nhiều Emergency Contact
-
+Delete multiple Emergency Contacts:
 ```
 DELETE /postgres/emergency/batch
 ```
 
-**Request Body**
-
-```json
-{
-  "emergency_ids": [1, 2, 3]
-}
-```
-
-**Response**
-
-```json
-{
-  "success_count": 3,
-  "failed_ids": [],
-  "message": "Deleted 3 emergency contacts"
-}
-```
-
 ### Event Endpoints
 
-#### Lấy danh sách sự kiện
-
+#### Get Events
 ```
 GET /postgres/events
 ```
 
-**Tham số**
+Parameters:
+- `skip`: Number of items to skip (default: 0)
+- `limit`: Maximum items to return (default: 100)
+- `active_only`: Return only active items (default: false)
+- `featured_only`: Return only featured items (default: false)
+- `use_cache`: Use cached data if available (default: true)
 
-| Tên | Kiểu | Mô tả | Mặc định |
-|-----|------|-------|----------|
-| skip | integer | Số lượng item bỏ qua | 0 |
-| limit | integer | Số lượng item tối đa trả về | 100 |
-| active_only | boolean | Chỉ trả về các item đang hoạt động | false |
-| featured_only | boolean | Chỉ trả về các item nổi bật | false |
-| use_cache | boolean | Sử dụng cache nếu có sẵn | true |
+Response: Array of Event objects
 
-**Response**
-
-Mảng các đối tượng Event.
-
-#### Tạo sự kiện mới
-
+#### Create Event
 ```
 POST /postgres/events
 ```
 
-**Request Body**
-
+Request Body:
 ```json
 {
-  "name": "Lễ hội pháo hoa Đà Nẵng",
-  "description": "Lễ hội pháo hoa quốc tế Đà Nẵng 2023",
-  "address": "Cầu Rồng, Đà Nẵng",
+  "name": "Da Nang Fireworks Festival",
+  "description": "International Fireworks Festival Da Nang 2023",
+  "address": "Dragon Bridge, Da Nang",
   "location": "16.0610, 108.2277",
   "date_start": "2023-06-01T19:00:00",
   "date_end": "2023-06-01T22:00:00",
@@ -483,171 +277,48 @@ POST /postgres/events
 }
 ```
 
-**Response**
+Response: Created Event object
 
-Chi tiết sự kiện đã tạo.
-
-#### Xem chi tiết sự kiện
-
+#### Get Event
 ```
 GET /postgres/events/{event_id}
 ```
 
-**Tham số**
-
-| Tên | Kiểu | Mô tả | Mặc định |
-|-----|------|-------|----------|
-| event_id | integer | ID của sự kiện | Required |
-| use_cache | boolean | Sử dụng cache nếu có sẵn | true |
-
-**Response**
-
-Chi tiết sự kiện.
-
-#### Cập nhật sự kiện
-
+#### Update Event
 ```
 PUT /postgres/events/{event_id}
 ```
 
-**Tham số**
-
-| Tên | Kiểu | Mô tả | Mặc định |
-|-----|------|-------|----------|
-| event_id | integer | ID của sự kiện | Required |
-
-**Request Body**
-
-```json
-{
-  "name": "Lễ hội pháo hoa quốc tế Đà Nẵng",
-  "featured": true
-}
-```
-
-**Response**
-
-Chi tiết sự kiện đã cập nhật.
-
-#### Xóa sự kiện
-
+#### Delete Event
 ```
 DELETE /postgres/events/{event_id}
 ```
 
-**Tham số**
+#### Batch Operations
 
-| Tên | Kiểu | Mô tả | Mặc định |
-|-----|------|-------|----------|
-| event_id | integer | ID của sự kiện | Required |
-
-**Response**
-
-```json
-{
-  "status": "success",
-  "message": "Event 1 deleted"
-}
-```
-
-#### Tạo nhiều sự kiện
-
+Create multiple Events:
 ```
 POST /postgres/events/batch
 ```
 
-**Request Body**
-
-```json
-{
-  "events": [
-    {
-      "name": "Sự kiện 1",
-      "description": "Mô tả sự kiện 1",
-      "address": "Địa chỉ 1",
-      "date_start": "2023-06-01T19:00:00",
-      "is_active": true
-    },
-    {
-      "name": "Sự kiện 2",
-      "description": "Mô tả sự kiện 2",
-      "address": "Địa chỉ 2",
-      "date_start": "2023-07-01T19:00:00",
-      "is_active": true
-    }
-  ]
-}
-```
-
-**Response**
-
-Mảng các sự kiện đã tạo.
-
-#### Cập nhật trạng thái của nhiều sự kiện
-
+Update status of multiple Events:
 ```
 PUT /postgres/events/batch-update-status
 ```
 
-**Request Body**
-
-```json
-{
-  "event_ids": [1, 2, 3],
-  "is_active": false
-}
-```
-
-**Response**
-
-```json
-{
-  "success_count": 3,
-  "failed_ids": [],
-  "message": "Updated 3 events"
-}
-```
-
-#### Xóa nhiều sự kiện
-
+Delete multiple Events:
 ```
 DELETE /postgres/events/batch
 ```
 
-**Request Body**
-
-```json
-{
-  "event_ids": [1, 2, 3]
-}
-```
-
-**Response**
-
-```json
-{
-  "success_count": 3,
-  "failed_ids": [],
-  "message": "Deleted 3 events"
-}
-```
-
 ### About Pixity Endpoints
 
-#### Lấy thông tin về Pixity
-
+#### Get About Pixity
 ```
 GET /postgres/about-pixity
 ```
 
-**Tham số**
-
-| Tên | Kiểu | Mô tả | Mặc định |
-|-----|------|-------|----------|
-| use_cache | boolean | Sử dụng cache nếu có sẵn | true |
-
-**Response**
-
+Response:
 ```json
 {
   "content": "PiXity is your smart, AI-powered local companion...",
@@ -657,141 +328,54 @@ GET /postgres/about-pixity
 }
 ```
 
-#### Cập nhật thông tin về Pixity
-
+#### Update About Pixity
 ```
 PUT /postgres/about-pixity
 ```
 
-**Request Body**
-
+Request Body:
 ```json
 {
   "content": "PiXity is your smart, AI-powered local companion..."
 }
 ```
 
-**Response**
-
-```json
-{
-  "content": "PiXity is your smart, AI-powered local companion...",
-  "id": 1,
-  "created_at": "2023-01-01T00:00:00",
-  "updated_at": "2023-01-01T00:00:00"
-}
-```
+Response: Updated About Pixity object
 
 ### Da Nang Bucket List Endpoints
 
-#### Lấy thông tin Da Nang Bucket List
-
+#### Get Da Nang Bucket List
 ```
 GET /postgres/danang-bucket-list
 ```
 
-**Tham số**
+Response: Bucket List object with JSON content string
 
-| Tên | Kiểu | Mô tả | Mặc định |
-|-----|------|-------|----------|
-| use_cache | boolean | Sử dụng cache nếu có sẵn | true |
-
-**Response**
-
-```json
-{
-  "content": "{\"title\":\"Da Nang Bucket List\",\"description\":\"Must-visit places and experiences in Da Nang\",\"items\":[...]}",
-  "id": 1,
-  "created_at": "2023-01-01T00:00:00",
-  "updated_at": "2023-01-01T00:00:00"
-}
-```
-
-#### Cập nhật Da Nang Bucket List
-
+#### Update Da Nang Bucket List
 ```
 PUT /postgres/danang-bucket-list
 ```
 
-**Request Body**
-
-```json
-{
-  "content": "{\"title\":\"Da Nang Bucket List\",\"description\":\"Must-visit places and experiences in Da Nang\",\"items\":[...]}"
-}
-```
-
-**Response**
-
-```json
-{
-  "content": "{\"title\":\"Da Nang Bucket List\",\"description\":\"Must-visit places and experiences in Da Nang\",\"items\":[...]}",
-  "id": 1,
-  "created_at": "2023-01-01T00:00:00",
-  "updated_at": "2023-01-01T00:00:00"
-}
-```
-
 ### Solana Summit Endpoints
 
-#### Lấy thông tin Solana Summit
-
+#### Get Solana Summit
 ```
 GET /postgres/solana-summit
 ```
 
-**Tham số**
+Response: Solana Summit object with JSON content string
 
-| Tên | Kiểu | Mô tả | Mặc định |
-|-----|------|-------|----------|
-| use_cache | boolean | Sử dụng cache nếu có sẵn | true |
-
-**Response**
-
-```json
-{
-  "content": "{\"title\":\"Solana Summit Vietnam\",\"description\":\"Information about Solana Summit Vietnam event in Da Nang\",\"date\":\"2023-11-04T09:00:00+07:00\",\"location\":\"Hyatt Regency, Da Nang\",\"details\":\"The Solana Summit is a gathering of developers, entrepreneurs, and enthusiasts in the Solana ecosystem.\",\"agenda\":[...],\"registration_url\":\"https://example.com/solana-summit-registration\"}",
-  "id": 1,
-  "created_at": "2023-01-01T00:00:00",
-  "updated_at": "2023-01-01T00:00:00"
-}
-```
-
-#### Cập nhật Solana Summit
-
+#### Update Solana Summit
 ```
 PUT /postgres/solana-summit
 ```
 
-**Request Body**
-
-```json
-{
-  "content": "{\"title\":\"Solana Summit Vietnam\",\"description\":\"Information about Solana Summit Vietnam event in Da Nang\",\"date\":\"2023-11-04T09:00:00+07:00\",\"location\":\"Hyatt Regency, Da Nang\",\"details\":\"The Solana Summit is a gathering of developers, entrepreneurs, and enthusiasts in the Solana ecosystem.\",\"agenda\":[...],\"registration_url\":\"https://example.com/solana-summit-registration\"}"
-}
-```
-
-**Response**
-
-```json
-{
-  "content": "{\"title\":\"Solana Summit Vietnam\",\"description\":\"Information about Solana Summit Vietnam event in Da Nang\",\"date\":\"2023-11-04T09:00:00+07:00\",\"location\":\"Hyatt Regency, Da Nang\",\"details\":\"The Solana Summit is a gathering of developers, entrepreneurs, and enthusiasts in the Solana ecosystem.\",\"agenda\":[...],\"registration_url\":\"https://example.com/solana-summit-registration\"}",
-  "id": 1,
-  "created_at": "2023-01-01T00:00:00",
-  "updated_at": "2023-01-01T00:00:00"
-}
-```
-
-### Health Check Endpoint
-
-#### Kiểm tra tình trạng PostgreSQL
-
+### Health Check
 ```
 GET /postgres/health
 ```
 
-**Response**
-
+Response:
 ```json
 {
   "status": "healthy",
@@ -800,18 +384,198 @@ GET /postgres/health
 }
 ```
 
-## Mã lỗi
+## MongoDB Endpoints
 
-| Mã lỗi | Mô tả |
-|--------|-------|
-| 400 | Bad Request - Yêu cầu không hợp lệ |
-| 404 | Not Found - Không tìm thấy tài nguyên |
-| 500 | Internal Server Error - Lỗi máy chủ nội bộ |
-| 503 | Service Unavailable - Dịch vụ không khả dụng |
+### Session Endpoints
 
-## Lưu ý về Cache
+#### Create Session
+```
+POST /session
+```
 
-1. Tất cả các endpoint GET đều hỗ trợ tham số `use_cache` để bật/tắt caching.
-2. Cache được tự động làm mới khi có thay đổi dữ liệu (thông qua các endpoint POST, PUT, DELETE).
-3. TTL mặc định cho tất cả các cache là 300 giây (5 phút).
-4. Đối với endpoints lấy danh sách (list), cache key được tạo dựa trên tham số query để đảm bảo các bộ lọc khác nhau được cache riêng biệt. 
+Request Body:
+```json
+{
+  "user_id": "user123",
+  "query": "How do I book a room?",
+  "timestamp": "2023-01-01T00:00:00",
+  "metadata": {
+    "client_info": "web",
+    "location": "Da Nang"
+  }
+}
+```
+
+Response: Created Session object with session_id
+
+#### Update Session with Response
+```
+PUT /session/{session_id}/response
+```
+
+Request Body:
+```json
+{
+  "response": "You can book a room through our app or website.",
+  "response_timestamp": "2023-01-01T00:00:05",
+  "metadata": {
+    "response_time_ms": 234,
+    "model_version": "gpt-4"
+  }
+}
+```
+
+Response: Updated Session object
+
+#### Get Session
+```
+GET /session/{session_id}
+```
+
+Response: Session object
+
+#### Get User History
+```
+GET /history
+```
+
+Parameters:
+- `user_id`: User ID (required)
+- `limit`: Maximum sessions to return (default: 10)
+- `skip`: Number of sessions to skip (default: 0)
+
+Response:
+```json
+{
+  "user_id": "user123",
+  "sessions": [
+    {
+      "session_id": "60f7a8b9c1d2e3f4a5b6c7d8",
+      "query": "How do I book a room?",
+      "timestamp": "2023-01-01T00:00:00",
+      "response": "You can book a room through our app or website.",
+      "response_timestamp": "2023-01-01T00:00:05"
+    }
+  ],
+  "total_count": 1
+}
+```
+
+#### Health Check
+```
+GET /health
+```
+
+## RAG Endpoints
+
+### Create Embedding
+```
+POST /embedding
+```
+
+Request Body:
+```json
+{
+  "text": "Text to embed"
+}
+```
+
+Response:
+```json
+{
+  "embedding": [0.1, 0.2, 0.3, ...],
+  "dimensions": 1536
+}
+```
+
+### Process Chat Request
+```
+POST /chat
+```
+
+Request Body:
+```json
+{
+  "query": "Can you tell me about Pixity?",
+  "chat_history": [
+    {"role": "user", "content": "Hello"},
+    {"role": "assistant", "content": "Hello! How can I help you?"}
+  ]
+}
+```
+
+Response:
+```json
+{
+  "answer": "Pixity is a platform...",
+  "sources": [
+    {
+      "document_id": "doc123",
+      "chunk_id": "chunk456",
+      "chunk_text": "Pixity was founded in...",
+      "relevance_score": 0.92
+    }
+  ]
+}
+```
+
+### Direct RAG Query
+```
+POST /rag
+```
+
+Request Body:
+```json
+{
+  "query": "Can you tell me about Pixity?",
+  "namespace": "about_pixity",
+  "top_k": 3
+}
+```
+
+Response: Query results with relevance scores
+
+### Health Check
+```
+GET /health
+```
+
+## PDF Processing Endpoints
+
+### Upload and Process PDF
+```
+POST /pdf/upload
+```
+
+Form Data:
+- `file`: PDF file (required)
+- `namespace`: Vector database namespace (default: "Default")
+- `index_name`: Vector database index name (default: "testbot768")
+- `title`: Document title (optional)
+- `description`: Document description (optional)
+- `user_id`: User ID for WebSocket updates (optional)
+
+Response: Processing results with document_id
+
+### Delete Documents in Namespace
+```
+DELETE /pdf/namespace
+```
+
+Parameters:
+- `namespace`: Vector database namespace (default: "Default")
+- `index_name`: Vector database index name (default: "testbot768")
+- `user_id`: User ID for WebSocket updates (optional)
+
+Response: Deletion results
+
+### Get Documents List
+```
+GET /pdf/documents
+```
+
+Parameters:
+- `namespace`: Vector database namespace (default: "Default")
+- `index_name`: Vector database index name (default: "testbot768")
+
+Response: List of documents in the namespace 

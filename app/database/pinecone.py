@@ -269,7 +269,7 @@ async def search_vectors(
         logger.info(f"Pinecone search returned {match_count} matches after threshold filtering (metric: {similarity_metric}, threshold: {similarity_threshold})")
         
         # Store result in cache with 5 minute TTL
-        cache.set(cache_key, results, ttl=300)
+        cache[cache_key] = results
         
         return results
     except Exception as e:
@@ -589,7 +589,7 @@ def get_chain(
         logger.info(f"Pinecone retriever initialized in {time.time() - start_time:.2f} seconds")
         
         # Cache the retriever with longer TTL (1 hour) since it rarely changes
-        cache.set(cache_key, _retriever_instance, ttl=3600)
+        cache[cache_key] = _retriever_instance
         
         return _retriever_instance
     except Exception as e:

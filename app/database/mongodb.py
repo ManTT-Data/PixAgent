@@ -174,7 +174,7 @@ def get_recent_sessions(user_id, action, n=3):
         )
         
         # Lưu kết quả vào cache
-        cache.set(cache_key, result)
+        cache[cache_key] = result
         logger.debug(f"Cached recent sessions for: {user_id}, {action}")
         
         return result
