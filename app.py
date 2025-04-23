@@ -13,7 +13,7 @@ from main import (
     events_command,
     faq_command,
     emergency_command,
-    handle_button,
+    handle_callback,
     handle_message,
     TELEGRAM_BOT_TOKEN,
     API_DATABASE_URL,
@@ -39,7 +39,7 @@ bot_app.add_handler(CommandHandler("events", events_command, block=False))
 bot_app.add_handler(CommandHandler("faq", faq_command, block=False))
 bot_app.add_handler(CommandHandler("emergency", emergency_command, block=False))
 bot_app.add_handler(CommandHandler("help", help_command, block=False))
-bot_app.add_handler(CallbackQueryHandler(handle_button))
+bot_app.add_handler(CallbackQueryHandler(handle_callback))
 bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
 
@@ -66,6 +66,16 @@ async def startup():
     if API_DATABASE_URL:
         logger.info(f"🔗 Database API URL: {API_DATABASE_URL}")
         logger.info("✅ Using legacy API endpoints: /mongodb/session and /rag/chat")
+    
+    # Kiểm tra các handlers đã được đăng ký
+    logger.info(f"👉 Registered handlers: {len(bot_app.handlers[0])} handlers")
+    for handler in bot_app.handlers[0]:
+        if isinstance(handler, CommandHandler):
+            logger.info(f"📝 Command handler registered: /{handler.command[0]}")
+        elif isinstance(handler, CallbackQueryHandler):
+            logger.info(f"🔘 Callback handler registered: {handler.callback}")
+        elif isinstance(handler, MessageHandler):
+            logger.info(f"💬 Message handler registered")
     
     # --- AUTO SET TELEGRAM WEBHOOK ---
     webhook_url = os.getenv("WEBHOOK_URL")
