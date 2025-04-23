@@ -912,7 +912,8 @@ async def get_danang_bucket_list(update: Update, context: ContextTypes.DEFAULT_T
                     content_json = json.loads(bucket_data.get('content'))
                     
                     # Format the data from json
-                    bucket_list = f"📋 {content_json.get('title', 'Da Nang\'s bucket list')}:\n\n"
+                    title_text = content_json.get('title', "Da Nang's bucket list")
+                    bucket_list = f"📋 {title_text}:\n\n"
                     bucket_list += f"{content_json.get('description', '')}\n\n"
                     
                     # Add each item from the bucket list
