@@ -65,39 +65,44 @@ async def log_session(update: Update, action: str, message: str = ""):
     """Log user session to database."""
     try:
         user = update.effective_user
-        session_id = generate_session_id(user.id)
+        timestamp = get_current_time()
         
         session_data = {
-            "session_id": session_id,
-            "factor": "user",
-            "action": action,
-            "created_at": get_current_time(),
-            "first_name": user.first_name or "",
-            "last_name": user.last_name or "",
-            "message": message,
             "user_id": str(user.id),
-            "username": user.username or "",
-            "response": ""  # Add empty response field to avoid errors
+            "query": message or action,
+            "timestamp": timestamp,
+            "metadata": {
+                "first_name": user.first_name or "",
+                "last_name": user.last_name or "",
+                "username": user.username or "",
+                "action": action,
+                "client_info": "telegram"
+            }
         }
         
         if API_DATABASE_URL:
-            # Try direct API endpoint without the path prefix
-            endpoint_url = fix_url(API_DATABASE_URL, "/mongodb/session")
+            # Use the /session endpoint according to API documentation
+            endpoint_url = fix_url(API_DATABASE_URL, "/session")
             logger.info(f"Attempting to log session to: {endpoint_url}")
             
             try:
                 response = requests.post(endpoint_url, json=session_data)
                 if response.status_code not in [200, 201]:  # Accept both 200 OK and 201 Created
                     logger.warning(f"Failed to log session: {response.status_code} - {response.text}")
-                return session_id
+                    return generate_session_id(user.id, timestamp)
+                
+                # Extract session_id from response
+                session_data = response.json()
+                return session_data.get("session_id", generate_session_id(user.id, timestamp))
             except Exception as e:
                 logger.error(f"Error posting to {endpoint_url}: {e}")
+                return generate_session_id(user.id, timestamp)
         else:
             logger.warning("Database URL not configured, session not logged")
-        return session_id
+            return generate_session_id(user.id, timestamp)
     except Exception as e:
         logger.error(f"Error logging session: {e}")
-        return None
+        return generate_session_id(user.id) if user else None
 
 # Add a new function to update the session with bot response
 async def update_session_with_response(session_id: str, response_text: str):
@@ -106,13 +111,18 @@ async def update_session_with_response(session_id: str, response_text: str):
         return False
     
     try:
-        # Create endpoint URL for updating the session
-        endpoint_url = fix_url(API_DATABASE_URL, f"/mongodb/session/{session_id}")
+        # Create endpoint URL for updating the session with response
+        endpoint_url = fix_url(API_DATABASE_URL, f"/session/{session_id}/response")
         logger.info(f"Updating session with response at: {endpoint_url}")
         
-        # Update data with the response text
+        # Update data with the response text according to API documentation
         update_data = {
-            "response": response_text
+            "response": response_text,
+            "response_timestamp": get_current_time(),
+            "metadata": {
+                "source": "telegram_bot",
+                "response_type": "text"
+            }
         }
         
         response = requests.put(endpoint_url, json=update_data)
@@ -278,11 +288,18 @@ async def get_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update_session_with_response(session_id, response_text)
             return
             
-        # Using the documented events endpoint from PostgreSQL with fixed URL
+        # Using the documented events endpoint from PostgreSQL with parameters
         endpoint_url = fix_url(API_DATABASE_URL, "/postgres/events")
+        params = {
+            "active_only": True,
+            "featured_only": False,
+            "limit": 10,
+            "skip": 0,
+            "use_cache": True
+        }
         logger.info(f"Fetching events from: {endpoint_url}")
         
-        response = requests.get(endpoint_url)
+        response = requests.get(endpoint_url, params=params)
         if response.status_code == 200:
             events = response.json()
             if not events:
@@ -362,11 +379,16 @@ async def get_emergency(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update_session_with_response(session_id, response_text)
             return
             
-        # Using the documented emergency endpoint from PostgreSQL with fixed URL
+        # Using the documented emergency endpoint from PostgreSQL with parameters
         endpoint_url = fix_url(API_DATABASE_URL, "/postgres/emergency")
+        params = {
+            "active_only": True,
+            "limit": 20,
+            "use_cache": True
+        }
         logger.info(f"Fetching emergency info from: {endpoint_url}")
         
-        response = requests.get(endpoint_url)
+        response = requests.get(endpoint_url, params=params)
         if response.status_code == 200:
             emergencies = response.json()
             if not emergencies:
@@ -384,7 +406,7 @@ async def get_emergency(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     callback_data=f"emergency_{i}"
                 )])
             
-            prompt_text = "Please select an emergency type:"
+            prompt_text = "Please select an emergency contact:"
             reply_markup = InlineKeyboardMarkup(keyboard)
             await update.effective_message.reply_text(
                 prompt_text, 
@@ -473,25 +495,30 @@ async def show_emergency_details(update: Update, context: ContextTypes.DEFAULT_T
         await update_session_with_response(session_id, error_text)
 
 async def get_faq(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Get FAQ from API and display it."""
+    """Get FAQ information from API and display it."""
     try:
         if not API_DATABASE_URL:
-            response_text = "Database API not configured. Cannot fetch FAQ."
+            response_text = "Database API not configured. Cannot fetch FAQ information."
             await update.effective_message.reply_text(response_text)
             # Update session with response
             session_id = context.user_data.get("last_session_id")
             await update_session_with_response(session_id, response_text)
             return
             
-        # Using the documented FAQ endpoint from PostgreSQL with fixed URL
+        # Using the documented FAQ endpoint from PostgreSQL with parameters
         endpoint_url = fix_url(API_DATABASE_URL, "/postgres/faq")
+        params = {
+            "active_only": True,
+            "limit": 10,
+            "use_cache": True
+        }
         logger.info(f"Fetching FAQ from: {endpoint_url}")
         
-        response = requests.get(endpoint_url)
+        response = requests.get(endpoint_url, params=params)
         if response.status_code == 200:
             faqs = response.json()
             if not faqs:
-                response_text = "No FAQ available."
+                response_text = "No FAQ information available."
                 await update.effective_message.reply_text(response_text)
                 # Update session with response
                 session_id = context.user_data.get("last_session_id")
@@ -501,11 +528,11 @@ async def get_faq(update: Update, context: ContextTypes.DEFAULT_TYPE):
             keyboard = []
             for i, faq in enumerate(faqs):
                 keyboard.append([InlineKeyboardButton(
-                    faq.get('question', f'Question {i+1}')[:40] + "...", 
+                    faq.get('question', f'Question {i+1}'), 
                     callback_data=f"faq_{i}"
                 )])
             
-            prompt_text = "Frequently Asked Questions:"
+            prompt_text = "Please select a question:"
             reply_markup = InlineKeyboardMarkup(keyboard)
             await update.effective_message.reply_text(
                 prompt_text, 
@@ -525,16 +552,16 @@ async def get_faq(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Store FAQs in context for later use
             context.user_data["faqs"] = faqs
         else:
-            error_text = f"Failed to fetch FAQ. Status: {response.status_code}"
-            logger.error(f"Failed to fetch FAQ: {response.status_code} - {response.text}")
+            error_text = f"Failed to fetch FAQ information. Status: {response.status_code}"
+            logger.error(f"Failed to fetch FAQ info: {response.status_code} - {response.text}")
             await update.effective_message.reply_text(error_text)
             
             # Update session with error response
             session_id = context.user_data.get("last_session_id")
             await update_session_with_response(session_id, error_text)
     except Exception as e:
-        error_text = "An error occurred while fetching FAQ. Please try again later."
-        logger.error(f"Error fetching FAQ: {e}")
+        error_text = "An error occurred while fetching FAQ information. Please try again later."
+        logger.error(f"Error fetching FAQ information: {e}")
         await update.effective_message.reply_text(error_text)
         
         # Update session with error response
@@ -542,7 +569,7 @@ async def get_faq(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update_session_with_response(session_id, error_text)
 
 async def show_faq_answer(update: Update, context: ContextTypes.DEFAULT_TYPE, faq_id: str):
-    """Show answer for a specific FAQ question."""
+    """Show details for a specific FAQ."""
     query = update.callback_query
     faqs = context.user_data.get("faqs", [])
     
@@ -550,6 +577,10 @@ async def show_faq_answer(update: Update, context: ContextTypes.DEFAULT_TYPE, fa
         faq_index = int(faq_id)
         if faq_index < len(faqs):
             faq = faqs[faq_index]
+            
+            # We could also fetch detailed FAQ from API using ID if needed
+            # endpoint_url = fix_url(API_DATABASE_URL, f"/postgres/faq/{faq.get('id')}")
+            
             faq_text = (
                 f"❓ *Question:*\n{faq.get('question', 'Unknown question')}\n\n"
                 f"✅ *Answer:*\n{faq.get('answer', 'No answer available.')}"
@@ -607,27 +638,25 @@ async def get_rag_response(update: Update, context: ContextTypes.DEFAULT_TYPE, q
         
         # Select appropriate RAG endpoint
         if API_RAG_URL:
-            rag_url = fix_url(API_RAG_URL, "/rag/chat")
+            rag_url = fix_url(API_RAG_URL, "/chat")
         else:
-            rag_url = fix_url(API_DATABASE_URL, "/rag/chat")
+            rag_url = fix_url(API_DATABASE_URL, "/chat")
             
         logger.info(f"Sending question to RAG at: {rag_url}")
         
         # Get session ID from context if available
         session_id = context.user_data.get("last_session_id")
         
+        # Get chat history if available
+        chat_history = context.user_data.get("chat_history", [])
+        
+        # Add current query to chat history
+        chat_history.append({"role": "user", "content": query_text})
+        
         # Prepare payload based on API documentation
         payload = {
-            "user_id": str(user.id),
-            "question": query_text,
-            "include_history": True,
-            "use_rag": True,
-            "similarity_top_k": 3,
-            "vector_distance_threshold": 0.75,
-            "session_id": session_id,
-            "first_name": user.first_name or "",
-            "last_name": user.last_name or "",
-            "username": user.username or ""
+            "query": query_text,
+            "chat_history": chat_history
         }
         
         response = requests.post(rag_url, json=payload)
@@ -649,19 +678,32 @@ async def get_rag_response(update: Update, context: ContextTypes.DEFAULT_TYPE, q
                 parse_mode = None
                 logger.info("Using default parse mode for RAG response")
             
-            # If there are sources, add them to the response
+            # Format sources if available
             sources = result.get("sources", [])
             response_with_sources = answer
+            
             if sources:
-                # If using HTML mode, ensure text after this doesn't contain HTML tags
+                # Format sources according to the API documentation
                 if use_html_mode:
                     response_with_sources += "\n\n<b>Sources:</b>"
                     for i, source in enumerate(sources[:3]):  # Limit to 3 sources
-                        response_with_sources += f"\n{i+1}. {source.get('source', 'Unknown')}"
+                        doc_id = source.get('document_id', 'Unknown')
+                        chunk_text = source.get('chunk_text', 'No text available')
+                        score = source.get('relevance_score', 0)
+                        response_with_sources += f"\n{i+1}. {doc_id} (Score: {score:.2f})"
                 else:
                     response_with_sources += "\n\nSources:"
                     for i, source in enumerate(sources[:3]):  # Limit to 3 sources
-                        response_with_sources += f"\n{i+1}. {source.get('source', 'Unknown')}"
+                        doc_id = source.get('document_id', 'Unknown')
+                        chunk_text = source.get('chunk_text', 'No text available')
+                        score = source.get('relevance_score', 0)
+                        response_with_sources += f"\n{i+1}. {doc_id} (Score: {score:.2f})"
+            
+            # Add assistant's response to chat history
+            chat_history.append({"role": "assistant", "content": answer})
+            
+            # Store updated chat history
+            context.user_data["chat_history"] = chat_history
             
             # Send response to user
             await update.message.reply_text(response_with_sources, parse_mode=parse_mode)
@@ -679,9 +721,7 @@ async def get_rag_response(update: Update, context: ContextTypes.DEFAULT_TYPE, q
             follow_up_text = "Is there anything else you would like to know?"
             await update.message.reply_text(follow_up_text, reply_markup=reply_markup)
             
-            # Note: According to API documentation, RAG chat now automatically 
-            # saves the answer to MongoDB for the given session_id
-            logger.info("RAG response sent to user and automatically saved to database")
+            logger.info("RAG response sent to user")
         else:
             error_text = f"Failed to get a response. Status: {response.status_code}"
             logger.error(f"Failed to get RAG response: {response.status_code} - {response.text}")
@@ -709,11 +749,14 @@ async def get_about_pixity(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update_session_with_response(session_id, response_text)
             return
             
-        # Using the documented about-pixity endpoint from PostgreSQL API
+        # Using the documented about-pixity endpoint from PostgreSQL API with cache
         endpoint_url = fix_url(API_DATABASE_URL, "/postgres/about-pixity")
+        params = {
+            "use_cache": True
+        }
         logger.info(f"Fetching About Pixity info from: {endpoint_url}")
         
-        response = requests.get(endpoint_url)
+        response = requests.get(endpoint_url, params=params)
         if response.status_code == 200:
             about_data = response.json()
             if not about_data or not about_data.get('content'):
@@ -774,11 +817,14 @@ async def get_solana_summit(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update_session_with_response(session_id, response_text)
             return
             
-        # Using the documented solana-summit endpoint from PostgreSQL API
+        # Using the documented solana-summit endpoint from PostgreSQL API with cache
         endpoint_url = fix_url(API_DATABASE_URL, "/postgres/solana-summit")
+        params = {
+            "use_cache": True
+        }
         logger.info(f"Fetching Solana Summit info from: {endpoint_url}")
         
-        response = requests.get(endpoint_url)
+        response = requests.get(endpoint_url, params=params)
         if response.status_code == 200:
             summit_data = response.json()
             
@@ -881,11 +927,14 @@ async def get_danang_bucket_list(update: Update, context: ContextTypes.DEFAULT_T
             await update_session_with_response(session_id, response_text)
             return
             
-        # Using the documented danang-bucket-list endpoint from PostgreSQL API
+        # Using the documented danang-bucket-list endpoint from PostgreSQL API with cache
         endpoint_url = fix_url(API_DATABASE_URL, "/postgres/danang-bucket-list")
+        params = {
+            "use_cache": True
+        }
         logger.info(f"Fetching Da Nang's Bucket List info from: {endpoint_url}")
         
-        response = requests.get(endpoint_url)
+        response = requests.get(endpoint_url, params=params)
         if response.status_code == 200:
             bucket_data = response.json()
             
