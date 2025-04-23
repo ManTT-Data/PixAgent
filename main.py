@@ -62,14 +62,14 @@ def generate_session_id(user_id, timestamp=None):
         timestamp = get_current_time()
     return f"{user_id}_{timestamp.replace(' ', '_')}"
 
-async def log_session(update: Update, action: str, message: str = ""):
-    """Log user session to database."""
+async def log_complete_session(update: Update, action: str, message: str, response_text: str):
+    """Log a complete session with both user message and bot response in one call."""
     try:
         user = update.effective_user
         timestamp = get_current_time()
         session_id = generate_session_id(user.id, timestamp)
         
-        # Tạo dữ liệu theo định dạng API cũ
+        # Tạo dữ liệu phiên chat hoàn chỉnh bao gồm cả câu hỏi và phản hồi
         session_data = {
             "session_id": session_id,
             "factor": "user",
@@ -80,21 +80,21 @@ async def log_session(update: Update, action: str, message: str = ""):
             "message": message,
             "user_id": str(user.id),
             "username": user.username or "",
-            "response": ""  # Thêm trường response rỗng để tránh lỗi
+            "response": response_text
         }
         
         if API_DATABASE_URL:
-            # Luôn sử dụng endpoint cũ vì nó đã được xác nhận hoạt động
+            # Gửi dữ liệu phiên chat hoàn chỉnh đến API
             endpoint_url = fix_url(API_DATABASE_URL, "/mongodb/session")
-            logger.info(f"Attempting to log session to: {endpoint_url}")
+            logger.info(f"Logging complete session to: {endpoint_url}")
             
             try:
                 response = requests.post(endpoint_url, json=session_data)
                 if response.status_code not in [200, 201]:  # Accept both 200 OK and 201 Created
-                    logger.warning(f"Failed to log session: {response.status_code} - {response.text}")
+                    logger.warning(f"Failed to log complete session: {response.status_code} - {response.text}")
                     return session_id
                 
-                logger.info(f"Successfully logged session: {session_id}")
+                logger.info(f"Successfully logged complete session: {session_id}")
                 return session_id
             except Exception as e:
                 logger.error(f"Error posting to {endpoint_url}: {e}")
@@ -103,42 +103,34 @@ async def log_session(update: Update, action: str, message: str = ""):
             logger.warning("Database URL not configured, session not logged")
             return session_id
     except Exception as e:
-        logger.error(f"Error logging session: {e}")
+        logger.error(f"Error logging complete session: {e}")
         return generate_session_id(user.id) if user else None
 
-# Add a new function to update the session with bot response
-async def update_session_with_response(session_id: str, response_text: str):
-    """Update the session with the bot's response."""
-    if not session_id or not API_DATABASE_URL:
-        return False
-    
+# Giữ hàm log_session để tương thích ngược, nhưng không sử dụng trong mã chính
+async def log_session(update: Update, action: str, message: str = ""):
+    """Create a temporary session ID without actually logging to the database."""
     try:
-        # Luôn sử dụng endpoint cũ vì nó đã được xác nhận hoạt động
-        endpoint_url = fix_url(API_DATABASE_URL, f"/mongodb/session/{session_id}")
-        logger.info(f"Updating session with response at: {endpoint_url}")
-        
-        # Update data với định dạng API cũ
-        update_data = {
-            "response": response_text
-        }
-        
-        # Sử dụng POST thay vì PUT vì API trả về lỗi 405 Method Not Allowed
-        response = requests.post(endpoint_url, json=update_data)
-        if response.status_code not in [200, 201, 204]:  # Accept success status codes
-            logger.warning(f"Failed to update session with response: {response.status_code} - {response.text}")
-            return False
-        
-        logger.info(f"Successfully updated session with response: {session_id}")
-        return True
+        user = update.effective_user
+        timestamp = get_current_time()
+        session_id = generate_session_id(user.id, timestamp)
+        return session_id
     except Exception as e:
-        logger.error(f"Error updating session with response: {e}")
-        return False
+        logger.error(f"Error creating temporary session ID: {e}")
+        return None
+
+# Không còn cần update_session_with_response nữa, nhưng giữ lại để tương thích ngược
+async def update_session_with_response(session_id: str, response_text: str):
+    """Deprecated function, only kept for backward compatibility."""
+    # Không thực sự làm gì cả, vì chúng ta sẽ sử dụng log_complete_session
+    logger.debug(f"Deprecated call to update_session_with_response for session: {session_id}")
+    return True
 
 # Command handlers
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send a message when the command /start is issued."""
-    session_id = await log_session(update, "start")
-    context.user_data["last_session_id"] = session_id
+    # Tạo ID phiên tạm thời để lưu trong context
+    temp_session_id = await log_session(update, "start")
+    context.user_data["last_session_id"] = temp_session_id
     
     # Create main menu keyboard
     keyboard = [
@@ -163,10 +155,11 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"{commands_text}"
     )
     
+    # Gửi tin nhắn đến người dùng
     await update.message.reply_text(welcome_text, reply_markup=reply_markup)
     
-    # Update session with bot's response
-    await update_session_with_response(session_id, welcome_text)
+    # Lưu phiên hoàn chỉnh bao gồm cả lệnh và phản hồi
+    await log_complete_session(update, "start", "/start", welcome_text)
 
 async def events_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show upcoming events."""
@@ -244,37 +237,26 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle user messages."""
     text = update.message.text
     
-    # Handle menu button presses - store session_id for all actions
-    session_id = None
+    # Tạo ID phiên tạm thời - không thực sự lưu vào cơ sở dữ liệu
+    temp_session_id = await log_session(update, "message", text)
+    context.user_data["last_session_id"] = temp_session_id
+    
+    # Handle menu button presses
     if text == "Da Nang's bucket list":
-        session_id = await log_session(update, "danang_bucket_list")
-        context.user_data["last_session_id"] = session_id
-        await get_danang_bucket_list(update, context)
+        await get_danang_bucket_list(update, context, "danang_bucket_list", text)
     elif text == "Solana Summit Event":
-        session_id = await log_session(update, "solana_summit")
-        context.user_data["last_session_id"] = session_id
-        await get_solana_summit(update, context)
+        await get_solana_summit(update, context, "solana_summit", text)
     elif text == "Events":
-        session_id = await log_session(update, "events")
-        context.user_data["last_session_id"] = session_id
-        await get_events(update, context)
+        await get_events(update, context, "events", text)
     elif text == "Emergency":
-        session_id = await log_session(update, "emergency")
-        context.user_data["last_session_id"] = session_id
-        await get_emergency(update, context)
+        await get_emergency(update, context, "emergency", text)
     elif text == "FAQ":
-        session_id = await log_session(update, "faq")
-        context.user_data["last_session_id"] = session_id
-        await get_faq(update, context)
+        await get_faq(update, context, "faq", text)
     elif text == "About Pixity":
-        session_id = await log_session(update, "about_pixity")
-        context.user_data["last_session_id"] = session_id
-        await get_about_pixity(update, context)
+        await get_about_pixity(update, context, "about_pixity", text)
     else:
         # Send message to RAG API and get response
-        session_id = await log_session(update, "asking_freely", text)
-        context.user_data["last_session_id"] = session_id
-        await get_rag_response(update, context, text)
+        await get_rag_response(update, context, "asking_freely", text)
 
 # API interaction functions
 async def get_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -623,15 +605,15 @@ async def show_faq_answer(update: Update, context: ContextTypes.DEFAULT_TYPE, fa
         session_id = context.user_data.get("last_session_id")
         await update_session_with_response(session_id, error_text)
 
-async def get_rag_response(update: Update, context: ContextTypes.DEFAULT_TYPE, query_text: str):
+async def get_rag_response(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str, query_text: str):
     """Get response from RAG API."""
     try:
         if not API_RAG_URL and not API_DATABASE_URL:
             response_text = "API not configured. Cannot process your question."
             await update.message.reply_text(response_text)
-            # Update session with response
-            session_id = context.user_data.get("last_session_id")
-            await update_session_with_response(session_id, response_text)
+            
+            # Lưu phiên hoàn chỉnh
+            await log_complete_session(update, action, query_text, response_text)
             return
             
         user = update.effective_user
@@ -644,9 +626,6 @@ async def get_rag_response(update: Update, context: ContextTypes.DEFAULT_TYPE, q
             
         logger.info(f"Sending question to RAG at: {rag_url}")
         
-        # Get session ID from context if available
-        session_id = context.user_data.get("last_session_id")
-        
         # Sử dụng định dạng dữ liệu API cũ
         payload = {
             "user_id": str(user.id),
@@ -655,7 +634,7 @@ async def get_rag_response(update: Update, context: ContextTypes.DEFAULT_TYPE, q
             "use_rag": True,
             "similarity_top_k": 3,
             "vector_distance_threshold": 0.75,
-            "session_id": session_id,
+            "session_id": context.user_data.get("last_session_id"),
             "first_name": user.first_name or "",
             "last_name": user.last_name or "",
             "username": user.username or ""
@@ -700,8 +679,8 @@ async def get_rag_response(update: Update, context: ContextTypes.DEFAULT_TYPE, q
             # Send response to user
             await update.message.reply_text(response_with_sources, parse_mode=parse_mode)
             
-            # Update session with bot's response
-            await update_session_with_response(session_id, response_with_sources)
+            # Lưu phiên hoàn chỉnh bao gồm cả câu hỏi và phản hồi
+            await log_complete_session(update, action, query_text, response_with_sources)
             
             # Show the keyboard again to ensure buttons are available
             keyboard = [
@@ -719,26 +698,25 @@ async def get_rag_response(update: Update, context: ContextTypes.DEFAULT_TYPE, q
             logger.error(f"Failed to get RAG response: {response.status_code} - {response.text}")
             await update.message.reply_text(error_text)
             
-            # Update session with error response
-            await update_session_with_response(session_id, error_text)
+            # Lưu phiên với thông báo lỗi
+            await log_complete_session(update, action, query_text, error_text)
     except Exception as e:
         error_text = "An error occurred while processing your question. Please try again later."
         logger.error(f"Error getting RAG response: {e}")
         await update.message.reply_text(error_text)
         
-        # Update session with error response
-        session_id = context.user_data.get("last_session_id")
-        await update_session_with_response(session_id, error_text)
+        # Lưu phiên với thông báo lỗi
+        await log_complete_session(update, action, query_text, error_text)
 
-async def get_about_pixity(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def get_about_pixity(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str, message: str):
     """Get About Pixity information from API and display it."""
     try:
         if not API_DATABASE_URL:
             response_text = "Database API not configured. Cannot fetch About Pixity information."
             await update.effective_message.reply_text(response_text)
-            # Update session with response
-            session_id = context.user_data.get("last_session_id")
-            await update_session_with_response(session_id, response_text)
+            
+            # Lưu phiên hoàn chỉnh
+            await log_complete_session(update, action, message, response_text)
             return
             
         # Using the documented about-pixity endpoint from PostgreSQL API with cache
@@ -768,9 +746,8 @@ async def get_about_pixity(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Send response to user
             await update.effective_message.reply_text(about_text)
             
-            # Update session with response
-            session_id = context.user_data.get("last_session_id")
-            await update_session_with_response(session_id, about_text)
+            # Lưu phiên hoàn chỉnh
+            await log_complete_session(update, action, message, about_text)
             
             # Show the keyboard again to ensure buttons are available
             keyboard = [
@@ -786,17 +763,15 @@ async def get_about_pixity(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Failed to fetch About Pixity info: {response.status_code} - {response.text}")
             await update.effective_message.reply_text(error_text)
             
-            # Update session with error response
-            session_id = context.user_data.get("last_session_id")
-            await update_session_with_response(session_id, error_text)
+            # Lưu phiên với thông báo lỗi
+            await log_complete_session(update, action, message, error_text)
     except Exception as e:
         error_text = "An error occurred while fetching About Pixity information. Please try again later."
         logger.error(f"Error fetching About Pixity information: {e}")
         await update.effective_message.reply_text(error_text)
         
-        # Update session with error response
-        session_id = context.user_data.get("last_session_id")
-        await update_session_with_response(session_id, error_text)
+        # Lưu phiên với thông báo lỗi
+        await log_complete_session(update, action, message, error_text)
 
 async def get_solana_summit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Get Solana Summit information from API and display it."""
