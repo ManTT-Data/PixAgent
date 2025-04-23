@@ -165,19 +165,19 @@ async def events_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show upcoming events."""
     session_id = await log_session(update, "events")
     context.user_data["last_session_id"] = session_id
-    await get_events(update, context)
+    await get_events(update, context, "events", "")
 
 async def faq_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show frequently asked questions."""
     session_id = await log_session(update, "faq")
     context.user_data["last_session_id"] = session_id
-    await get_faq(update, context)
-    
+    await get_faq(update, context, "faq", "")
+
 async def emergency_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show emergency information."""
     session_id = await log_session(update, "emergency")
     context.user_data["last_session_id"] = session_id
-    await get_emergency(update, context)
+    await get_emergency(update, context, "emergency", "")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send a message when the command /help is issued."""
@@ -212,26 +212,31 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update_session_with_response(session_id, help_text)
 
 # Button handlers
-async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle button presses."""
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle button callbacks."""
     query = update.callback_query
-    if query:
-        await query.answer()
-        data = query.data
-        
-        if data.startswith("faq_"):
-            # Handle FAQ answer selection
-            session_id = await log_session(update, "faq_answer_selection", f"Selected FAQ ID: {data}")
-            context.user_data["last_session_id"] = session_id
-            faq_id = data.replace("faq_", "")
-            await show_faq_answer(update, context, faq_id)
-        elif data.startswith("emergency_"):
-            # Handle emergency selection
-            session_id = await log_session(update, "emergency_selection", f"Selected emergency ID: {data}")
-            context.user_data["last_session_id"] = session_id
-            emergency_id = data.replace("emergency_", "")
-            await show_emergency_details(update, context, emergency_id)
-    
+    data = query.data
+
+    # Xử lý callback từ các nút khác nhau
+    if data.startswith("emergency_"):
+        # Trích xuất emergency_id từ callback data
+        emergency_id = data.replace("emergency_", "")
+        await show_emergency_details(update, context, emergency_id)
+        await log_complete_session(update, "callback_handled", f"Callback data: {data}", "Emergency callback processed")
+    elif data.startswith("faq_"):
+        faq_id = data.replace("faq_", "")
+        await show_faq_details(update, context, faq_id)
+        await log_complete_session(update, "callback_handled", f"Callback data: {data}", "FAQ callback processed")
+    elif data.startswith("events_"):
+        event_id = data.replace("events_", "")
+        await show_event_details(update, context, event_id)
+        await log_complete_session(update, "callback_handled", f"Callback data: {data}", "Event callback processed")
+    else:
+        # Xử lý các callback khác hoặc callback không xác định
+        await query.answer("Unknown callback query")
+        logger.warning(f"Unhandled callback query received: {data}")
+        await log_complete_session(update, "callback_handled", f"Unknown callback data: {data}", "Callback not recognized")
+
 # Message handler
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle user messages."""
@@ -259,15 +264,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await get_rag_response(update, context, "asking_freely", text)
 
 # API interaction functions
-async def get_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def get_events(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str, message: str):
     """Get events from API and display them."""
     try:
         if not API_DATABASE_URL:
             response_text = "Database API not configured. Cannot fetch events."
             await update.effective_message.reply_text(response_text)
-            # Update session with response
-            session_id = context.user_data.get("last_session_id")
-            await update_session_with_response(session_id, response_text)
+            
+            # Lưu phiên hoàn chỉnh
+            await log_complete_session(update, action, message, response_text)
             return
             
         # Using the documented events endpoint from PostgreSQL with parameters
@@ -287,9 +292,9 @@ async def get_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not events:
                 response_text = "No upcoming events at the moment."
                 await update.effective_message.reply_text(response_text)
-                # Update session with response
-                session_id = context.user_data.get("last_session_id")
-                await update_session_with_response(session_id, response_text)
+                
+                # Lưu phiên hoàn chỉnh
+                await log_complete_session(update, action, message, response_text)
                 return
             
             # Combine all events into a single response for logging
@@ -320,9 +325,8 @@ async def get_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 # Add to combined text for logging
                 all_events_text += event_text + "\n\n"
             
-            # Update session with all events response
-            session_id = context.user_data.get("last_session_id")
-            await update_session_with_response(session_id, all_events_text)
+            # Lưu phiên hoàn chỉnh với tất cả các sự kiện
+            await log_complete_session(update, action, message, all_events_text)
             
             # Show the keyboard again to ensure buttons are available
             keyboard = [
@@ -338,153 +342,130 @@ async def get_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Failed to fetch events: {response.status_code} - {response.text}")
             await update.effective_message.reply_text(error_text)
             
-            # Update session with error response
-            session_id = context.user_data.get("last_session_id")
-            await update_session_with_response(session_id, error_text)
+            # Lưu phiên với thông báo lỗi
+            await log_complete_session(update, action, message, error_text)
     except Exception as e:
         error_text = "An error occurred while fetching events. Please try again later."
         logger.error(f"Error fetching events: {e}")
         await update.effective_message.reply_text(error_text)
         
-        # Update session with error response
-        session_id = context.user_data.get("last_session_id")
-        await update_session_with_response(session_id, error_text)
+        # Lưu phiên với thông báo lỗi
+        await log_complete_session(update, action, message, error_text)
 
-async def get_emergency(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def get_emergency(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str, message: str):
     """Get emergency information from API and display it."""
     try:
         if not API_DATABASE_URL:
             response_text = "Database API not configured. Cannot fetch emergency information."
             await update.effective_message.reply_text(response_text)
-            # Update session with response
-            session_id = context.user_data.get("last_session_id")
-            await update_session_with_response(session_id, response_text)
+            
+            # Lưu phiên hoàn chỉnh
+            await log_complete_session(update, action, message, response_text)
             return
             
-        # Using the documented emergency endpoint from PostgreSQL with parameters
-        endpoint_url = fix_url(API_DATABASE_URL, "/postgres/emergency")
-        params = {
-            "active_only": True,
-            "limit": 20,
-            "use_cache": True
-        }
-        logger.info(f"Fetching emergency info from: {endpoint_url}")
+        # Using the emergency endpoint from PostgreSQL
+        endpoint_url = fix_url(API_DATABASE_URL, "/postgres/emergency-info")
+        logger.info(f"Fetching emergency information from: {endpoint_url}")
         
-        response = requests.get(endpoint_url, params=params)
+        response = requests.get(endpoint_url)
         if response.status_code == 200:
-            emergencies = response.json()
-            if not emergencies:
+            emergency_info = response.json()
+            if not emergency_info:
                 response_text = "No emergency information available."
                 await update.effective_message.reply_text(response_text)
-                # Update session with response
-                session_id = context.user_data.get("last_session_id")
-                await update_session_with_response(session_id, response_text)
+                
+                # Lưu phiên hoàn chỉnh
+                await log_complete_session(update, action, message, response_text)
                 return
                 
-            keyboard = []
-            for i, emergency in enumerate(emergencies):
-                keyboard.append([InlineKeyboardButton(
-                    emergency.get('name', f'Emergency {i+1}'), 
-                    callback_data=f"emergency_{i}"
-                )])
+            emergency_text = "🚨 *Emergency Information* 🚨\n\n"
             
-            prompt_text = "Please select an emergency contact:"
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await update.effective_message.reply_text(
-                prompt_text, 
-                reply_markup=reply_markup
-            )
+            # Sort contacts by type
+            contacts_by_type = {}
+            for contact in emergency_info:
+                contact_type = contact.get("type", "Other")
+                if contact_type not in contacts_by_type:
+                    contacts_by_type[contact_type] = []
+                contacts_by_type[contact_type].append(contact)
             
-            # Update session with response
-            session_id = context.user_data.get("last_session_id")
+            # Format by type
+            for contact_type, contacts in contacts_by_type.items():
+                emergency_text += f"*{contact_type.upper()}*\n"
+                for contact in contacts:
+                    name = contact.get("name", "Unknown")
+                    phone = contact.get("phone", "No phone")
+                    description = contact.get("description", "")
+                    
+                    emergency_text += f"• *{name}*: {phone}\n"
+                    if description:
+                        emergency_text += f"  {description}\n"
+                emergency_text += "\n"
             
-            # Create a text representation of the emergency options for logging
-            emergency_options = "Emergency Options:\n"
-            for i, emergency in enumerate(emergencies):
-                emergency_options += f"- {emergency.get('name', f'Emergency {i+1}')}\n"
+            # Send the formatted emergency information
+            await update.effective_message.reply_text(emergency_text, parse_mode="Markdown")
             
-            await update_session_with_response(session_id, prompt_text + "\n\n" + emergency_options)
+            # Lưu phiên hoàn chỉnh
+            await log_complete_session(update, action, message, emergency_text)
             
-            # Store emergencies in context for later use
-            context.user_data["emergencies"] = emergencies
-        else:
-            error_text = f"Failed to fetch emergency information. Status: {response.status_code}"
-            logger.error(f"Failed to fetch emergency info: {response.status_code} - {response.text}")
-            await update.effective_message.reply_text(error_text)
-            
-            # Update session with error response
-            session_id = context.user_data.get("last_session_id")
-            await update_session_with_response(session_id, error_text)
-    except Exception as e:
-        error_text = "An error occurred while fetching emergency information. Please try again later."
-        logger.error(f"Error fetching emergency information: {e}")
-        await update.effective_message.reply_text(error_text)
-        
-        # Update session with error response
-        session_id = context.user_data.get("last_session_id")
-        await update_session_with_response(session_id, error_text)
-
-async def show_emergency_details(update: Update, context: ContextTypes.DEFAULT_TYPE, emergency_id: str):
-    """Show details for a specific emergency."""
-    query = update.callback_query
-    emergencies = context.user_data.get("emergencies", [])
-    
-    try:
-        emergency_index = int(emergency_id)
-        if emergency_index < len(emergencies):
-            emergency = emergencies[emergency_index]
-            emergency_text = (
-                f"🚨 *{emergency.get('name', 'Emergency')}*\n\n"
-                f"{emergency.get('description', 'No description available.')}\n\n"
-                f"📞 Contact: {emergency.get('phone_number', 'N/A')}"
-            )
-            # Send as a new message instead of editing the existing one
-            await query.message.reply_text(emergency_text, parse_mode="Markdown")
-            
-            # Update session with response
-            session_id = context.user_data.get("last_session_id")
-            await update_session_with_response(session_id, emergency_text)
-            
-            # Acknowledge the callback query to stop loading indicator
-            await query.answer()
-            
-            # Show the keyboard again to ensure buttons are available
+            # Show the keyboard again
             keyboard = [
                 [KeyboardButton("Da Nang's bucket list"), KeyboardButton("Solana Summit Event")],
                 [KeyboardButton("Events"), KeyboardButton("About Pixity")],
                 [KeyboardButton("Emergency"), KeyboardButton("FAQ")]
             ]
             reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-            follow_up_text = "Is there anything else you would like to know?"
-            await query.message.reply_text(follow_up_text, reply_markup=reply_markup)
-            
-            # Update session with follow-up question
-            await update_session_with_response(session_id, emergency_text + "\n\n" + follow_up_text)
+            follow_up_text = "What else would you like to know?"
+            await update.effective_message.reply_text(follow_up_text, reply_markup=reply_markup)
         else:
-            error_text = "Emergency information not found."
-            await query.answer(error_text)
+            error_text = f"Failed to fetch emergency information. Status: {response.status_code}"
+            logger.error(f"Failed to fetch emergency info: {response.status_code} - {response.text}")
+            await update.effective_message.reply_text(error_text)
             
-            # Update session with error response
-            session_id = context.user_data.get("last_session_id")
-            await update_session_with_response(session_id, error_text)
+            # Lưu phiên với thông báo lỗi
+            await log_complete_session(update, action, message, error_text)
     except Exception as e:
-        error_text = "An error occurred while showing emergency details."
-        logger.error(f"Error showing emergency details: {e}")
-        await query.answer(error_text)
+        error_text = "An error occurred while fetching emergency information. Please try again later."
+        logger.error(f"Error fetching emergency info: {e}")
+        await update.effective_message.reply_text(error_text)
         
-        # Update session with error response
-        session_id = context.user_data.get("last_session_id")
-        await update_session_with_response(session_id, error_text)
+        # Lưu phiên với thông báo lỗi
+        await log_complete_session(update, action, message, error_text)
 
-async def get_faq(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def show_emergency_details(update: Update, context: ContextTypes.DEFAULT_TYPE, emergency_id: str):
+    """Display details for a selected emergency contact."""
+    # Chức năng này không còn cần thiết vì chúng ta đã hiển thị tất cả thông tin khẩn cấp trong một tin nhắn
+    # Thay vào đó, chúng ta sẽ ghi log query callback và gửi tin nhắn hướng dẫn
+    callback_query = update.callback_query
+    
+    if callback_query:
+        await callback_query.answer()
+        
+        # Ghi log query callback
+        logger.info(f"Emergency callback received for ID: {emergency_id}")
+        
+        # Phản hồi người dùng
+        await callback_query.message.reply_text(
+            "Tất cả thông tin khẩn cấp đã được hiển thị ở trên. Vui lòng liên hệ số điện thoại phù hợp nếu bạn cần hỗ trợ.",
+            parse_mode="Markdown"
+        )
+        
+        # Ghi log phiên
+        await log_complete_session(
+            update, 
+            "emergency_details", 
+            f"Emergency detail request: {emergency_id}", 
+            "Emergency details provided"
+        )
+
+async def get_faq(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str, message: str):
     """Get FAQ information from API and display it."""
     try:
         if not API_DATABASE_URL:
             response_text = "Database API not configured. Cannot fetch FAQ information."
             await update.effective_message.reply_text(response_text)
-            # Update session with response
-            session_id = context.user_data.get("last_session_id")
-            await update_session_with_response(session_id, response_text)
+            
+            # Lưu phiên hoàn chỉnh
+            await log_complete_session(update, action, message, response_text)
             return
             
         # Using the documented FAQ endpoint from PostgreSQL with parameters
@@ -502,9 +483,9 @@ async def get_faq(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not faqs:
                 response_text = "No FAQ information available."
                 await update.effective_message.reply_text(response_text)
-                # Update session with response
-                session_id = context.user_data.get("last_session_id")
-                await update_session_with_response(session_id, response_text)
+                
+                # Lưu phiên hoàn chỉnh
+                await log_complete_session(update, action, message, response_text)
                 return
                 
             keyboard = []
@@ -521,15 +502,14 @@ async def get_faq(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=reply_markup
             )
             
-            # Update session with response
-            session_id = context.user_data.get("last_session_id")
-            
             # Create a text representation of the FAQ options for logging
             faq_options = "FAQ Options:\n"
             for i, faq in enumerate(faqs):
                 faq_options += f"- {faq.get('question', f'Question {i+1}')}\n"
             
-            await update_session_with_response(session_id, prompt_text + "\n\n" + faq_options)
+            # Lưu phiên hoàn chỉnh
+            complete_response = prompt_text + "\n\n" + faq_options
+            await log_complete_session(update, action, message, complete_response)
             
             # Store FAQs in context for later use
             context.user_data["faqs"] = faqs
@@ -538,19 +518,17 @@ async def get_faq(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Failed to fetch FAQ info: {response.status_code} - {response.text}")
             await update.effective_message.reply_text(error_text)
             
-            # Update session with error response
-            session_id = context.user_data.get("last_session_id")
-            await update_session_with_response(session_id, error_text)
+            # Lưu phiên với thông báo lỗi
+            await log_complete_session(update, action, message, error_text)
     except Exception as e:
         error_text = "An error occurred while fetching FAQ information. Please try again later."
         logger.error(f"Error fetching FAQ information: {e}")
         await update.effective_message.reply_text(error_text)
         
-        # Update session with error response
-        session_id = context.user_data.get("last_session_id")
-        await update_session_with_response(session_id, error_text)
+        # Lưu phiên với thông báo lỗi
+        await log_complete_session(update, action, message, error_text)
 
-async def show_faq_answer(update: Update, context: ContextTypes.DEFAULT_TYPE, faq_id: str):
+async def show_faq_details(update: Update, context: ContextTypes.DEFAULT_TYPE, faq_id: str):
     """Show details for a specific FAQ."""
     query = update.callback_query
     faqs = context.user_data.get("faqs", [])
@@ -560,50 +538,67 @@ async def show_faq_answer(update: Update, context: ContextTypes.DEFAULT_TYPE, fa
         if faq_index < len(faqs):
             faq = faqs[faq_index]
             
-            # We could also fetch detailed FAQ from API using ID if needed
-            # endpoint_url = fix_url(API_DATABASE_URL, f"/postgres/faq/{faq.get('id')}")
-            
             faq_text = (
                 f"❓ *Question:*\n{faq.get('question', 'Unknown question')}\n\n"
                 f"✅ *Answer:*\n{faq.get('answer', 'No answer available.')}"
             )
-            # Send as a new message instead of editing the existing one
+            # Gửi tin nhắn mới thay vì chỉnh sửa tin nhắn hiện có
             await query.message.reply_text(faq_text, parse_mode="Markdown")
             
-            # Update session with response
-            session_id = context.user_data.get("last_session_id")
-            await update_session_with_response(session_id, faq_text)
-            
-            # Acknowledge the callback query to stop loading indicator
-            await query.answer()
-            
-            # Show the keyboard again to ensure buttons are available
+            # Hiển thị bàn phím lại để đảm bảo các nút có sẵn
             keyboard = [
                 [KeyboardButton("Da Nang's bucket list"), KeyboardButton("Solana Summit Event")],
                 [KeyboardButton("Events"), KeyboardButton("About Pixity")],
                 [KeyboardButton("Emergency"), KeyboardButton("FAQ")]
             ]
             reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-            follow_up_text = "Is there anything else you would like to know?"
+            follow_up_text = "Bạn còn muốn biết điều gì khác không?"
             await query.message.reply_text(follow_up_text, reply_markup=reply_markup)
-            
-            # Update session with follow-up question
-            await update_session_with_response(session_id, faq_text + "\n\n" + follow_up_text)
         else:
-            error_text = "FAQ not found."
+            error_text = "Không tìm thấy câu hỏi."
             await query.answer(error_text)
-            
-            # Update session with error response
-            session_id = context.user_data.get("last_session_id")
-            await update_session_with_response(session_id, error_text)
+            logger.error(f"FAQ không tìm thấy cho ID: {faq_id}")
     except Exception as e:
-        error_text = "An error occurred while showing the answer."
-        logger.error(f"Error showing FAQ answer: {e}")
+        error_text = "Đã xảy ra lỗi khi hiển thị câu trả lời."
+        logger.error(f"Lỗi hiển thị câu trả lời FAQ: {e}")
         await query.answer(error_text)
-        
-        # Update session with error response
-        session_id = context.user_data.get("last_session_id")
-        await update_session_with_response(session_id, error_text)
+
+async def show_event_details(update: Update, context: ContextTypes.DEFAULT_TYPE, event_id: str):
+    """Show details for a specific event."""
+    query = update.callback_query
+    events = context.user_data.get("events", [])
+    
+    try:
+        event_index = int(event_id)
+        if event_index < len(events):
+            event = events[event_index]
+            
+            event_text = (
+                f"🎫 *{event.get('name', 'Unknown event')}*\n\n"
+                f"📅 *Thời gian:* {event.get('date', 'N/A')}\n"
+                f"📍 *Địa điểm:* {event.get('location', 'N/A')}\n\n"
+                f"ℹ️ *Mô tả:*\n{event.get('description', 'Không có mô tả.')}"
+            )
+            # Gửi tin nhắn mới
+            await query.message.reply_text(event_text, parse_mode="Markdown")
+            
+            # Hiển thị bàn phím lại
+            keyboard = [
+                [KeyboardButton("Da Nang's bucket list"), KeyboardButton("Solana Summit Event")],
+                [KeyboardButton("Events"), KeyboardButton("About Pixity")],
+                [KeyboardButton("Emergency"), KeyboardButton("FAQ")]
+            ]
+            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+            follow_up_text = "Bạn còn muốn biết thông tin gì khác không?"
+            await query.message.reply_text(follow_up_text, reply_markup=reply_markup)
+        else:
+            error_text = "Không tìm thấy sự kiện."
+            await query.answer(error_text)
+            logger.error(f"Sự kiện không tìm thấy cho ID: {event_id}")
+    except Exception as e:
+        error_text = "Đã xảy ra lỗi khi hiển thị thông tin sự kiện."
+        logger.error(f"Lỗi hiển thị thông tin sự kiện: {e}")
+        await query.answer(error_text)
 
 async def get_rag_response(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str, query_text: str):
     """Get response from RAG API."""
