@@ -263,13 +263,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # API interaction functions
 async def get_events(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str, message: str):
-    """Get events from API and display them."""
+    """Get events from API and display them in one message."""
     try:
         if not API_DATABASE_URL:
             logger.error("Database API not configured. Cannot fetch events.")
             return
-            
-        # Using the documented events endpoint from PostgreSQL with parameters
+
         endpoint_url = fix_url(API_DATABASE_URL, "/postgres/events")
         params = {
             "active_only": True,
@@ -279,188 +278,144 @@ async def get_events(update: Update, context: ContextTypes.DEFAULT_TYPE, action:
             "use_cache": True
         }
         logger.info(f"Fetching events from: {endpoint_url}")
-        
+
         response = requests.get(endpoint_url, params=params)
-        if response.status_code == 200:
-            events = response.json()
-            if not events:
-                response_text = "No upcoming events at the moment."
-                await update.effective_message.reply_text(response_text)
-                
-                # Log complete session
-                await log_complete_session(update, action, message, response_text)
-                return
-            
-            # Combine all events into a single response for logging
-            all_events_text = ""    
-            for event in events:
-                # Display event information directly without processing
-                event_text = f"🎉 *{event.get('name', 'Event')}*\n"
-                
-                # Add description if available
-                if event.get('description'):
-                    event_text += f"📝 {event.get('description')}\n"
-                
-                # Add location if available
-                if event.get('address'):
-                    event_text += f"📍 Location: {event.get('address')}\n"
-                
-                # Add dates if available
-                if event.get('date_start'):
-                    event_text += f"⏰ Start: {event.get('date_start').replace('T', ' ').split('.')[0]}\n"
-                
-                if event.get('date_end'):
-                    event_text += f"⏰ End: {event.get('date_end').replace('T', ' ').split('.')[0]}\n"
-                
-                # Add price information if available
-                if event.get('price') and len(event.get('price')) > 0:
-                    price = event.get('price')[0]
-                    if price.get('amount') > 0:
-                        event_text += f"💰 Price: {price.get('amount')} {price.get('currency', '')}\n"
-                    else:
-                        event_text += "💰 Price: Free\n"
-                else:
-                    event_text += "💰 Price: Free\n"
-                
-                await update.effective_message.reply_text(event_text, parse_mode="Markdown")
-                
-                # Add to combined text for logging
-                all_events_text += event_text + "\n\n"
-            
-            # Log complete session with all events
-            await log_complete_session(update, action, message, all_events_text)
-            
-            # Show keyboard
-            keyboard = [
-                [KeyboardButton("Da Nang's bucket list"), KeyboardButton("Solana Summit Event")],
-                [KeyboardButton("Events"), KeyboardButton("About Pixity")],
-                [KeyboardButton("Emergency"), KeyboardButton("FAQ")]
-            ]
-            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-            await update.effective_message.reply_text("", reply_markup=reply_markup)
-        else:
+        if response.status_code != 200:
             logger.error(f"Failed to fetch events: {response.status_code} - {response.text}")
+            return
+
+        events = response.json() or []
+        if not events:
+            response_text = "No upcoming events at the moment."
+        else:
+            lines = ["🎉 *Upcoming Events* 🎉\n"]
+            for ev in events:
+                block = [f"🎉 *{ev.get('name', 'Event')}*"]
+                if ev.get("description"):
+                    block.append(f"📝 {ev['description']}")
+                if ev.get("address"):
+                    block.append(f"📍 Location: {ev['address']}")
+                if ev.get("date_start"):
+                    start = ev["date_start"].replace("T", " ").split(".")[0]
+                    block.append(f"⏰ Start: {start}")
+                if ev.get("date_end"):
+                    end = ev["date_end"].replace("T", " ").split(".")[0]
+                    block.append(f"⏰ End: {end}")
+                price_info = "💰 Price: Free"
+                if ev.get("price"):
+                    p = ev["price"][0]
+                    if p.get("amount", 0) > 0:
+                        price_info = f"💰 Price: {p['amount']} {p.get('currency', '')}"
+                block.append(price_info)
+                lines.append("\n".join(block))
+            response_text = "\n\n".join(lines)
+
+        keyboard = [
+            [KeyboardButton("Da Nang's bucket list"), KeyboardButton("Solana Summit Event")],
+            [KeyboardButton("Events"), KeyboardButton("About Pixity")],
+            [KeyboardButton("Emergency"), KeyboardButton("FAQ")]
+        ]
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+        await update.effective_message.reply_text(
+            response_text,
+            parse_mode="Markdown",
+            reply_markup=reply_markup
+        )
+        await log_complete_session(update, action, message, response_text)
+
     except Exception as e:
         logger.error(f"Error fetching events: {e}")
-        
+
+
 async def get_emergency(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str, message: str):
-    """Get emergency information from API and display it."""
+    """Fetch and display emergency contacts without extra sorting or processing."""
     try:
         if not API_DATABASE_URL:
             logger.error("Database API not configured. Cannot fetch emergency information.")
             return
-            
-        # Using the emergency endpoint from PostgreSQL
+
         endpoint_url = fix_url(API_DATABASE_URL, "/postgres/emergency")
         logger.info(f"Fetching emergency information from: {endpoint_url}")
-        
+
         response = requests.get(endpoint_url)
-        if response.status_code == 200:
-            emergency_info = response.json()
-            if not emergency_info:
-                response_text = "No emergency information available."
-                await update.effective_message.reply_text(response_text)
-                
-                # Log complete session
-                await log_complete_session(update, action, message, response_text)
-                return
-                
-            emergency_text = "🚨 *Emergency Information* 🚨\n\n"
-            
-            # Sort contacts by type
-            contacts_by_type = {}
-            for contact in emergency_info:
-                contact_type = contact.get("type", "Other")
-                if contact_type not in contacts_by_type:
-                    contacts_by_type[contact_type] = []
-                contacts_by_type[contact_type].append(contact)
-            
-            # Format by type
-            for contact_type, contacts in contacts_by_type.items():
-                emergency_text += f"*{contact_type.upper()}*\n"
-                for contact in contacts:
-                    name = contact.get("name", "Unknown")
-                    phone = contact.get("phone", "No phone")
-                    description = contact.get("description", "")
-                    
-                    emergency_text += f"• *{name}*: {phone}\n"
-                    if description:
-                        emergency_text += f"  {description}\n"
-                emergency_text += "\n"
-            
-            # Send the formatted emergency information
-            await update.effective_message.reply_text(emergency_text, parse_mode="Markdown")
-            
-            # Log complete session
-            await log_complete_session(update, action, message, emergency_text)
-            
-            # Show the keyboard again
-            keyboard = [
-                [KeyboardButton("Da Nang's bucket list"), KeyboardButton("Solana Summit Event")],
-                [KeyboardButton("Events"), KeyboardButton("About Pixity")],
-                [KeyboardButton("Emergency"), KeyboardButton("FAQ")]
-            ]
-            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-            await update.effective_message.reply_text("", reply_markup=reply_markup)
-        else:
+        if response.status_code != 200:
             logger.error(f"Failed to fetch emergency info: {response.status_code} - {response.text}")
+            return
+
+        emergency_info = response.json() or []
+        if not emergency_info:
+            response_text = "No emergency information available."
+        else:
+            lines = ["🚨 *Emergency Information* 🚨\n"]
+            for contact in emergency_info:
+                line = f"• *{contact.get('name','Unknown')}*: {contact.get('phone','No phone')}"
+                if contact.get("description"):
+                    line += f" — {contact['description']}"
+                lines.append(line)
+            response_text = "\n".join(lines)
+
+        keyboard = [
+            [KeyboardButton("Da Nang's bucket list"), KeyboardButton("Solana Summit Event")],
+            [KeyboardButton("Events"), KeyboardButton("About Pixity")],
+            [KeyboardButton("Emergency"), KeyboardButton("FAQ")]
+        ]
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+        await update.effective_message.reply_text(
+            response_text,
+            parse_mode="Markdown",
+            reply_markup=reply_markup
+        )
+        await log_complete_session(update, action, message, response_text)
+
     except Exception as e:
         logger.error(f"Error fetching emergency info: {e}")
-        
+
+
 async def get_faq(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str, message: str):
     """Get FAQ information from API and display it."""
     try:
         if not API_DATABASE_URL:
             logger.error("Database API not configured. Cannot fetch FAQ information.")
             return
-            
-        # Using the documented FAQ endpoint from PostgreSQL with parameters
+
         endpoint_url = fix_url(API_DATABASE_URL, "/postgres/faq")
-        params = {
-            "active_only": True,
-            "limit": 10,
-            "use_cache": True
-        }
+        params = {"active_only": True, "limit": 10, "use_cache": True}
         logger.info(f"Fetching FAQ from: {endpoint_url}")
-        
+
         response = requests.get(endpoint_url, params=params)
-        if response.status_code == 200:
-            faqs = response.json()
-            if not faqs:
-                response_text = "No FAQ information available."
-                await update.effective_message.reply_text(response_text)
-                
-                # Log complete session
-                await log_complete_session(update, action, message, response_text)
-                return
-                
-            # Instead of buttons, display all FAQs directly
-            faq_text = "📋 *Frequently Asked Questions*\n\n"
-            
-            for i, faq in enumerate(faqs):
-                question = faq.get('question', f'Question {i+1}')
-                answer = faq.get('answer', 'No answer available')
-                
-                faq_text += f"❓ *{question}*\n✅ {answer}\n\n"
-            
-            # Send the complete FAQ text
-            await update.effective_message.reply_text(faq_text, parse_mode="Markdown")
-            
-            # Log complete session
-            await log_complete_session(update, action, message, faq_text)
-            
-            # Show the keyboard again
-            keyboard = [
-                [KeyboardButton("Da Nang's bucket list"), KeyboardButton("Solana Summit Event")],
-                [KeyboardButton("Events"), KeyboardButton("About Pixity")],
-                [KeyboardButton("Emergency"), KeyboardButton("FAQ")]
-            ]
-            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-            await update.effective_message.reply_text("", reply_markup=reply_markup)
-        else:
+        if response.status_code != 200:
             logger.error(f"Failed to fetch FAQ info: {response.status_code} - {response.text}")
+            return
+
+        faqs = response.json() or []
+        if not faqs:
+            response_text = "No FAQ information available."
+        else:
+            lines = ["📋 *Frequently Asked Questions*\n"]
+            for i, faq in enumerate(faqs, 1):
+                lines.append(f"❓ *{faq.get('question', f'Question {i}')}*")
+                lines.append(f"✅ {faq.get('answer','No answer available')}\n")
+            response_text = "\n".join(lines)
+
+        keyboard = [
+            [KeyboardButton("Da Nang's bucket list"), KeyboardButton("Solana Summit Event")],
+            [KeyboardButton("Events"), KeyboardButton("About Pixity")],
+            [KeyboardButton("Emergency"), KeyboardButton("FAQ")]
+        ]
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+        await update.effective_message.reply_text(
+            response_text,
+            parse_mode="Markdown",
+            reply_markup=reply_markup
+        )
+        await log_complete_session(update, action, message, response_text)
+
     except Exception as e:
         logger.error(f"Error fetching FAQ information: {e}")
+
 
 async def get_rag_response(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str, query_text: str):
     """Get response from RAG API."""
@@ -468,16 +423,11 @@ async def get_rag_response(update: Update, context: ContextTypes.DEFAULT_TYPE, a
         if not API_RAG_URL and not API_DATABASE_URL:
             logger.error("API not configured. Cannot process your question.")
             return
-            
-        user = update.effective_user
-        
-        # Always use the old RAG endpoint because the new API is not working yet
-        if API_RAG_URL:
-            rag_url = fix_url(API_RAG_URL, "/rag/chat")
-            
+
+        rag_url = fix_url(API_RAG_URL, "/rag/chat") if API_RAG_URL else None
         logger.info(f"Sending question to RAG at: {rag_url}")
-        
-        # Use old API data format
+
+        user = update.effective_user
         payload = {
             "user_id": str(user.id),
             "question": query_text,
@@ -490,43 +440,35 @@ async def get_rag_response(update: Update, context: ContextTypes.DEFAULT_TYPE, a
             "last_name": user.last_name or "",
             "username": user.username or ""
         }
-        
+
         response = requests.post(rag_url, json=payload)
-        if response.status_code == 200:
-            result = response.json()
-            
-            # Use the response directly from the API without processing
-            answer = result.get("answer", "I couldn't find an answer to your question.")
-            
-            # Add sources if available
-            sources = result.get("sources", [])
-            if sources:
-                answer += "\n\nSources:"
-                for i, source in enumerate(sources[:3]):  # Limit to 3 sources
-                    source_text = source.get('source', 'Unknown')
-                    answer += f"\n{i+1}. {source_text}"
-            
-            # Send response to user
-            await update.message.reply_text(answer)
-            
-            # Log complete session including both question and response
-            await log_complete_session(update, action, query_text, answer)
-            
-            # Show keyboard
-            keyboard = [
-                [KeyboardButton("Da Nang's bucket list"), KeyboardButton("Solana Summit Event")],
-                [KeyboardButton("Events"), KeyboardButton("About Pixity")],
-                [KeyboardButton("Emergency"), KeyboardButton("FAQ")]
-            ]
-            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-            follow_up_text = "Is there anything else you would like to know?"
-            await update.message.reply_text(follow_up_text, reply_markup=reply_markup)
-            
-            logger.info("RAG response sent to user")
-        else:
+        if response.status_code != 200:
             logger.error(f"Failed to get RAG response: {response.status_code} - {response.text}")
+            return
+
+        result = response.json()
+        answer = result.get("answer", "I couldn't find an answer to your question.")
+        if sources := result.get("sources"):
+            answer += "\n\nSources:"
+            for i, src in enumerate(sources[:3], 1):
+                answer += f"\n{i}. {src.get('source','Unknown')}"
+
+        keyboard = [
+            [KeyboardButton("Da Nang's bucket list"), KeyboardButton("Solana Summit Event")],
+            [KeyboardButton("Events"), KeyboardButton("About Pixity")],
+            [KeyboardButton("Emergency"), KeyboardButton("FAQ")]
+        ]
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+        await update.message.reply_text(answer)
+        await log_complete_session(update, action, query_text, answer)
+
+        follow_up = "Is there anything else you would like to know?"
+        await update.message.reply_text(follow_up, reply_markup=reply_markup)
+
     except Exception as e:
         logger.error(f"Error getting RAG response: {e}")
+
 
 async def get_about_pixity(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str, message: str):
     """Get About Pixity information from API and display it."""
@@ -534,45 +476,33 @@ async def get_about_pixity(update: Update, context: ContextTypes.DEFAULT_TYPE, a
         if not API_DATABASE_URL:
             logger.error("Database API not configured. Cannot fetch About Pixity information.")
             return
-            
-        # Using the documented about-pixity endpoint from PostgreSQL API with cache
+
         endpoint_url = fix_url(API_DATABASE_URL, "/postgres/about-pixity")
-        params = {
-            "use_cache": True
-        }
+        params = {"use_cache": True}
         logger.info(f"Fetching About Pixity info from: {endpoint_url}")
-        
+
         response = requests.get(endpoint_url, params=params)
-        if response.status_code == 200:
-            about_data = response.json()
-            if not about_data or not about_data.get('content'):
-                # Error case - log but don't show to user
-                logger.error("No content found in About Pixity response")
-                return
-                
-            # Parse the content
-            try:
-                content_obj = json.loads(about_data.get('content'))
-                about_text = content_obj.get('content', about_data.get('content'))
-            except:
-                about_text = about_data.get('content')
-                
-            # Send response to user
-            await update.effective_message.reply_text(about_text)
-            
-            # Log complete session
-            await log_complete_session(update, action, message, about_text)
-            
-            # Show the keyboard again
-            keyboard = [
-                [KeyboardButton("Da Nang's bucket list"), KeyboardButton("Solana Summit Event")],
-                [KeyboardButton("Events"), KeyboardButton("About Pixity")],
-                [KeyboardButton("Emergency"), KeyboardButton("FAQ")]
-            ]
-            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-            await update.effective_message.reply_text("", reply_markup=reply_markup)
-        else:
+        if response.status_code != 200:
             logger.error(f"Failed to fetch About Pixity info: {response.status_code} - {response.text}")
+            return
+
+        about_data = response.json() or {}
+        raw = about_data.get("content", "") or ""
+        try:
+            content_obj = json.loads(raw)
+            about_text = content_obj.get("content", raw).strip()
+        except:
+            about_text = raw.strip()
+
+        keyboard = [
+            [KeyboardButton("Da Nang's bucket list"), KeyboardButton("Solana Summit Event")],
+            [KeyboardButton("Events"), KeyboardButton("About Pixity")],
+            [KeyboardButton("Emergency"), KeyboardButton("FAQ")]
+        ]
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        await update.effective_message.reply_text(about_text or "Information unavailable.", reply_markup=reply_markup)
+        await log_complete_session(update, action, message, about_text)
+
     except Exception as e:
         logger.error(f"Error fetching About Pixity information: {e}")
 
@@ -582,65 +512,45 @@ async def get_solana_summit(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not API_DATABASE_URL:
             logger.error("Database API not configured. Cannot fetch Solana Summit information.")
             return
-            
-        # Using the documented solana-summit endpoint from PostgreSQL API with cache
+
         endpoint_url = fix_url(API_DATABASE_URL, "/postgres/solana-summit")
-        params = {
-            "use_cache": True
-        }
+        params = {"use_cache": True}
         logger.info(f"Fetching Solana Summit info from: {endpoint_url}")
-        
+
         response = requests.get(endpoint_url, params=params)
-        if response.status_code == 200:
-            summit_data = response.json()
-            
-            # Parse JSON content from the API response
-            try:
-                content_json = json.loads(summit_data.get('content'))
-                
-                # Format the data with emojis and Markdown
-                solana_summit_info = (
-                    f"🌟 *{content_json.get('title', 'Solana Summit')}* 🌟\n\n"
-                    f"{content_json.get('description', '')}\n\n"
-                    f"📅 *Date & Time:*\n"
-                    f"{content_json.get('date', 'TBA')}\n\n"
-                    f"📍 *Location:*\n"
-                    f"{content_json.get('location', 'TBA')}\n\n"
-                    f"🔍 *About the Event:*\n"
-                    f"{content_json.get('details', 'No details available.')}\n\n"
-                )
-                
-                # Add registration URL if available
-                if content_json.get('registration_url'):
-                    solana_summit_info += f"🔗 *Registration:*\n[Register here]({content_json.get('registration_url')})\n\n"
-            except Exception as json_error:
-                logger.error(f"Error parsing Solana Summit JSON: {json_error}")
-                solana_summit_info = summit_data.get('content', "Solana Summit information is available but couldn't be formatted properly.")
-            
-            # Send the formatted message with links
-            await update.effective_message.reply_text(
-                solana_summit_info,
-                parse_mode="Markdown",
-                disable_web_page_preview=False  # Allow link previews
-            )
-            
-            # Show the keyboard again
-            keyboard = [
-                [KeyboardButton("Da Nang's bucket list"), KeyboardButton("Solana Summit Event")],
-                [KeyboardButton("Events"), KeyboardButton("About Pixity")],
-                [KeyboardButton("Emergency"), KeyboardButton("FAQ")]
-            ]
-            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-            await update.effective_message.reply_text("", reply_markup=reply_markup)
-            
-            # Log complete session
-            temp_session_id = await log_session(update, "solana_summit")
-            context.user_data["last_session_id"] = temp_session_id
-            await log_complete_session(update, "solana_summit", "Solana Summit Event", solana_summit_info)
-        else:
+        if response.status_code != 200:
             logger.error(f"Failed to fetch Solana Summit info: {response.status_code} - {response.text}")
+            return
+
+        summit_data = response.json() or {}
+        raw = summit_data.get("content", "") or ""
+        try:
+            parsed = json.loads(raw)
+            solana_summit_info = parsed.get("content", raw).strip()
+        except Exception:
+            solana_summit_info = raw.strip() or "Solana Summit information is unavailable."
+
+        keyboard = [
+            [KeyboardButton("Da Nang's bucket list"), KeyboardButton("Solana Summit Event")],
+            [KeyboardButton("Events"), KeyboardButton("About Pixity")],
+            [KeyboardButton("Emergency"), KeyboardButton("FAQ")]
+        ]
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+        await update.effective_message.reply_text(
+            solana_summit_info,
+            parse_mode="Markdown",
+            disable_web_page_preview=False,
+            reply_markup=reply_markup
+        )
+
+        session_id = await log_session(update, "solana_summit")
+        context.user_data["last_session_id"] = session_id
+        await log_complete_session(update, "solana_summit", "Solana Summit Event", solana_summit_info)
+
     except Exception as e:
         logger.error(f"Error fetching Solana Summit information: {e}")
+
 
 async def get_danang_bucket_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Get Da Nang's Bucket List information from API and display it."""
@@ -648,58 +558,51 @@ async def get_danang_bucket_list(update: Update, context: ContextTypes.DEFAULT_T
         if not API_DATABASE_URL:
             logger.error("Database API not configured. Cannot fetch Da Nang's Bucket List information.")
             return
-            
-        # Using the documented danang-bucket-list endpoint from PostgreSQL API with cache
+
         endpoint_url = fix_url(API_DATABASE_URL, "/postgres/danang-bucket-list")
-        params = {
-            "use_cache": True
-        }
+        params = {"use_cache": True}
         logger.info(f"Fetching Da Nang's Bucket List info from: {endpoint_url}")
-        
+
         response = requests.get(endpoint_url, params=params)
-        if response.status_code == 200:
-            bucket_data = response.json()
-            
-            # Parse JSON content from the API response
-            try:
-                content_json = json.loads(bucket_data.get('content'))
-                
-                # Format the data from json
-                title_text = content_json.get('title', "Da Nang's bucket list")
-                bucket_list = f"📋 {title_text}:\n\n"
-                bucket_list += f"{content_json.get('description', '')}\n\n"
-                
-                # Add each item from the bucket list
-                for item in content_json.get('items', []):
-                    emoji = item.get('emoji', '•')
-                    name = item.get('name', '')
-                    desc = item.get('description', '')
-                    bucket_list += f"{emoji} {name}"
-                    if desc:
-                        bucket_list += f" - {desc}"
-                    bucket_list += "\n"
-            except Exception as json_error:
-                logger.error(f"Error parsing Bucket List JSON: {json_error}")
-                bucket_list = bucket_data.get('content', "Da Nang's Bucket List information is available but couldn't be formatted properly.")
-            
-            # Send response to user
-            await update.effective_message.reply_text(bucket_list)
-            
-            # Show the keyboard again
-            keyboard = [
-                [KeyboardButton("Da Nang's bucket list"), KeyboardButton("Solana Summit Event")],
-                [KeyboardButton("Events"), KeyboardButton("About Pixity")],
-                [KeyboardButton("Emergency"), KeyboardButton("FAQ")]
-            ]
-            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-            await update.effective_message.reply_text("", reply_markup=reply_markup)
-            
-            # Log complete session
-            temp_session_id = await log_session(update, "danang_bucket_list")
-            context.user_data["last_session_id"] = temp_session_id
-            await log_complete_session(update, "danang_bucket_list", "Da Nang's bucket list", bucket_list)
-        else:
+        if response.status_code != 200:
             logger.error(f"Failed to fetch Da Nang's Bucket List info: {response.status_code} - {response.text}")
+            return
+
+        bucket_data = response.json() or {}
+        raw = bucket_data.get("content", "") or ""
+        try:
+            content_json = json.loads(raw)
+            title = content_json.get("title", "Da Nang's bucket list")
+            description = content_json.get("description", "")
+            items = content_json.get("items", [])
+            bucket_list = [f"📋 {title}:\n", description]
+            for item in items:
+                emoji = item.get("emoji", "•")
+                name = item.get("name", "")
+                desc = item.get("description", "")
+                line = f"{emoji} {name}{(' - ' + desc) if desc else ''}"
+                bucket_list.append(line)
+            bucket_text = "\n".join(bucket_list)
+        except Exception:
+            bucket_text = raw.strip() or "Da Nang's Bucket List information is unavailable."
+
+        keyboard = [
+            [KeyboardButton("Da Nang's bucket list"), KeyboardButton("Solana Summit Event")],
+            [KeyboardButton("Events"), KeyboardButton("About Pixity")],
+            [KeyboardButton("Emergency"), KeyboardButton("FAQ")]
+        ]
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+        await update.effective_message.reply_text(
+            bucket_text,
+            parse_mode="Markdown",
+            reply_markup=reply_markup
+        )
+
+        session_id = await log_session(update, "danang_bucket_list")
+        context.user_data["last_session_id"] = session_id
+        await log_complete_session(update, "danang_bucket_list", "Da Nang's bucket list", bucket_text)
+
     except Exception as e:
         logger.error(f"Error fetching Da Nang's Bucket List information: {e}")
 
