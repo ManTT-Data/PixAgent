@@ -69,7 +69,7 @@ async def log_complete_session(update: Update, action: str, message: str, respon
         timestamp = get_current_time()
         session_id = generate_session_id(user.id, timestamp)
         
-        # Tạo dữ liệu phiên chat hoàn chỉnh bao gồm cả câu hỏi và phản hồi
+        # Create complete session data including both message and response
         session_data = {
             "session_id": session_id,
             "factor": "user",
@@ -84,7 +84,7 @@ async def log_complete_session(update: Update, action: str, message: str, respon
         }
         
         if API_DATABASE_URL:
-            # Gửi dữ liệu phiên chat hoàn chỉnh đến API
+            # Send complete session data to API
             endpoint_url = fix_url(API_DATABASE_URL, "/mongodb/session")
             logger.info(f"Logging complete session to: {endpoint_url}")
             
@@ -101,12 +101,12 @@ async def log_complete_session(update: Update, action: str, message: str, respon
                 return session_id
         else:
             logger.warning("Database URL not configured, session not logged")
-            return session_id
+        return session_id
     except Exception as e:
         logger.error(f"Error logging complete session: {e}")
         return generate_session_id(user.id) if user else None
 
-# Giữ hàm log_session để tương thích ngược, nhưng không sử dụng trong mã chính
+# Simplified function to create session ID without logging
 async def log_session(update: Update, action: str, message: str = ""):
     """Create a temporary session ID without actually logging to the database."""
     try:
@@ -118,17 +118,10 @@ async def log_session(update: Update, action: str, message: str = ""):
         logger.error(f"Error creating temporary session ID: {e}")
         return None
 
-# Không còn cần update_session_with_response nữa, nhưng giữ lại để tương thích ngược
-async def update_session_with_response(session_id: str, response_text: str):
-    """Deprecated function, only kept for backward compatibility."""
-    # Không thực sự làm gì cả, vì chúng ta sẽ sử dụng log_complete_session
-    logger.debug(f"Deprecated call to update_session_with_response for session: {session_id}")
-    return True
-
 # Command handlers
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send a message when the command /start is issued."""
-    # Tạo ID phiên tạm thời để lưu trong context
+    # Create temporary session ID to store in context
     temp_session_id = await log_session(update, "start")
     context.user_data["last_session_id"] = temp_session_id
     
@@ -152,13 +145,15 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     welcome_text = (
         "Hello! This is PiXity, your local buddy. I can help you with every information about Da Nang, ask me!\n\n"
+        "This is the beta version of PiXity, so a few hiccups are inevitable, if there is any feedback, contact us @PiXity_assistant.\n"
+        "And don't worry—your data will never be stolen. Feel free to explore and enjoy using PiXity!\n\n"
         f"{commands_text}"
     )
     
-    # Gửi tin nhắn đến người dùng
+    # Send message to user
     await update.message.reply_text(welcome_text, reply_markup=reply_markup)
     
-    # Lưu phiên hoàn chỉnh bao gồm cả lệnh và phản hồi
+    # Log complete session including both command and response
     await log_complete_session(update, "start", "/start", welcome_text)
 
 async def events_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -181,8 +176,9 @@ async def emergency_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send a message when the command /help is issued."""
-    session_id = await log_session(update, "help")
-    context.user_data["last_session_id"] = session_id
+    # Create temporary session ID
+    temp_session_id = await log_session(update, "help")
+    context.user_data["last_session_id"] = temp_session_id
     
     help_text = (
         "Available commands:\n"
@@ -208,31 +204,33 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(help_text, reply_markup=reply_markup)
     
-    # Update session with bot's response
-    await update_session_with_response(session_id, help_text)
+    # Log complete session including both command and response
+    await log_complete_session(update, "help", "/help", help_text)
 
 # Button handlers
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle button callbacks."""
     query = update.callback_query
     data = query.data
-
-    # Xử lý callback từ các nút khác nhau
-    if data.startswith("emergency_"):
-        # Trích xuất emergency_id từ callback data
-        emergency_id = data.replace("emergency_", "")
-        await show_emergency_details(update, context, emergency_id)
-        await log_complete_session(update, "callback_handled", f"Callback data: {data}", "Emergency callback processed")
-    elif data.startswith("faq_"):
-        faq_id = data.replace("faq_", "")
-        await show_faq_details(update, context, faq_id)
-        await log_complete_session(update, "callback_handled", f"Callback data: {data}", "FAQ callback processed")
-    elif data.startswith("events_"):
-        event_id = data.replace("events_", "")
-        await show_event_details(update, context, event_id)
-        await log_complete_session(update, "callback_handled", f"Callback data: {data}", "Event callback processed")
+        
+    if data.startswith("emergency_") or data.startswith("faq_") or data.startswith("events_"):
+        # Log that we received a callback but we're not processing it anymore since we show all info directly
+        logger.info(f"Received callback {data}, but now showing all information directly")
+        await query.answer("This feature has been updated. Please use the main menu buttons.")
+        
+        # Show the keyboard again
+        keyboard = [
+            [KeyboardButton("Da Nang's bucket list"), KeyboardButton("Solana Summit Event")],
+            [KeyboardButton("Events"), KeyboardButton("About Pixity")],
+            [KeyboardButton("Emergency"), KeyboardButton("FAQ")]
+        ]
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        await query.message.reply_text("Please use the main menu buttons:", reply_markup=reply_markup)
+        
+        # Log complete session
+        await log_complete_session(update, "callback_handled", f"Callback data: {data}", "Callback received but not processed due to update")
     else:
-        # Xử lý các callback khác hoặc callback không xác định
+        # Handle other callbacks or undefined callbacks
         await query.answer("Unknown callback query")
         logger.warning(f"Unhandled callback query received: {data}")
         await log_complete_session(update, "callback_handled", f"Unknown callback data: {data}", "Callback not recognized")
@@ -242,7 +240,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle user messages."""
     text = update.message.text
     
-    # Tạo ID phiên tạm thời - không thực sự lưu vào cơ sở dữ liệu
+    # Create temporary session ID - not actually saved to database
     temp_session_id = await log_session(update, "message", text)
     context.user_data["last_session_id"] = temp_session_id
     
@@ -268,11 +266,7 @@ async def get_events(update: Update, context: ContextTypes.DEFAULT_TYPE, action:
     """Get events from API and display them."""
     try:
         if not API_DATABASE_URL:
-            response_text = "Database API not configured. Cannot fetch events."
-            await update.effective_message.reply_text(response_text)
-            
-            # Lưu phiên hoàn chỉnh
-            await log_complete_session(update, action, message, response_text)
+            logger.error("Database API not configured. Cannot fetch events.")
             return
             
         # Using the documented events endpoint from PostgreSQL with parameters
@@ -280,7 +274,7 @@ async def get_events(update: Update, context: ContextTypes.DEFAULT_TYPE, action:
         params = {
             "active_only": True,
             "featured_only": False,
-            "limit": 10,
+            "limit": 3,
             "skip": 0,
             "use_cache": True
         }
@@ -293,42 +287,50 @@ async def get_events(update: Update, context: ContextTypes.DEFAULT_TYPE, action:
                 response_text = "No upcoming events at the moment."
                 await update.effective_message.reply_text(response_text)
                 
-                # Lưu phiên hoàn chỉnh
+                # Log complete session
                 await log_complete_session(update, action, message, response_text)
                 return
             
             # Combine all events into a single response for logging
             all_events_text = ""    
             for event in events:
-                # Format price information
-                price_info = "Free"
+                # Display event information directly without processing
+                event_text = f"🎉 *{event.get('name', 'Event')}*\n"
+                
+                # Add description if available
+                if event.get('description'):
+                    event_text += f"📝 {event.get('description')}\n"
+                
+                # Add location if available
+                if event.get('address'):
+                    event_text += f"📍 Location: {event.get('address')}\n"
+                
+                # Add dates if available
+                if event.get('date_start'):
+                    event_text += f"⏰ Start: {event.get('date_start').replace('T', ' ').split('.')[0]}\n"
+                
+                if event.get('date_end'):
+                    event_text += f"⏰ End: {event.get('date_end').replace('T', ' ').split('.')[0]}\n"
+                
+                # Add price information if available
                 if event.get('price') and len(event.get('price')) > 0:
                     price = event.get('price')[0]
                     if price.get('amount') > 0:
-                        price_info = f"{price.get('amount')} {price.get('currency', '')}"
+                        event_text += f"💰 Price: {price.get('amount')} {price.get('currency', '')}\n"
+                    else:
+                        event_text += "💰 Price: Free\n"
+                else:
+                    event_text += "💰 Price: Free\n"
                 
-                # Format date and time
-                start_date = event.get('date_start', '').replace('T', ' ').split('.')[0] if event.get('date_start') else 'TBA'
-                end_date = event.get('date_end', '').replace('T', ' ').split('.')[0] if event.get('date_end') else 'TBA'
-                
-                # Create event text
-                event_text = (
-                    f"🎉 *{event.get('name', 'Event')}*\n"
-                    f"📝 {event.get('description', 'No description available')}\n"
-                    f"📍 Location: {event.get('address', 'TBA')}\n"
-                    f"⏰ Start: {start_date}\n"
-                    f"⏰ End: {end_date}\n"
-                    f"💰 Price: {price_info}"
-                )
                 await update.effective_message.reply_text(event_text, parse_mode="Markdown")
                 
                 # Add to combined text for logging
                 all_events_text += event_text + "\n\n"
             
-            # Lưu phiên hoàn chỉnh với tất cả các sự kiện
+            # Log complete session with all events
             await log_complete_session(update, action, message, all_events_text)
             
-            # Show the keyboard again to ensure buttons are available
+            # Show keyboard
             keyboard = [
                 [KeyboardButton("Da Nang's bucket list"), KeyboardButton("Solana Summit Event")],
                 [KeyboardButton("Events"), KeyboardButton("About Pixity")],
@@ -337,29 +339,15 @@ async def get_events(update: Update, context: ContextTypes.DEFAULT_TYPE, action:
             reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
             await update.effective_message.reply_text("", reply_markup=reply_markup)
         else:
-            error_text = f"Failed to fetch events. Status: {response.status_code}"
             logger.error(f"Failed to fetch events: {response.status_code} - {response.text}")
-            await update.effective_message.reply_text(error_text)
-            
-            # Lưu phiên với thông báo lỗi
-            await log_complete_session(update, action, message, error_text)
     except Exception as e:
-        error_text = "An error occurred while fetching events. Please try again later."
         logger.error(f"Error fetching events: {e}")
-        await update.effective_message.reply_text(error_text)
         
-        # Lưu phiên với thông báo lỗi
-        await log_complete_session(update, action, message, error_text)
-
 async def get_emergency(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str, message: str):
     """Get emergency information from API and display it."""
     try:
         if not API_DATABASE_URL:
-            response_text = "Database API not configured. Cannot fetch emergency information."
-            await update.effective_message.reply_text(response_text)
-            
-            # Lưu phiên hoàn chỉnh
-            await log_complete_session(update, action, message, response_text)
+            logger.error("Database API not configured. Cannot fetch emergency information.")
             return
             
         # Using the emergency endpoint from PostgreSQL
@@ -373,7 +361,7 @@ async def get_emergency(update: Update, context: ContextTypes.DEFAULT_TYPE, acti
                 response_text = "No emergency information available."
                 await update.effective_message.reply_text(response_text)
                 
-                # Lưu phiên hoàn chỉnh
+                # Log complete session
                 await log_complete_session(update, action, message, response_text)
                 return
                 
@@ -403,7 +391,7 @@ async def get_emergency(update: Update, context: ContextTypes.DEFAULT_TYPE, acti
             # Send the formatted emergency information
             await update.effective_message.reply_text(emergency_text, parse_mode="Markdown")
             
-            # Lưu phiên hoàn chỉnh
+            # Log complete session
             await log_complete_session(update, action, message, emergency_text)
             
             # Show the keyboard again
@@ -415,55 +403,15 @@ async def get_emergency(update: Update, context: ContextTypes.DEFAULT_TYPE, acti
             reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
             await update.effective_message.reply_text("", reply_markup=reply_markup)
         else:
-            error_text = f"Failed to fetch emergency information. Status: {response.status_code}"
             logger.error(f"Failed to fetch emergency info: {response.status_code} - {response.text}")
-            await update.effective_message.reply_text(error_text)
-            
-            # Lưu phiên với thông báo lỗi
-            await log_complete_session(update, action, message, error_text)
     except Exception as e:
-        error_text = "An error occurred while fetching emergency information. Please try again later."
         logger.error(f"Error fetching emergency info: {e}")
-        await update.effective_message.reply_text(error_text)
         
-        # Lưu phiên với thông báo lỗi
-        await log_complete_session(update, action, message, error_text)
-
-async def show_emergency_details(update: Update, context: ContextTypes.DEFAULT_TYPE, emergency_id: str):
-    """Display details for a selected emergency contact."""
-    # Chức năng này không còn cần thiết vì chúng ta đã hiển thị tất cả thông tin khẩn cấp trong một tin nhắn
-    # Thay vào đó, chúng ta sẽ ghi log query callback và gửi tin nhắn hướng dẫn
-    callback_query = update.callback_query
-    
-    if callback_query:
-        await callback_query.answer()
-        
-        # Ghi log query callback
-        logger.info(f"Emergency callback received for ID: {emergency_id}")
-        
-        # Phản hồi người dùng
-        await callback_query.message.reply_text(
-            "Tất cả thông tin khẩn cấp đã được hiển thị ở trên. Vui lòng liên hệ số điện thoại phù hợp nếu bạn cần hỗ trợ.",
-            parse_mode="Markdown"
-        )
-        
-        # Ghi log phiên
-        await log_complete_session(
-            update, 
-            "emergency_details", 
-            f"Emergency detail request: {emergency_id}", 
-            "Emergency details provided"
-        )
-
 async def get_faq(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str, message: str):
     """Get FAQ information from API and display it."""
     try:
         if not API_DATABASE_URL:
-            response_text = "Database API not configured. Cannot fetch FAQ information."
-            await update.effective_message.reply_text(response_text)
-            
-            # Lưu phiên hoàn chỉnh
-            await log_complete_session(update, action, message, response_text)
+            logger.error("Database API not configured. Cannot fetch FAQ information.")
             return
             
         # Using the documented FAQ endpoint from PostgreSQL with parameters
@@ -482,144 +430,54 @@ async def get_faq(update: Update, context: ContextTypes.DEFAULT_TYPE, action: st
                 response_text = "No FAQ information available."
                 await update.effective_message.reply_text(response_text)
                 
-                # Lưu phiên hoàn chỉnh
+                # Log complete session
                 await log_complete_session(update, action, message, response_text)
                 return
                 
-            keyboard = []
+            # Instead of buttons, display all FAQs directly
+            faq_text = "📋 *Frequently Asked Questions*\n\n"
+            
             for i, faq in enumerate(faqs):
-                keyboard.append([InlineKeyboardButton(
-                    faq.get('question', f'Question {i+1}'), 
-                    callback_data=f"faq_{i}"
-                )])
+                question = faq.get('question', f'Question {i+1}')
+                answer = faq.get('answer', 'No answer available')
+                
+                faq_text += f"❓ *{question}*\n✅ {answer}\n\n"
             
-            prompt_text = "Please select a question:"
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await update.effective_message.reply_text(
-                prompt_text, 
-                reply_markup=reply_markup
-            )
+            # Send the complete FAQ text
+            await update.effective_message.reply_text(faq_text, parse_mode="Markdown")
             
-            # Create a text representation of the FAQ options for logging
-            faq_options = "FAQ Options:\n"
-            for i, faq in enumerate(faqs):
-                faq_options += f"- {faq.get('question', f'Question {i+1}')}\n"
+            # Log complete session
+            await log_complete_session(update, action, message, faq_text)
             
-            # Lưu phiên hoàn chỉnh
-            complete_response = prompt_text + "\n\n" + faq_options
-            await log_complete_session(update, action, message, complete_response)
-            
-            # Store FAQs in context for later use
-            context.user_data["faqs"] = faqs
+            # Show the keyboard again
+            keyboard = [
+                [KeyboardButton("Da Nang's bucket list"), KeyboardButton("Solana Summit Event")],
+                [KeyboardButton("Events"), KeyboardButton("About Pixity")],
+                [KeyboardButton("Emergency"), KeyboardButton("FAQ")]
+            ]
+            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+            await update.effective_message.reply_text("", reply_markup=reply_markup)
         else:
-            error_text = f"Failed to fetch FAQ information. Status: {response.status_code}"
             logger.error(f"Failed to fetch FAQ info: {response.status_code} - {response.text}")
-            await update.effective_message.reply_text(error_text)
-            
-            # Lưu phiên với thông báo lỗi
-            await log_complete_session(update, action, message, error_text)
     except Exception as e:
-        error_text = "An error occurred while fetching FAQ information. Please try again later."
         logger.error(f"Error fetching FAQ information: {e}")
-        await update.effective_message.reply_text(error_text)
-        
-        # Lưu phiên với thông báo lỗi
-        await log_complete_session(update, action, message, error_text)
-
-async def show_faq_details(update: Update, context: ContextTypes.DEFAULT_TYPE, faq_id: str):
-    """Show details for a specific FAQ."""
-    query = update.callback_query
-    faqs = context.user_data.get("faqs", [])
-    
-    try:
-        faq_index = int(faq_id)
-        if faq_index < len(faqs):
-            faq = faqs[faq_index]
-            
-            faq_text = (
-                f"❓ *Question:*\n{faq.get('question', 'Unknown question')}\n\n"
-                f"✅ *Answer:*\n{faq.get('answer', 'No answer available.')}"
-            )
-            # Gửi tin nhắn mới thay vì chỉnh sửa tin nhắn hiện có
-            await query.message.reply_text(faq_text, parse_mode="Markdown")
-            
-            # Hiển thị bàn phím lại để đảm bảo các nút có sẵn
-            keyboard = [
-                [KeyboardButton("Da Nang's bucket list"), KeyboardButton("Solana Summit Event")],
-                [KeyboardButton("Events"), KeyboardButton("About Pixity")],
-                [KeyboardButton("Emergency"), KeyboardButton("FAQ")]
-            ]
-            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-            follow_up_text = "Bạn còn muốn biết điều gì khác không?"
-            await query.message.reply_text(follow_up_text, reply_markup=reply_markup)
-        else:
-            error_text = "Không tìm thấy câu hỏi."
-            await query.answer(error_text)
-            logger.error(f"FAQ không tìm thấy cho ID: {faq_id}")
-    except Exception as e:
-        error_text = "Đã xảy ra lỗi khi hiển thị câu trả lời."
-        logger.error(f"Lỗi hiển thị câu trả lời FAQ: {e}")
-        await query.answer(error_text)
-
-async def show_event_details(update: Update, context: ContextTypes.DEFAULT_TYPE, event_id: str):
-    """Show details for a specific event."""
-    query = update.callback_query
-    events = context.user_data.get("events", [])
-    
-    try:
-        event_index = int(event_id)
-        if event_index < len(events):
-            event = events[event_index]
-            
-            event_text = (
-                f"🎫 *{event.get('name', 'Unknown event')}*\n\n"
-                f"📅 *Thời gian:* {event.get('date', 'N/A')}\n"
-                f"📍 *Địa điểm:* {event.get('location', 'N/A')}\n\n"
-                f"ℹ️ *Mô tả:*\n{event.get('description', 'Không có mô tả.')}"
-            )
-            # Gửi tin nhắn mới
-            await query.message.reply_text(event_text, parse_mode="Markdown")
-            
-            # Hiển thị bàn phím lại
-            keyboard = [
-                [KeyboardButton("Da Nang's bucket list"), KeyboardButton("Solana Summit Event")],
-                [KeyboardButton("Events"), KeyboardButton("About Pixity")],
-                [KeyboardButton("Emergency"), KeyboardButton("FAQ")]
-            ]
-            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-            follow_up_text = "Bạn còn muốn biết thông tin gì khác không?"
-            await query.message.reply_text(follow_up_text, reply_markup=reply_markup)
-        else:
-            error_text = "Không tìm thấy sự kiện."
-            await query.answer(error_text)
-            logger.error(f"Sự kiện không tìm thấy cho ID: {event_id}")
-    except Exception as e:
-        error_text = "Đã xảy ra lỗi khi hiển thị thông tin sự kiện."
-        logger.error(f"Lỗi hiển thị thông tin sự kiện: {e}")
-        await query.answer(error_text)
 
 async def get_rag_response(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str, query_text: str):
     """Get response from RAG API."""
     try:
         if not API_RAG_URL and not API_DATABASE_URL:
-            response_text = "API not configured. Cannot process your question."
-            await update.message.reply_text(response_text)
-            
-            # Lưu phiên hoàn chỉnh
-            await log_complete_session(update, action, query_text, response_text)
+            logger.error("API not configured. Cannot process your question.")
             return
             
         user = update.effective_user
         
-        # Luôn sử dụng endpoint RAG cũ vì API mới chưa hoạt động
+        # Always use the old RAG endpoint because the new API is not working yet
         if API_RAG_URL:
             rag_url = fix_url(API_RAG_URL, "/rag/chat")
-        else:
-            rag_url = fix_url(API_DATABASE_URL, "/rag/chat")
             
         logger.info(f"Sending question to RAG at: {rag_url}")
         
-        # Sử dụng định dạng dữ liệu API cũ
+        # Use old API data format
         payload = {
             "user_id": str(user.id),
             "question": query_text,
@@ -636,46 +494,25 @@ async def get_rag_response(update: Update, context: ContextTypes.DEFAULT_TYPE, a
         response = requests.post(rag_url, json=payload)
         if response.status_code == 200:
             result = response.json()
+            
+            # Use the response directly from the API without processing
             answer = result.get("answer", "I couldn't find an answer to your question.")
             
-            # Process HTML formatting in the answer
-            # If the API returns data with HTML tags, we'll use parse_mode=HTML
-            use_html_mode = "<" in answer and ">" in answer
-            
-            # Handle cases where API returns HTML that doesn't comply with Telegram syntax
-            # Telegram doesn't allow improperly nested tags
-            if use_html_mode:
-                # Ensure usernames are displayed correctly in b, i, u tags
-                parse_mode = "HTML"
-                logger.info("Using HTML parse mode for RAG response")
-            else:
-                parse_mode = None
-                logger.info("Using default parse mode for RAG response")
-            
-            # Format sources if available
+            # Add sources if available
             sources = result.get("sources", [])
-            response_with_sources = answer
-            
             if sources:
-                # Format sources theo định dạng API cũ
-                if use_html_mode:
-                    response_with_sources += "\n\n<b>Sources:</b>"
-                    for i, source in enumerate(sources[:3]):  # Limit to 3 sources
-                        source_text = source.get('source', 'Unknown')
-                        response_with_sources += f"\n{i+1}. {source_text}"
-                else:
-                    response_with_sources += "\n\nSources:"
-                    for i, source in enumerate(sources[:3]):  # Limit to 3 sources
-                        source_text = source.get('source', 'Unknown')
-                        response_with_sources += f"\n{i+1}. {source_text}"
+                answer += "\n\nSources:"
+                for i, source in enumerate(sources[:3]):  # Limit to 3 sources
+                    source_text = source.get('source', 'Unknown')
+                    answer += f"\n{i+1}. {source_text}"
             
             # Send response to user
-            await update.message.reply_text(response_with_sources, parse_mode=parse_mode)
+            await update.message.reply_text(answer)
             
-            # Lưu phiên hoàn chỉnh bao gồm cả câu hỏi và phản hồi
-            await log_complete_session(update, action, query_text, response_with_sources)
+            # Log complete session including both question and response
+            await log_complete_session(update, action, query_text, answer)
             
-            # Show the keyboard again to ensure buttons are available
+            # Show keyboard
             keyboard = [
                 [KeyboardButton("Da Nang's bucket list"), KeyboardButton("Solana Summit Event")],
                 [KeyboardButton("Events"), KeyboardButton("About Pixity")],
@@ -687,29 +524,15 @@ async def get_rag_response(update: Update, context: ContextTypes.DEFAULT_TYPE, a
             
             logger.info("RAG response sent to user")
         else:
-            error_text = f"Failed to get a response. Status: {response.status_code}"
             logger.error(f"Failed to get RAG response: {response.status_code} - {response.text}")
-            await update.message.reply_text(error_text)
-            
-            # Lưu phiên với thông báo lỗi
-            await log_complete_session(update, action, query_text, error_text)
     except Exception as e:
-        error_text = "An error occurred while processing your question. Please try again later."
         logger.error(f"Error getting RAG response: {e}")
-        await update.message.reply_text(error_text)
-        
-        # Lưu phiên với thông báo lỗi
-        await log_complete_session(update, action, query_text, error_text)
 
 async def get_about_pixity(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str, message: str):
     """Get About Pixity information from API and display it."""
     try:
         if not API_DATABASE_URL:
-            response_text = "Database API not configured. Cannot fetch About Pixity information."
-            await update.effective_message.reply_text(response_text)
-            
-            # Lưu phiên hoàn chỉnh
-            await log_complete_session(update, action, message, response_text)
+            logger.error("Database API not configured. Cannot fetch About Pixity information.")
             return
             
         # Using the documented about-pixity endpoint from PostgreSQL API with cache
@@ -723,31 +546,24 @@ async def get_about_pixity(update: Update, context: ContextTypes.DEFAULT_TYPE, a
         if response.status_code == 200:
             about_data = response.json()
             if not about_data or not about_data.get('content'):
-                # Fallback text if API doesn't return data
-                about_text = (
-                    "PiXity is your smart, AI-powered local companion designed to help foreigners navigate life in any city of "
-                    "Vietnam with ease, starting with Da Nang. From finding late-night eats to handling visas, housing, and healthcare, "
-                    "PiXity bridges the gap in language, culture, and local know-how — so you can explore the city like a true insider.\n\n"
-                    "PiXity is proudly built by PiX.teq, the tech team behind PiX — a multidisciplinary collective based in Da Nang.\n\n"
-                    "X: x.com/pixity_bot\n"
-                    "Instagram: instagram.com/pixity.aibot/\n"
-                    "Tiktok: tiktok.com/@pixity.aibot"
-                )
-            else:
-                # Xử lý response có định dạng JSON
-                try:
-                    content_obj = json.loads(about_data.get('content'))
-                    about_text = content_obj.get('content', about_data.get('content'))
-                except:
-                    about_text = about_data.get('content')
+                # Error case - log but don't show to user
+                logger.error("No content found in About Pixity response")
+                return
+                
+            # Parse the content
+            try:
+                content_obj = json.loads(about_data.get('content'))
+                about_text = content_obj.get('content', about_data.get('content'))
+            except:
+                about_text = about_data.get('content')
                 
             # Send response to user
             await update.effective_message.reply_text(about_text)
             
-            # Lưu phiên hoàn chỉnh
+            # Log complete session
             await log_complete_session(update, action, message, about_text)
             
-            # Show the keyboard again to ensure buttons are available
+            # Show the keyboard again
             keyboard = [
                 [KeyboardButton("Da Nang's bucket list"), KeyboardButton("Solana Summit Event")],
                 [KeyboardButton("Events"), KeyboardButton("About Pixity")],
@@ -756,29 +572,15 @@ async def get_about_pixity(update: Update, context: ContextTypes.DEFAULT_TYPE, a
             reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
             await update.effective_message.reply_text("", reply_markup=reply_markup)
         else:
-            error_text = f"Failed to fetch About Pixity information. Status: {response.status_code}"
             logger.error(f"Failed to fetch About Pixity info: {response.status_code} - {response.text}")
-            await update.effective_message.reply_text(error_text)
-            
-            # Lưu phiên với thông báo lỗi
-            await log_complete_session(update, action, message, error_text)
     except Exception as e:
-        error_text = "An error occurred while fetching About Pixity information. Please try again later."
         logger.error(f"Error fetching About Pixity information: {e}")
-        await update.effective_message.reply_text(error_text)
-        
-        # Lưu phiên với thông báo lỗi
-        await log_complete_session(update, action, message, error_text)
 
 async def get_solana_summit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Get Solana Summit information from API and display it."""
     try:
         if not API_DATABASE_URL:
-            response_text = "Database API not configured. Cannot fetch Solana Summit information."
-            await update.effective_message.reply_text(response_text)
-            # Update session with response
-            session_id = context.user_data.get("last_session_id")
-            await update_session_with_response(session_id, response_text)
+            logger.error("Database API not configured. Cannot fetch Solana Summit information.")
             return
             
         # Using the documented solana-summit endpoint from PostgreSQL API with cache
@@ -792,50 +594,28 @@ async def get_solana_summit(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if response.status_code == 200:
             summit_data = response.json()
             
-            if not summit_data or not summit_data.get('content'):
-                # Fallback text if API doesn't return data
+            # Parse JSON content from the API response
+            try:
+                content_json = json.loads(summit_data.get('content'))
+                
+                # Format the data with emojis and Markdown
                 solana_summit_info = (
-                    "🌟 *Solana Summit APAC 2025* 🌟\n\n"
-                    "Solana's biggest founder and developer conference returns to APAC!\n\n"
-                    "📅 *Date & Time:*\n"
-                    "Thursday, June 5, 2025, 9:00 AM –\n"
-                    "Saturday, June 7, 2025, 6:00 PM (GMT+7)\n\n"
-                    "📍 *Location:*\n"
-                    "KOI Resort & Residence Da Nang\n"
-                    "11 Trường Sa, Hòa Hải, Ngũ Hành Sơn, Đà Nẵng, Vietnam\n\n"
-                    "🔍 *About the Event:*\n"
-                    "• 1000+ attendees, ~100+ speakers & workshops\n"
-                    "• Code, connect, collaborate, and conquer\n"
-                    "• Networking with founders, developers, and creators\n"
-                    "• Workshops and hands-on sessions with industry experts\n\n"
-                    "🔗 *Event Link:*\n"
-                    "[Register on Lu.ma](https://lu.ma/solana-summit-apac-2025)\n\n"
-                    "📌 *Location Link:*\n"
-                    "[View on Google Maps](https://maps.app.goo.gl/6z9UTCNKni83CQweA)"
+                    f"🌟 *{content_json.get('title', 'Solana Summit')}* 🌟\n\n"
+                    f"{content_json.get('description', '')}\n\n"
+                    f"📅 *Date & Time:*\n"
+                    f"{content_json.get('date', 'TBA')}\n\n"
+                    f"📍 *Location:*\n"
+                    f"{content_json.get('location', 'TBA')}\n\n"
+                    f"🔍 *About the Event:*\n"
+                    f"{content_json.get('details', 'No details available.')}\n\n"
                 )
-            else:
-                # Parse JSON content from the API response
-                try:
-                    content_json = json.loads(summit_data.get('content'))
-                    
-                    # Format the data with emojis and Markdown
-                    solana_summit_info = (
-                        f"🌟 *{content_json.get('title', 'Solana Summit')}* 🌟\n\n"
-                        f"{content_json.get('description', '')}\n\n"
-                        f"📅 *Date & Time:*\n"
-                        f"{content_json.get('date', 'TBA')}\n\n"
-                        f"📍 *Location:*\n"
-                        f"{content_json.get('location', 'TBA')}\n\n"
-                        f"🔍 *About the Event:*\n"
-                        f"{content_json.get('details', 'No details available.')}\n\n"
-                    )
-                    
-                    # Add registration URL if available
-                    if content_json.get('registration_url'):
-                        solana_summit_info += f"🔗 *Registration:*\n[Register here]({content_json.get('registration_url')})\n\n"
-                except Exception as json_error:
-                    logger.error(f"Error parsing Solana Summit JSON: {json_error}")
-                    solana_summit_info = summit_data.get('content', "Solana Summit information is available but couldn't be formatted properly.")
+                
+                # Add registration URL if available
+                if content_json.get('registration_url'):
+                    solana_summit_info += f"🔗 *Registration:*\n[Register here]({content_json.get('registration_url')})\n\n"
+            except Exception as json_error:
+                logger.error(f"Error parsing Solana Summit JSON: {json_error}")
+                solana_summit_info = summit_data.get('content', "Solana Summit information is available but couldn't be formatted properly.")
             
             # Send the formatted message with links
             await update.effective_message.reply_text(
@@ -844,11 +624,7 @@ async def get_solana_summit(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 disable_web_page_preview=False  # Allow link previews
             )
             
-            # Update session with response
-            session_id = context.user_data.get("last_session_id")
-            await update_session_with_response(session_id, solana_summit_info)
-            
-            # Show the keyboard again to ensure the button doesn't disappear
+            # Show the keyboard again
             keyboard = [
                 [KeyboardButton("Da Nang's bucket list"), KeyboardButton("Solana Summit Event")],
                 [KeyboardButton("Events"), KeyboardButton("About Pixity")],
@@ -857,34 +633,20 @@ async def get_solana_summit(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
             await update.effective_message.reply_text("", reply_markup=reply_markup)
             
-            # Also update session with follow-up question
-            await update_session_with_response(session_id, solana_summit_info)
+            # Log complete session
+            temp_session_id = await log_session(update, "solana_summit")
+            context.user_data["last_session_id"] = temp_session_id
+            await log_complete_session(update, "solana_summit", "Solana Summit Event", solana_summit_info)
         else:
-            error_text = f"Failed to fetch Solana Summit information. Status: {response.status_code}"
             logger.error(f"Failed to fetch Solana Summit info: {response.status_code} - {response.text}")
-            await update.effective_message.reply_text(error_text)
-            
-            # Update session with error response
-            session_id = context.user_data.get("last_session_id")
-            await update_session_with_response(session_id, error_text)
     except Exception as e:
-        error_text = "An error occurred while fetching Solana Summit information. Please try again later."
         logger.error(f"Error fetching Solana Summit information: {e}")
-        await update.effective_message.reply_text(error_text)
-        
-        # Update session with error response
-        session_id = context.user_data.get("last_session_id")
-        await update_session_with_response(session_id, error_text)
 
 async def get_danang_bucket_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Get Da Nang's Bucket List information from API and display it."""
     try:
         if not API_DATABASE_URL:
-            response_text = "Database API not configured. Cannot fetch Da Nang's Bucket List information."
-            await update.effective_message.reply_text(response_text)
-            # Update session with response
-            session_id = context.user_data.get("last_session_id")
-            await update_session_with_response(session_id, response_text)
+            logger.error("Database API not configured. Cannot fetch Da Nang's Bucket List information.")
             return
             
         # Using the documented danang-bucket-list endpoint from PostgreSQL API with cache
@@ -898,54 +660,32 @@ async def get_danang_bucket_list(update: Update, context: ContextTypes.DEFAULT_T
         if response.status_code == 200:
             bucket_data = response.json()
             
-            if not bucket_data or not bucket_data.get('content'):
-                # Fallback text if API doesn't return data
-                bucket_list = (
-                    "📋 Da Nang's bucket list:\n\n"
-                    "🏖️ Relax at My Khe Beach\n"
-                    "🐉 Watch the Dragon Bridge Breathe Fire\n"
-                    "⛰️ Explore the Marble Mountains\n"
-                    "🍜 Join a Local Food Tour\n"
-                    "🏄‍♂️ Go Stand-Up Paddleboarding (Chèo SUP) at Sunrise & Eat Squid instant noodles\n"
-                    "🛒 Stroll Through Han Market\n"
-                    "🚣‍♀️ Take a Basket Boat Ride in the Coconut Forest\n"
-                    "🏍️ Ride motorbike on the Hai Van Pass\n"
-                    "📸 Snap Photos at the Pink Cathedral (Da Nang Cathedral)\n"
-                    "🍲 Try Night Street Food at Helio Market\n"
-                    "☕ Chill with a Coffee at a Rooftop Café\n"
-                    "🏮 Take a Day Trip to Hoi An Ancient Town"
-                )
-            else:
-                # Parse JSON content from the API response
-                try:
-                    content_json = json.loads(bucket_data.get('content'))
-                    
-                    # Format the data from json
-                    title_text = content_json.get('title', "Da Nang's bucket list")
-                    bucket_list = f"📋 {title_text}:\n\n"
-                    bucket_list += f"{content_json.get('description', '')}\n\n"
-                    
-                    # Add each item from the bucket list
-                    for item in content_json.get('items', []):
-                        emoji = item.get('emoji', '•')
-                        name = item.get('name', '')
-                        desc = item.get('description', '')
-                        bucket_list += f"{emoji} {name}"
-                        if desc:
-                            bucket_list += f" - {desc}"
-                        bucket_list += "\n"
-                except Exception as json_error:
-                    logger.error(f"Error parsing Bucket List JSON: {json_error}")
-                    bucket_list = bucket_data.get('content', "Da Nang's Bucket List information is available but couldn't be formatted properly.")
+            # Parse JSON content from the API response
+            try:
+                content_json = json.loads(bucket_data.get('content'))
+                
+                # Format the data from json
+                title_text = content_json.get('title', "Da Nang's bucket list")
+                bucket_list = f"📋 {title_text}:\n\n"
+                bucket_list += f"{content_json.get('description', '')}\n\n"
+                
+                # Add each item from the bucket list
+                for item in content_json.get('items', []):
+                    emoji = item.get('emoji', '•')
+                    name = item.get('name', '')
+                    desc = item.get('description', '')
+                    bucket_list += f"{emoji} {name}"
+                    if desc:
+                        bucket_list += f" - {desc}"
+                    bucket_list += "\n"
+            except Exception as json_error:
+                logger.error(f"Error parsing Bucket List JSON: {json_error}")
+                bucket_list = bucket_data.get('content', "Da Nang's Bucket List information is available but couldn't be formatted properly.")
             
             # Send response to user
             await update.effective_message.reply_text(bucket_list)
             
-            # Update session with response
-            session_id = context.user_data.get("last_session_id")
-            await update_session_with_response(session_id, bucket_list)
-            
-            # Show the keyboard again to ensure buttons are available
+            # Show the keyboard again
             keyboard = [
                 [KeyboardButton("Da Nang's bucket list"), KeyboardButton("Solana Summit Event")],
                 [KeyboardButton("Events"), KeyboardButton("About Pixity")],
@@ -954,24 +694,14 @@ async def get_danang_bucket_list(update: Update, context: ContextTypes.DEFAULT_T
             reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
             await update.effective_message.reply_text("", reply_markup=reply_markup)
             
-            # Also update session with follow-up question
-            await update_session_with_response(session_id, bucket_list)
+            # Log complete session
+            temp_session_id = await log_session(update, "danang_bucket_list")
+            context.user_data["last_session_id"] = temp_session_id
+            await log_complete_session(update, "danang_bucket_list", "Da Nang's bucket list", bucket_list)
         else:
-            error_text = f"Failed to fetch Da Nang's Bucket List information. Status: {response.status_code}"
             logger.error(f"Failed to fetch Da Nang's Bucket List info: {response.status_code} - {response.text}")
-            await update.effective_message.reply_text(error_text)
-            
-            # Update session with error response
-            session_id = context.user_data.get("last_session_id")
-            await update_session_with_response(session_id, error_text)
     except Exception as e:
-        error_text = "An error occurred while fetching Da Nang's Bucket List information. Please try again later."
         logger.error(f"Error fetching Da Nang's Bucket List information: {e}")
-        await update.effective_message.reply_text(error_text)
-        
-        # Update session with error response
-        session_id = context.user_data.get("last_session_id")
-        await update_session_with_response(session_id, error_text)
 
 async def verify_api_endpoints():
     """Verify which API endpoints are available and update global configuration."""
@@ -1065,3 +795,37 @@ if __name__ == "__main__":
     verified_endpoints = asyncio.run(verify_api_endpoints())
     get_session_endpoint.verified_endpoints = verified_endpoints
     get_rag_endpoint.verified_endpoints = verified_endpoints 
+    
+    # Create the Application and add handlers
+    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+
+    # Add command handlers
+    application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("events", events_command))
+    application.add_handler(CommandHandler("faq", faq_command))
+    application.add_handler(CommandHandler("emergency", emergency_command))
+    application.add_handler(CommandHandler("help", help_command))
+    
+    # Add callback query handler
+    application.add_handler(CallbackQueryHandler(handle_callback))
+    
+    # Add message handler
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    
+    # Start the Bot with a dedicated event loop
+    logger.info("Starting bot...")
+    try:
+        # Create a new event loop
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        # Run the application in this loop
+        loop.run_until_complete(application.initialize())
+        loop.run_until_complete(application.start())
+        loop.run_forever()
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Bot stopped!")
+    finally:
+        # Properly close the application
+        loop.run_until_complete(application.stop())
+        loop.close() 

@@ -142,4 +142,5 @@ async def health():
 
 if __name__ == "__main__":
     import uvicorn
+    # Use uvicorn to run the FastAPI app instead of running the bot directly
     uvicorn.run("app:app", host="0.0.0.0", port=int(os.getenv("PORT", 7860)))
