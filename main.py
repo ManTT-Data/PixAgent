@@ -550,7 +550,6 @@ async def get_solana_summit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Error fetching Solana Summit information: {e}")
 
-
 async def get_danang_bucket_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Get Da Nang's Bucket List information from API and display it."""
     try:
@@ -569,35 +568,41 @@ async def get_danang_bucket_list(update: Update, context: ContextTypes.DEFAULT_T
 
         bucket_data = response.json() or {}
         raw = bucket_data.get("content", "") or ""
+
         try:
             content_json = json.loads(raw)
-            title = content_json.get("title", "Da Nang's bucket list")
-            description = content_json.get("description", "")
+            title = content_json.get("title", "Da Nang's bucket list").strip()
+            description = content_json.get("description", "").strip()
             items = content_json.get("items", [])
-            bucket_list = [f"📋 {title}:\n", description]
+
+            # Build a clean list of lines
+            lines = [f"📋 {title}:"]
+            if description:
+                lines.append(description)
+
             for item in items:
                 emoji = item.get("emoji", "•")
-                name = item.get("name", "")
-                desc = item.get("description", "")
-                line = f"{emoji} {name}{(' - ' + desc) if desc else ''}"
-                bucket_list.append(line)
-            bucket_text = "\n".join(bucket_list)
+                name = item.get("name", "").strip()
+                desc = item.get("description", "").strip()
+                line = f"{emoji} {name}" + (f" – {desc}" if desc else "")
+                lines.append(line)
+
+            bucket_text = "\n".join(lines)
+
         except Exception:
+            # Fallback nếu JSON malformed
             bucket_text = raw.strip() or "Da Nang's Bucket List information is unavailable."
 
+        # Gửi cùng keyboard
         keyboard = [
             [KeyboardButton("Da Nang's bucket list"), KeyboardButton("Solana Summit Event")],
             [KeyboardButton("Events"), KeyboardButton("About Pixity")],
             [KeyboardButton("Emergency"), KeyboardButton("FAQ")]
         ]
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        await update.effective_message.reply_text(bucket_text, parse_mode="Markdown", reply_markup=reply_markup)
 
-        await update.effective_message.reply_text(
-            bucket_text,
-            parse_mode="Markdown",
-            reply_markup=reply_markup
-        )
-
+        # Log session
         session_id = await log_session(update, "danang_bucket_list")
         context.user_data["last_session_id"] = session_id
         await log_complete_session(update, "danang_bucket_list", "Da Nang's bucket list", bucket_text)
