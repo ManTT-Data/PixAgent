@@ -464,11 +464,6 @@ async def get_rag_response(update: Update, context: ContextTypes.DEFAULT_TYPE, a
             [KeyboardButton("Events"), KeyboardButton("About Pixity")],
             [KeyboardButton("Emergency"), KeyboardButton("FAQ")]
         ]
-        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-        await update.message.reply_text(
-            "Is there anything else you would like to know?",
-            reply_markup=reply_markup
-        )
 
     except Exception as e:
         logger.error(f"Error getting RAG response: {e}")
