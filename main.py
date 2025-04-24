@@ -416,15 +416,16 @@ async def get_faq(update: Update, context: ContextTypes.DEFAULT_TYPE, action: st
     except Exception as e:
         logger.error(f"Error fetching FAQ information: {e}")
 
-
 async def get_rag_response(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str, query_text: str):
-    """Get response from RAG API."""
+    """Get response from RAG API, falling back to the database URL if needed."""
     try:
         if not API_RAG_URL and not API_DATABASE_URL:
             logger.error("API not configured. Cannot process your question.")
             return
 
-        rag_url = fix_url(API_RAG_URL, "/rag/chat") if API_RAG_URL else None
+        # Choose whichever base URL is available
+        base_url = API_RAG_URL or API_DATABASE_URL
+        rag_url = fix_url(base_url, "/rag/chat")
         logger.info(f"Sending question to RAG at: {rag_url}")
 
         user = update.effective_user
@@ -453,18 +454,21 @@ async def get_rag_response(update: Update, context: ContextTypes.DEFAULT_TYPE, a
             for i, src in enumerate(sources[:3], 1):
                 answer += f"\n{i}. {src.get('source','Unknown')}"
 
+        # Send answer and log
+        await update.message.reply_text(answer)
+        await log_complete_session(update, action, query_text, answer)
+
+        # Re-show main keyboard
         keyboard = [
             [KeyboardButton("Da Nang's bucket list"), KeyboardButton("Solana Summit Event")],
             [KeyboardButton("Events"), KeyboardButton("About Pixity")],
             [KeyboardButton("Emergency"), KeyboardButton("FAQ")]
         ]
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-
-        await update.message.reply_text(answer)
-        await log_complete_session(update, action, query_text, answer)
-
-        follow_up = "Is there anything else you would like to know?"
-        await update.message.reply_text(follow_up, reply_markup=reply_markup)
+        await update.message.reply_text(
+            "Is there anything else you would like to know?",
+            reply_markup=reply_markup
+        )
 
     except Exception as e:
         logger.error(f"Error getting RAG response: {e}")
