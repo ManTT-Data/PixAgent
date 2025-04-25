@@ -463,7 +463,7 @@ async def websocket_listener():
                             await bot.send_message(
                                 chat_id=ADMIN_GROUP_CHAT_ID,
                                 text=message_text,
-                                parse_mode=ParseMode.MARKDOWN_V2
+                                parse_mode=None
                             )
                             logger.info(f"Notification sent to admin group: {notification['type']}")
                         except Exception as e:
