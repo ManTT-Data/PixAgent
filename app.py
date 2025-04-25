@@ -152,6 +152,10 @@ def health_check():
         "databases": db_status
     }
 
+@app.get("/api/ping")
+async def ping():
+    return {"status": "pong"}
+
 # Cache stats endpoint
 @app.get("/cache/stats")
 def cache_stats():

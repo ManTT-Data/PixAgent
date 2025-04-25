@@ -6,7 +6,6 @@ from typing import Optional, List, Dict, Any, Union, Tuple
 import time
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 import google.generativeai as genai
-from app.utils.utils import cache
 from langchain_core.retrievers import BaseRetriever
 from langchain.callbacks.manager import Callbacks
 from langchain_core.documents import Document
@@ -227,18 +226,8 @@ async def search_vectors(
         if limit_k < top_k:
             logger.warning(f"limit_k ({limit_k}) must be greater than or equal to top_k ({top_k}). Setting limit_k to {top_k}")
             limit_k = top_k
-            
-        # Create cache key from parameters
-        vector_hash = hash(str(query_vector))
-        cache_key = f"pinecone_search:{vector_hash}:{limit_k}:{similarity_metric}:{similarity_threshold}:{namespace}:{filter}"
         
-        # Check cache first
-        cached_result = cache.get(cache_key)
-        if cached_result is not None:
-            logger.info("Returning cached Pinecone search results")
-            return cached_result
-        
-        # If not in cache, perform search
+        # Perform search directly without cache
         pinecone_index = get_pinecone_index()
         if pinecone_index is None:
             logger.error("Failed to get Pinecone index for search")
@@ -267,9 +256,6 @@ async def search_vectors(
         # Log search result metrics
         match_count = len(filtered_matches)
         logger.info(f"Pinecone search returned {match_count} matches after threshold filtering (metric: {similarity_metric}, threshold: {similarity_threshold})")
-        
-        # Store result in cache with 5 minute TTL
-        cache[cache_key] = results
         
         return results
     except Exception as e:
@@ -533,14 +519,6 @@ def get_chain(
         if _retriever_instance is not None:
             return _retriever_instance
             
-        # Check if chain has been cached
-        cache_key = f"pinecone_retriever:{index_name}:{namespace}:{top_k}:{limit_k}:{similarity_metric}:{similarity_threshold}"
-        cached_retriever = cache.get(cache_key)
-        if cached_retriever is not None:
-            _retriever_instance = cached_retriever
-            logger.info("Retrieved cached Pinecone retriever")
-            return _retriever_instance
-            
         start_time = time.time()
         logger.info("Initializing new retriever chain with threshold-based filtering")
         
@@ -587,9 +565,6 @@ def get_chain(
         )
         
         logger.info(f"Pinecone retriever initialized in {time.time() - start_time:.2f} seconds")
-        
-        # Cache the retriever with longer TTL (1 hour) since it rarely changes
-        cache[cache_key] = _retriever_instance
         
         return _retriever_instance
     except Exception as e:
