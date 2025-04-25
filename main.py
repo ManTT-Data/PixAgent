@@ -18,6 +18,8 @@ import threading
 import time
 import nest_asyncio
 import aiohttp
+from telegram.constants import ParseMode
+
 
 # Apply nest_asyncio to allow nested event loops
 nest_asyncio.apply()
@@ -74,70 +76,49 @@ def get_current_time():
 
 async def send_status_message(chat_id=None, custom_message=None, alert=False):
     """Send a message about the backend connection status."""
-    # If no chat ID is provided, use the admin group
+    # Nếu không có chat_id thì dùng ADMIN_GROUP_CHAT_ID
     if not chat_id and ADMIN_GROUP_CHAT_ID:
         chat_id = ADMIN_GROUP_CHAT_ID
-    
     if not chat_id:
         logger.error("No chat ID provided for status message")
         return
-    
-    # Use custom message if provided, otherwise generate status report
+
+    # Build nội dung message
     if custom_message:
         status_message = custom_message
     else:
-        # Default statuses
         api_status = "❌ Not Connected"
         db_status = "❌ Not Connected"
         rag_status = "❌ Not Connected"
-        
-        # Check API health
         if API_DATABASE_URL:
             try:
-                # Try health endpoint
                 url = fix_url(API_DATABASE_URL, "/health")
                 logger.info(f"Checking API health at: {url}")
-                
-                try:
-                    response = requests.get(url, timeout=10)
-                    if response.status_code == 200:
-                        api_status = "✅ Connected"
-                        db_status = "✅ Connected"  # Default if no detailed status
-                        rag_status = "✅ Connected"  # Default if no detailed status
-                        
-                        # Check more specific statuses if needed
-                        try:
-                            # Check MongoDB specific status
-                            mongo_url = fix_url(API_DATABASE_URL, "/mongodb/health")
-                            logger.info(f"Checking MongoDB health at: {mongo_url}")
-                            
-                            mongo_response = requests.get(mongo_url, timeout=5)
-                            if mongo_response.status_code != 200:
-                                db_status = "⚠️ Partial Connection"
-                                
-                            # Check RAG specific status
-                            rag_url = fix_url(API_DATABASE_URL, "/rag/health")
-                            logger.info(f"Checking RAG health at: {rag_url}")
-                            
-                            rag_response = requests.get(rag_url, timeout=5)
-                            if rag_response.status_code == 200:
-                                rag_data = rag_response.json()
-                                rag_status = "✅ Connected" if rag_data.get('status') == "healthy" else "⚠️ Issues Detected"
-                            else:
-                                rag_status = "❌ Not Connected"
-                        except Exception as e:
-                            logger.error(f"Error checking specific health endpoints: {e}")
-                            pass
-                    else:
-                        logger.error(f"Health check failed: {response.status_code} - {response.text}")
-                except Exception as e:
-                    logger.error(f"Error checking API health: {e}")
+                response = requests.get(url, timeout=10)
+                if response.status_code == 200:
+                    api_status = "✅ Connected"
+                    db_status = "✅ Connected"
+                    rag_status = "✅ Connected"
+                    try:
+                        mongo_url = fix_url(API_DATABASE_URL, "/mongodb/health")
+                        mongo_resp = requests.get(mongo_url, timeout=5)
+                        if mongo_resp.status_code != 200:
+                            db_status = "⚠️ Partial Connection"
+                        rag_url = fix_url(API_DATABASE_URL, "/rag/health")
+                        rag_resp = requests.get(rag_url, timeout=5)
+                        if rag_resp.status_code == 200:
+                            rag_data = rag_resp.json()
+                            rag_status = "✅ Connected" if rag_data.get("status")=="healthy" else "⚠️ Issues Detected"
+                        else:
+                            rag_status = "❌ Not Connected"
+                    except Exception as e:
+                        logger.error(f"Error checking specific health endpoints: {e}")
+                else:
+                    logger.error(f"Health check failed: {response.status_code} - {response.text}")
             except Exception as e:
                 logger.error(f"Error checking backend connection: {e}")
-        
-        # Check websocket connection
+
         ws_status = "✅ Connected" if websocket_connection else "❌ Not Connected"
-        
         status_message = (
             "🤖 *Admin Bot Status Report*\n\n"
             f"🕒 Time: {get_current_time()}\n"
@@ -147,41 +128,32 @@ async def send_status_message(chat_id=None, custom_message=None, alert=False):
             f"📡 WebSocket: {ws_status}\n\n"
             "The bot is monitoring for user activities."
         )
-    
-    # For normal status messages, escape markdown if needed
-    if not custom_message:
         status_message = escape_markdown(status_message)
-    
-    # Add alert prefix if this is an alert message
+
     if alert:
-        # When adding alert prefix, make sure not to break Markdown formatting
-        # Use non-escaped asterisks for the ALERT text since we want it bold
         status_message = f"⚠️ *ALERT* ⚠️\n\n{status_message}"
-    
+
     try:
         bot = Bot(token=ADMIN_TELEGRAM_BOT_TOKEN)
         await bot.send_message(
             chat_id=chat_id,
             text=status_message,
-            parse_mode="Markdown"
+            parse_mode=ParseMode.MARKDOWN_V2
         )
         logger.info(f"Status message sent to chat {chat_id}")
     except Exception as e:
         logger.error(f"Failed to send status message: {e}")
-        
-        # If sending with Markdown failed, try again without formatting
+        # Fallback không format
         try:
-            logger.info("Trying to send message without Markdown formatting")
-            # Replace backticks, asterisks and other special characters
-            plain_text = status_message.replace('*', '').replace('`', '').replace('_', '')
+            plain = status_message.replace('*','').replace('`','').replace('_','')
             await bot.send_message(
                 chat_id=chat_id,
-                text=plain_text,
+                text=plain,
                 parse_mode=None
             )
             logger.info("Message sent without formatting")
-        except Exception as fallback_error:
-            logger.error(f"Failed to send even without formatting: {fallback_error}")
+        except Exception as fe:
+            logger.error(f"Fallback send failed: {fe}")
 
 # Command handlers
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -491,7 +463,7 @@ async def websocket_listener():
                             await bot.send_message(
                                 chat_id=ADMIN_GROUP_CHAT_ID,
                                 text=message_text,
-                                parse_mode="Markdown"
+                                parse_mode=ParseMode.MARKDOWN_V2
                             )
                             logger.info(f"Notification sent to admin group: {notification['type']}")
                         except Exception as e:
