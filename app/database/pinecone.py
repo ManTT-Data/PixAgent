@@ -443,7 +443,7 @@ class ThresholdRetriever(BaseRetriever):
                     similarity_metric=self.similarity_metric,
                     similarity_threshold=self.similarity_threshold,
                     namespace=getattr(self.vectorstore, "namespace", ""),
-                    filter=self.search_kwargs.get("filter", None)
+                    # filter=self.search_kwargs.get("filter", None)
                 ))
             
             # Run the async function in a thread
@@ -458,7 +458,7 @@ class ThresholdRetriever(BaseRetriever):
                 similarity_metric=self.similarity_metric,
                 similarity_threshold=self.similarity_threshold,
                 namespace=getattr(self.vectorstore, "namespace", ""),
-                filter=self.search_kwargs.get("filter", None)
+                # filter=self.search_kwargs.get("filter", None)
             ))
         
         # Convert to documents

@@ -134,7 +134,7 @@ def get_recent_sessions(user_id, action, n=3):
         logger.error(f"Error getting recent sessions: {e}")
         return []
 
-def get_user_history(user_id, n=3):
+def get_user_history(user_id, n=5):
     """Get user history for a specific user"""
     try:
         # Truy vấn trực tiếp từ MongoDB, không sử dụng cache
@@ -148,7 +148,7 @@ def get_user_history(user_id, n=3):
                     "message": {"$exists": True, "$ne": None},
                     # Include all user messages regardless of action type
                 }
-            ).sort("created_at_datetime", -1).limit(n * 2)  # Get more to ensure we have enough pairs
+            ).sort("created_at_datetime", -1).limit(n * 2 + 1)  # Get more to ensure we have enough pairs
         )
         
         # Group messages by session_id to find pairs

@@ -46,6 +46,29 @@ router = APIRouter(
     tags=["RAG"],
 )
 
+fix_request = PromptTemplate(
+    template = """Goal:
+Your task is generate one request that have all information of history chat.
+You will received a conversation history and current request of user.
+Generate a new request that make sense if current request related to history conversation.
+
+Return Format:
+Only return the fully request with all the important keywords.
+If the current message is NOT related to the conversation history or there is no chat history: Return user's current request.
+If the current message IS related to the conversation history: Return new request based on information from the conversation history and the current request.
+
+Warning:
+Only use history chat if current request is truly relevant to the previous conversation.
+
+Conversation History:
+{chat_history}
+
+User current message:
+{question}
+""",
+    input_variables = ["chat_history", "question"],
+)
+
 # Create a prompt template with conversation history
 prompt = PromptTemplate(
     template = """Goal:
@@ -139,53 +162,15 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
         # Save user message first (so it's available for user history)
         session_id = request.session_id or f"{request.user_id}_{datetime.now().strftime('%Y-%m-%d_%H:%M:%S')}"
         logger.info(f"Processing chat request for user {request.user_id}, session {session_id}")
-        
-        # Use the RAG pipeline
-        if request.use_rag:
-            # Get the retriever with custom parameters
-            retriever = get_chain(
-                top_k=request.similarity_top_k,
-                limit_k=request.limit_k,
-                similarity_metric=request.similarity_metric,
-                similarity_threshold=request.similarity_threshold
-            )
-            if not retriever:
-                raise HTTPException(status_code=500, detail="Failed to initialize retriever")
-            
-            # Get request history for context
-            context_query = get_request_history(request.user_id) if request.include_history else request.question
-            logger.info(f"Using context query for retrieval: {context_query[:100]}...")
-            
-            # Retrieve relevant documents
-            retrieved_docs = retriever.invoke(context_query)
-            context = "\n".join([doc.page_content for doc in retrieved_docs])
-            
-            # Prepare sources
-            sources = []
-            for doc in retrieved_docs:
-                source = None
-                metadata = {}
-                
-                if hasattr(doc, 'metadata'):
-                    source = doc.metadata.get('source', None)
-                    # Extract score information
-                    score = doc.metadata.get('score', None)
-                    normalized_score = doc.metadata.get('normalized_score', None)
-                    # Remove score info from metadata to avoid duplication
-                    metadata = {k: v for k, v in doc.metadata.items() 
-                               if k not in ['text', 'source', 'score', 'normalized_score']}
-                
-                sources.append(SourceDocument(
-                    text=doc.page_content,
-                    source=source,
-                    score=score,
-                    normalized_score=normalized_score,
-                    metadata=metadata
-                ))
-        else:
-            # No RAG
-            context = ""
-            sources = None
+
+        retriever = get_chain(
+            top_k=request.similarity_top_k,
+            limit_k=request.limit_k,
+            similarity_metric=request.similarity_metric,
+            similarity_threshold=request.similarity_threshold
+        )
+        if not retriever:
+            raise HTTPException(status_code=500, detail="Failed to initialize retriever")
         
         # Get chat history
         chat_history = get_chat_history(request.user_id) if request.include_history else ""
@@ -223,11 +208,48 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
             generation_config=generation_config,
             safety_settings=safety_settings
         )
+
+        prompt_request = fix_request.format(
+            question=request.question,
+            chat_history=chat_history
+        )
+        
+        # Log thời gian bắt đầu final_request
+        final_request_start_time = time.time()
+        final_request = model.generate_content(prompt_request)
+        # Log thời gian hoàn thành final_request
+        logger.info(f"Final request generation time: {time.time() - final_request_start_time:.2f} seconds")
+        # print(final_request.text)
+
+        retrieved_docs = retriever.invoke(final_request.text)
+        context = "\n".join([doc.page_content for doc in retrieved_docs])
+
+        sources = []
+        for doc in retrieved_docs:
+            source = None
+            metadata = {}
+            
+            if hasattr(doc, 'metadata'):
+                source = doc.metadata.get('source', None)
+                # Extract score information
+                score = doc.metadata.get('score', None)
+                normalized_score = doc.metadata.get('normalized_score', None)
+                # Remove score info from metadata to avoid duplication
+                metadata = {k: v for k, v in doc.metadata.items() 
+                            if k not in ['text', 'source', 'score', 'normalized_score']}
+            
+            sources.append(SourceDocument(
+                text=doc.page_content,
+                source=source,
+                score=score,
+                normalized_score=normalized_score,
+                metadata=metadata
+            ))
         
         # Generate the prompt using template
         prompt_text = prompt.format(
             context=context,
-            question=request.question,
+            question=final_request.text,
             chat_history=chat_history
         )
         logger.info(f"Full prompt with history and context: {prompt_text}")
