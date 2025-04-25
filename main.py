@@ -145,7 +145,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     welcome_text = (
         "Hello! This is PiXity, your local buddy. I can help you with every information about Da Nang, ask me!\n\n"
-        "This is the beta version of PiXity, so a few hiccups are inevitable, if there is any feedback, contact us @PiXity_assistant.\n"
+        "This is the beta version of PiXity, so a few hiccups are inevitable, if there is any feedback, contact us @PiXity_assistant.\n\n"
         "And don't worry—your data will never be stolen. Feel free to explore and enjoy using PiXity!\n\n"
         f"{commands_text}"
     )
@@ -288,19 +288,19 @@ async def get_events(update: Update, context: ContextTypes.DEFAULT_TYPE, action:
         if not events:
             response_text = "No upcoming events at the moment."
         else:
-            lines = ["🎉 *Upcoming Events* 🎉\n"]
+            lines = ["*Upcoming Events*\n"]
             for ev in events:
                 block = [f"🎉 *{ev.get('name', 'Event')}*"]
                 if ev.get("description"):
-                    block.append(f"📝 {ev['description']}")
+                    block.append(f"{ev['description']}")
                 if ev.get("address"):
                     block.append(f"📍 Location: {ev['address']}")
                 if ev.get("date_start"):
                     start = ev["date_start"].replace("T", " ").split(".")[0]
-                    block.append(f"⏰ Start: {start}")
+                    block.append(f"Start: {start}")
                 if ev.get("date_end"):
                     end = ev["date_end"].replace("T", " ").split(".")[0]
-                    block.append(f"⏰ End: {end}")
+                    block.append(f"End: {end}")
                 price_info = "💰 Price: Free"
                 if ev.get("price"):
                     p = ev["price"][0]
