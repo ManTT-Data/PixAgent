@@ -505,8 +505,10 @@ async def get_about_pixity(update: Update, context: ContextTypes.DEFAULT_TYPE, a
     except Exception as e:
         logger.error(f"Error fetching About Pixity information: {e}")
 
+from telegram.constants import ParseMode  # add at top
+
 async def get_solana_summit(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Get Solana Summit information from API and display it."""
+    """Get Solana Summit information from API and display it with HTML links."""
     try:
         if not API_DATABASE_URL:
             logger.error("Database API not configured. Cannot fetch Solana Summit information.")
@@ -523,12 +525,15 @@ async def get_solana_summit(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         summit_data = response.json() or {}
         raw = summit_data.get("content", "") or ""
+
+        # try to unwrap nested JSON
         try:
             parsed = json.loads(raw)
             solana_summit_info = parsed.get("content", raw).strip()
         except Exception:
             solana_summit_info = raw.strip() or "Solana Summit information is unavailable."
 
+        # build your keyboard as before
         keyboard = [
             [KeyboardButton("Da Nang's bucket list"), KeyboardButton("Solana Summit Event")],
             [KeyboardButton("Events"), KeyboardButton("About Pixity")],
@@ -536,9 +541,10 @@ async def get_solana_summit(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
+        # ***The only change: switch to HTML parse mode***
         await update.effective_message.reply_text(
             solana_summit_info,
-            parse_mode="Markdown",
+            parse_mode=ParseMode.HTML,
             disable_web_page_preview=False,
             reply_markup=reply_markup
         )
