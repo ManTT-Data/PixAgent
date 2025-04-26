@@ -349,10 +349,9 @@ async def get_emergency(update: Update, context: ContextTypes.DEFAULT_TYPE, acti
             logger.error("Database API not configured. Cannot fetch emergency information.")
             return
 
-        # Phase 1: list sections
+        # Phase 1: list categories
         if "emergency_sections" not in context.user_data:
             sections_url = fix_url(API_DATABASE_URL, "/postgres/emergency/sections")
-            logger.info(f"Fetching emergency sections from: {sections_url}")
             resp = requests.get(sections_url)
             if resp.status_code != 200:
                 logger.error(f"Failed to fetch emergency sections: {resp.status_code} - {resp.text}")
@@ -365,63 +364,83 @@ async def get_emergency(update: Update, context: ContextTypes.DEFAULT_TYPE, acti
                 await log_complete_session(update, action, message, txt)
                 return
 
-            # build HTML list of names
             lines = ["<b>Please select an emergency category:</b>"]
             for sec in sections:
                 lines.append(f"• {html.escape(sec['name'])}")
-            response_text = "\n".join(lines)
+            text = "\n".join(lines)
 
-            # save name→id mapping for phase 2
             context.user_data["emergency_sections"] = {sec["name"]: sec["id"] for sec in sections}
-
-            # reply with a keyboard of category names
-            keyboard = [[KeyboardButton(sec["name"])] for sec in sections]
-            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+            kb = [[KeyboardButton(sec["name"])] for sec in sections]
+            markup = ReplyKeyboardMarkup(kb, resize_keyboard=True)
             await update.effective_message.reply_text(
-                response_text,
-                parse_mode=ParseMode.HTML,
-                reply_markup=reply_markup
+                text, parse_mode=ParseMode.HTML, reply_markup=markup
             )
-            await log_complete_session(update, action, message, response_text)
+            await log_complete_session(update, action, message, text)
             return
 
-        # Phase 2: user picked one
-        mapping = context.user_data.pop("emergency_sections", {})
+        # Phase 2: user picked a category
+        sections_map = context.user_data.pop("emergency_sections", {})
         section_name = message
-        section_id = mapping.get(section_name)
+        section_id = sections_map.get(section_name)
         if not section_id:
-            # invalid tap, re-list categories
+            # invalid tap → restart phase 1
             return await get_emergency(update, context, action, "")
 
+        # fetch entries for this section
         detail_url = fix_url(API_DATABASE_URL, f"/postgres/emergency/section/{section_id}")
-        logger.info(f"Fetching emergency details from: {detail_url}")
         resp = requests.get(detail_url)
         if resp.status_code != 200:
             logger.error(f"Failed to fetch emergency details: {resp.status_code} - {resp.text}")
             return
 
-        details = resp.json() or []
-        if not details:
-            text = f"No entries found for '{html.escape(section_name)}'."
-            await update.effective_message.reply_text(text)
-            await log_complete_session(update, action, section_name, text)
+        entries = resp.json() or []
+        if not entries:
+            txt = f"No entries found for '{html.escape(section_name)}'."
+            await update.effective_message.reply_text(txt)
+            await log_complete_session(update, action, section_name, txt)
             return
 
-        # build HTML for entries
-        lines = [f"<b>{html.escape(section_name)}</b>"]
-        for c in details:
-            name = html.escape(c.get("name", "Unknown"))
-            phone = html.escape(c.get("phone_number", "No phone"))
-            lines.append(f"• <b>{name}</b>: {phone}")
-            if desc := c.get("description"):
-                lines.append(f"  {html.escape(desc)}")
-            if addr := c.get("address"):
-                lines.append(f"  {html.escape(addr)}")
-            lines.append("")  # blank separator
+        # build text differently per section
+        if section_id == 2:
+            # Emergency numbers
+            lines = [
+                "Here are some emergency numbers you might need in Da Nang:",
+                ""
+            ]
+            for e in entries:
+                name = html.escape(e.get("name", ""))
+                phone = html.escape(e.get("phone_number", ""))
+                lines.append(f"• <b>{name}:</b> {phone}")
+            response_text = "\n".join(lines)
 
-        response_text = "\n".join(lines).rstrip()
+        elif section_id == 3:
+            # Common Emergency Situations
+            lines = ["<b>Common Emergency Situations & How to Handle Them:</b>", ""]
+            for e in entries:
+                title = html.escape(e.get("name", ""))
+                desc = html.escape(e.get("description", ""))
+                lines.append(f"• <b>{title}</b>")
+                # wrap long descriptions into paragraphs
+                for para in desc.split("\n"):
+                    lines.append(f"  {para.strip()}")
+                lines.append("")
+            response_text = "\n".join(lines)
 
-        # send back to main menu
+        else:
+            # Generic display (sections 1 & 4, etc.)
+            lines = [f"<b>{html.escape(section_name)}</b>", ""]
+            for e in entries:
+                name = html.escape(e.get("name", "Unknown"))
+                phone = html.escape(e.get("phone_number", "No phone"))
+                lines.append(f"• <b>{name}</b>: {phone}")
+                if desc := e.get("description"):
+                    lines.append(f"  {html.escape(desc)}")
+                if addr := e.get("address"):
+                    lines.append(f"  {html.escape(addr)}")
+                lines.append("")
+            response_text = "\n".join(lines)
+
+        # re-display main menu
         keyboard = [
             [KeyboardButton("Da Nang's bucket list"), KeyboardButton("Solana Summit Event")],
             [KeyboardButton("Events"), KeyboardButton("About Pixity")],
@@ -438,6 +457,7 @@ async def get_emergency(update: Update, context: ContextTypes.DEFAULT_TYPE, acti
 
     except Exception as e:
         logger.error(f"Error fetching emergency info: {e}")
+
 
 async def get_faq(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str, message: str):
     """Get FAQ information from API and display it safely using HTML parsing."""
