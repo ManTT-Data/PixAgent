@@ -342,9 +342,8 @@ async def get_events(update: Update, context: ContextTypes.DEFAULT_TYPE, action:
     except Exception as e:
         logger.error(f"Error fetching events: {e}")
 
-
 async def get_emergency(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str, message: str):
-    """Show emergency categories, then details—automatically chunking long messages."""
+    """Show emergency categories, then details—routing taps back and rendering with HTML."""
     try:
         if not API_DATABASE_URL:
             logger.error("Database API not configured. Cannot fetch emergency information.")
@@ -353,6 +352,7 @@ async def get_emergency(update: Update, context: ContextTypes.DEFAULT_TYPE, acti
         # Phase 1: list sections
         if "emergency_sections" not in context.user_data:
             sections_url = fix_url(API_DATABASE_URL, "/postgres/emergency/sections")
+            logger.info(f"Fetching emergency sections from: {sections_url}")
             resp = requests.get(sections_url)
             if resp.status_code != 200:
                 logger.error(f"Failed to fetch emergency sections: {resp.status_code} - {resp.text}")
@@ -365,16 +365,24 @@ async def get_emergency(update: Update, context: ContextTypes.DEFAULT_TYPE, acti
                 await log_complete_session(update, action, message, txt)
                 return
 
-            lines = ["*Please select an emergency category:*"]
+            # build HTML list of names
+            lines = ["<b>Please select an emergency category:</b>"]
             for sec in sections:
-                lines.append(f"- {sec['name']}")
-            text = "\n".join(lines)
+                lines.append(f"• {html.escape(sec['name'])}")
+            response_text = "\n".join(lines)
 
+            # save name→id mapping for phase 2
             context.user_data["emergency_sections"] = {sec["name"]: sec["id"] for sec in sections}
-            kb = [[KeyboardButton(sec["name"])] for sec in sections]
-            markup = ReplyKeyboardMarkup(kb, resize_keyboard=True)
-            await update.effective_message.reply_text(text, parse_mode="Markdown", reply_markup=markup)
-            await log_complete_session(update, action, message, text)
+
+            # reply with a keyboard of category names
+            keyboard = [[KeyboardButton(sec["name"])] for sec in sections]
+            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+            await update.effective_message.reply_text(
+                response_text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=reply_markup
+            )
+            await log_complete_session(update, action, message, response_text)
             return
 
         # Phase 2: user picked one
@@ -382,9 +390,11 @@ async def get_emergency(update: Update, context: ContextTypes.DEFAULT_TYPE, acti
         section_name = message
         section_id = mapping.get(section_name)
         if not section_id:
+            # invalid tap, re-list categories
             return await get_emergency(update, context, action, "")
 
         detail_url = fix_url(API_DATABASE_URL, f"/postgres/emergency/section/{section_id}")
+        logger.info(f"Fetching emergency details from: {detail_url}")
         resp = requests.get(detail_url)
         if resp.status_code != 200:
             logger.error(f"Failed to fetch emergency details: {resp.status_code} - {resp.text}")
@@ -392,46 +402,39 @@ async def get_emergency(update: Update, context: ContextTypes.DEFAULT_TYPE, acti
 
         details = resp.json() or []
         if not details:
-            text = f"No entries found for '{section_name}'."
+            text = f"No entries found for '{html.escape(section_name)}'."
             await update.effective_message.reply_text(text)
             await log_complete_session(update, action, section_name, text)
             return
 
-        # Build lines
-        lines = [f"*{section_name}*"]
+        # build HTML for entries
+        lines = [f"<b>{html.escape(section_name)}</b>"]
         for c in details:
-            name = c.get("name", "Unknown")
-            phone = c.get("phone_number", "No phone")
-            lines.append(f"- *{name}*: {phone}")
+            name = html.escape(c.get("name", "Unknown"))
+            phone = html.escape(c.get("phone_number", "No phone"))
+            lines.append(f"• <b>{name}</b>: {phone}")
             if desc := c.get("description"):
-                lines.append(f"  {desc}")
+                lines.append(f"  {html.escape(desc)}")
             if addr := c.get("address"):
-                lines.append(f"  {addr}")
+                lines.append(f"  {html.escape(addr)}")
             lines.append("")  # blank separator
 
-        # Chunk into <=4000-char messages
-        MAX_LEN = 4000
-        chunk = ""
-        kb = [
+        response_text = "\n".join(lines).rstrip()
+
+        # send back to main menu
+        keyboard = [
             [KeyboardButton("Da Nang's bucket list"), KeyboardButton("Solana Summit Event")],
             [KeyboardButton("Events"), KeyboardButton("About Pixity")],
             [KeyboardButton("Emergency"), KeyboardButton("FAQ")]
         ]
-        markup = ReplyKeyboardMarkup(kb, resize_keyboard=True)
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        await update.effective_message.reply_text(
+            response_text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=reply_markup
+        )
 
-        for line in lines:
-            # +1 for newline
-            if len(chunk) + len(line) + 1 > MAX_LEN:
-                # send current chunk
-                await update.effective_message.reply_text(chunk.rstrip("\n"), parse_mode="Markdown", reply_markup=markup)
-                chunk = ""
-            chunk += line + "\n"
-
-        # send any remaining
-        if chunk:
-            await update.effective_message.reply_text(chunk.rstrip("\n"), parse_mode="Markdown", reply_markup=markup)
-
-        await log_complete_session(update, action, section_name, "\n".join(lines).rstrip("\n"))
+        await log_complete_session(update, action, section_name, response_text)
 
     except Exception as e:
         logger.error(f"Error fetching emergency info: {e}")
