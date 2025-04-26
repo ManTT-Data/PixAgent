@@ -435,6 +435,200 @@ async def get_emergency_contacts(
         logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
 
+@router.get("/emergency/sections", response_model=List[Dict[str, Any]])
+async def get_emergency_sections(
+    use_cache: bool = True,
+    db: Session = Depends(get_db)
+):
+    """
+    Get all available emergency sections.
+    
+    Returns a list of section information including ID and name.
+    """
+    try:
+        # Generate cache key
+        cache_key = "emergency_sections"
+        
+        # Try to get from cache if caching is enabled
+        if use_cache:
+            cached_result = emergencies_cache.get(cache_key)
+            if cached_result:
+                logger.info(f"Cache hit for {cache_key}")
+                return cached_result
+                
+        # Query distinct sections with their IDs
+        stmt = text("""
+            SELECT DISTINCT section_id, section 
+            FROM emergency_item 
+            WHERE section IS NOT NULL 
+            ORDER BY section_id
+        """)
+        result = db.execute(stmt)
+        
+        # Extract section info
+        sections = [{"id": row[0], "name": row[1]} for row in result]
+        
+        # Store in cache if caching is enabled
+        if use_cache:
+            emergencies_cache[cache_key] = sections
+            
+        return sections
+    except SQLAlchemyError as e:
+        logger.error(f"Database error in get_emergency_sections: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+    except Exception as e:
+        logger.error(f"Unexpected error in get_emergency_sections: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
+
+@router.get("/emergency/section/{section_id}", response_model=List[EmergencyResponse])
+async def get_emergency_contacts_by_section_id(
+    section_id: int = Path(..., description="Section ID (1, 2, 3, or 4)"),
+    active_only: bool = True,
+    use_cache: bool = True,
+    db: Session = Depends(get_db)
+):
+    """
+    Get emergency contacts for a specific section ID.
+    
+    - **section_id**: Section ID (1: Tourist support, 2: Emergency numbers, 3: Emergency situations, 4: Tourist scams)
+    - **active_only**: If true, only return active items
+    - **use_cache**: If true, use cached results when available
+    """
+    try:
+        # Generate cache key based on query parameters
+        cache_key = f"emergency_section_id_{section_id}_{active_only}"
+        
+        # Try to get from cache if caching is enabled
+        if use_cache:
+            cached_result = emergencies_cache.get(cache_key)
+            if cached_result:
+                logger.info(f"Cache hit for {cache_key}")
+                return cached_result
+                
+        # Build query
+        query = db.query(EmergencyItem).filter(EmergencyItem.section_id == section_id)
+        
+        # Add active filter if needed
+        if active_only:
+            query = query.filter(EmergencyItem.is_active == True)
+        
+        # Order by priority for proper sorting
+        emergency_contacts = query.order_by(EmergencyItem.priority.desc()).all()
+        
+        # Convert to Pydantic models efficiently
+        result = [EmergencyResponse.model_validate(contact, from_attributes=True) for contact in emergency_contacts]
+        
+        # Store in cache if caching is enabled
+        if use_cache:
+            emergencies_cache[cache_key] = result
+            
+        return result
+    except SQLAlchemyError as e:
+        logger.error(f"Database error in get_emergency_contacts_by_section_id: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+    except Exception as e:
+        logger.error(f"Unexpected error in get_emergency_contacts_by_section_id: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
+
+@router.get("/emergency/by-section/{section}", response_model=List[EmergencyResponse])
+async def get_emergency_contacts_by_section(
+    section: str = Path(..., description="Section ID (e.g., 16.1, 16.2.1, 16.2.2, 16.3)"),
+    active_only: bool = True,
+    use_cache: bool = True,
+    db: Session = Depends(get_db)
+):
+    """
+    Get emergency contacts for a specific section.
+    
+    - **section**: Section ID (16.1, 16.2.1, 16.2.2, 16.3)
+    - **active_only**: If true, only return active items
+    - **use_cache**: If true, use cached results when available
+    """
+    try:
+        # Generate cache key based on query parameters
+        cache_key = f"emergency_section_{section}_{active_only}"
+        
+        # Try to get from cache if caching is enabled
+        if use_cache:
+            cached_result = emergencies_cache.get(cache_key)
+            if cached_result:
+                logger.info(f"Cache hit for {cache_key}")
+                return cached_result
+                
+        # Build query
+        query = db.query(EmergencyItem).filter(EmergencyItem.section == section)
+        
+        # Add active filter if needed
+        if active_only:
+            query = query.filter(EmergencyItem.is_active == True)
+        
+        # Order by priority for proper sorting
+        emergency_contacts = query.order_by(EmergencyItem.priority.desc()).all()
+        
+        # Convert to Pydantic models efficiently
+        result = [EmergencyResponse.model_validate(contact, from_attributes=True) for contact in emergency_contacts]
+        
+        # Store in cache if caching is enabled
+        if use_cache:
+            emergencies_cache[cache_key] = result
+            
+        return result
+    except SQLAlchemyError as e:
+        logger.error(f"Database error in get_emergency_contacts_by_section: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+    except Exception as e:
+        logger.error(f"Unexpected error in get_emergency_contacts_by_section: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
+
+@router.get("/emergency/help", response_model=Dict[str, Any])
+async def get_emergency_help():
+    """
+    Get help information about emergency routes.
+    
+    Returns information about available emergency API endpoints.
+    """
+    return {
+        "available_routes": [
+            {
+                "path": "/api/emergency/sections",
+                "description": "Get a list of all emergency sections with their IDs and names",
+                "method": "GET"
+            },
+            {
+                "path": "/api/emergency/section/{section_id}",
+                "description": "Get emergency contacts by section ID (1, 2, 3, or 4)",
+                "method": "GET"
+            },
+            {
+                "path": "/api/emergency/by-section/{section}",
+                "description": "Get emergency contacts by section name (legacy route)",
+                "method": "GET"
+            },
+            {
+                "path": "/api/emergency",
+                "description": "Get all emergency contacts with optional filtering",
+                "method": "GET"
+            },
+            {
+                "path": "/api/emergency/{emergency_id}",
+                "description": "Get a specific emergency contact by ID",
+                "method": "GET"
+            }
+        ],
+        "section_mapping": {
+            "1": "Tourist support centre and embassy contacts",
+            "2": "Emergency numbers",
+            "3": "Common Emergency Situations and How to Handle Them",
+            "4": "Tourist Scams to Watch Out For"
+        }
+    }
+
 @router.post("/emergency", response_model=EmergencyResponse)
 async def create_emergency_contact(
     emergency: EmergencyCreate,
@@ -594,156 +788,96 @@ async def delete_emergency_contact(
         logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
-@router.get("/emergency/sections", response_model=List[Dict[str, Any]])
-async def get_emergency_sections(
-    use_cache: bool = True,
+@router.put("/emergency/batch-update-status", response_model=BatchUpdateResult)
+async def batch_update_emergency_status(
+    emergency_ids: List[int] = Body(..., embed=True),
+    is_active: bool = Body(..., embed=True),
     db: Session = Depends(get_db)
 ):
     """
-    Get all available emergency sections.
+    Update the active status of multiple emergency contacts at once.
     
-    Returns a list of section information including ID and name.
+    This is much more efficient than updating emergency contacts one at a time.
     """
     try:
-        # Generate cache key
-        cache_key = "emergency_sections"
+        if not emergency_ids:
+            raise HTTPException(status_code=400, detail="No emergency contact IDs provided")
         
-        # Try to get from cache if caching is enabled
-        if use_cache:
-            cached_result = emergencies_cache.get(cache_key)
-            if cached_result:
-                logger.info(f"Cache hit for {cache_key}")
-                return cached_result
-                
-        # Query distinct sections with their IDs
+        # Prepare the update statement
         stmt = text("""
-            SELECT DISTINCT section_id, section 
-            FROM emergency_item 
-            WHERE section IS NOT NULL 
-            ORDER BY section_id
+            UPDATE emergency_item 
+            SET is_active = :is_active, updated_at = NOW()
+            WHERE id = ANY(:emergency_ids)
+            RETURNING id
         """)
-        result = db.execute(stmt)
         
-        # Extract section info
-        sections = [{"id": row[0], "name": row[1]} for row in result]
+        # Execute the update in a single query
+        result = db.execute(stmt, {"is_active": is_active, "emergency_ids": emergency_ids})
+        updated_ids = [row[0] for row in result]
         
-        # Store in cache if caching is enabled
-        if use_cache:
-            emergencies_cache[cache_key] = sections
-            
-        return sections
+        # Commit the transaction
+        db.commit()
+        
+        # Determine which IDs weren't found
+        failed_ids = [id for id in emergency_ids if id not in updated_ids]
+        
+        # Invalidate emergency cache
+        emergencies_cache.clear()
+        
+        return BatchUpdateResult(
+            success_count=len(updated_ids),
+            failed_ids=failed_ids,
+            message=f"Updated {len(updated_ids)} emergency contacts" if updated_ids else "No emergency contacts were updated"
+        )
     except SQLAlchemyError as e:
-        logger.error(f"Database error in get_emergency_sections: {e}")
+        db.rollback()
+        logger.error(f"Database error in batch_update_emergency_status: {e}")
         logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
-    except Exception as e:
-        logger.error(f"Unexpected error in get_emergency_sections: {e}")
-        logger.error(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
 
-@router.get("/emergency/by-section/{section}", response_model=List[EmergencyResponse])
-async def get_emergency_contacts_by_section(
-    section: str = Path(..., description="Section ID (e.g., 16.1, 16.2.1, 16.2.2, 16.3)"),
-    active_only: bool = True,
-    use_cache: bool = True,
+@router.delete("/emergency/batch", response_model=BatchUpdateResult)
+async def batch_delete_emergency_contacts(
+    emergency_ids: List[int] = Body(..., embed=True),
     db: Session = Depends(get_db)
 ):
     """
-    Get emergency contacts for a specific section.
+    Delete multiple emergency contacts at once.
     
-    - **section**: Section ID (16.1, 16.2.1, 16.2.2, 16.3)
-    - **active_only**: If true, only return active items
-    - **use_cache**: If true, use cached results when available
+    This is much more efficient than deleting emergency contacts one at a time with separate API calls.
     """
     try:
-        # Generate cache key based on query parameters
-        cache_key = f"emergency_section_{section}_{active_only}"
+        if not emergency_ids:
+            raise HTTPException(status_code=400, detail="No emergency contact IDs provided")
         
-        # Try to get from cache if caching is enabled
-        if use_cache:
-            cached_result = emergencies_cache.get(cache_key)
-            if cached_result:
-                logger.info(f"Cache hit for {cache_key}")
-                return cached_result
-                
-        # Build query
-        query = db.query(EmergencyItem).filter(EmergencyItem.section == section)
+        # Prepare and execute the delete statement with RETURNING to get deleted IDs
+        stmt = text("""
+            DELETE FROM emergency_item
+            WHERE id = ANY(:emergency_ids)
+            RETURNING id
+        """)
         
-        # Add active filter if needed
-        if active_only:
-            query = query.filter(EmergencyItem.is_active == True)
+        result = db.execute(stmt, {"emergency_ids": emergency_ids})
+        deleted_ids = [row[0] for row in result]
         
-        # Order by priority for proper sorting
-        emergency_contacts = query.order_by(EmergencyItem.priority.desc()).all()
+        # Commit the transaction
+        db.commit()
         
-        # Convert to Pydantic models efficiently
-        result = [EmergencyResponse.model_validate(contact, from_attributes=True) for contact in emergency_contacts]
+        # Determine which IDs weren't found
+        failed_ids = [id for id in emergency_ids if id not in deleted_ids]
         
-        # Store in cache if caching is enabled
-        if use_cache:
-            emergencies_cache[cache_key] = result
-            
-        return result
+        # Invalidate emergency cache
+        emergencies_cache.clear()
+        
+        return BatchUpdateResult(
+            success_count=len(deleted_ids),
+            failed_ids=failed_ids,
+            message=f"Deleted {len(deleted_ids)} emergency contacts" if deleted_ids else "No emergency contacts were deleted"
+        )
     except SQLAlchemyError as e:
-        logger.error(f"Database error in get_emergency_contacts_by_section: {e}")
+        db.rollback()
+        logger.error(f"Database error in batch_delete_emergency_contacts: {e}")
         logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
-    except Exception as e:
-        logger.error(f"Unexpected error in get_emergency_contacts_by_section: {e}")
-        logger.error(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
-
-@router.get("/emergency/section/{section_id}", response_model=List[EmergencyResponse])
-async def get_emergency_contacts_by_section_id(
-    section_id: int = Path(..., description="Section ID (1, 2, 3, or 4)"),
-    active_only: bool = True,
-    use_cache: bool = True,
-    db: Session = Depends(get_db)
-):
-    """
-    Get emergency contacts for a specific section ID.
-    
-    - **section_id**: Section ID (1: Tourist support, 2: Emergency numbers, 3: Emergency situations, 4: Tourist scams)
-    - **active_only**: If true, only return active items
-    - **use_cache**: If true, use cached results when available
-    """
-    try:
-        # Generate cache key based on query parameters
-        cache_key = f"emergency_section_id_{section_id}_{active_only}"
-        
-        # Try to get from cache if caching is enabled
-        if use_cache:
-            cached_result = emergencies_cache.get(cache_key)
-            if cached_result:
-                logger.info(f"Cache hit for {cache_key}")
-                return cached_result
-                
-        # Build query
-        query = db.query(EmergencyItem).filter(EmergencyItem.section_id == section_id)
-        
-        # Add active filter if needed
-        if active_only:
-            query = query.filter(EmergencyItem.is_active == True)
-        
-        # Order by priority for proper sorting
-        emergency_contacts = query.order_by(EmergencyItem.priority.desc()).all()
-        
-        # Convert to Pydantic models efficiently
-        result = [EmergencyResponse.model_validate(contact, from_attributes=True) for contact in emergency_contacts]
-        
-        # Store in cache if caching is enabled
-        if use_cache:
-            emergencies_cache[cache_key] = result
-            
-        return result
-    except SQLAlchemyError as e:
-        logger.error(f"Database error in get_emergency_contacts_by_section_id: {e}")
-        logger.error(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
-    except Exception as e:
-        logger.error(f"Unexpected error in get_emergency_contacts_by_section_id: {e}")
-        logger.error(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
 
 # --- Event endpoints ---
 
