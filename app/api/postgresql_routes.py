@@ -89,6 +89,7 @@ class EmergencyBase(BaseModel):
     priority: int = 0
     is_active: bool = True
     section: Optional[str] = None
+    section_id: Optional[int] = None
 
 class EmergencyCreate(EmergencyBase):
     pass
@@ -102,6 +103,7 @@ class EmergencyUpdate(BaseModel):
     priority: Optional[int] = None
     is_active: Optional[bool] = None
     section: Optional[str] = None
+    section_id: Optional[int] = None
 
 class EmergencyResponse(EmergencyBase):
     id: int
@@ -592,7 +594,7 @@ async def delete_emergency_contact(
         logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
-@router.get("/emergency/sections", response_model=List[str])
+@router.get("/emergency/sections", response_model=List[Dict[str, Any]])
 async def get_emergency_sections(
     use_cache: bool = True,
     db: Session = Depends(get_db)
@@ -600,7 +602,7 @@ async def get_emergency_sections(
     """
     Get all available emergency sections.
     
-    Returns a list of distinct section values that can be used for filtering.
+    Returns a list of section information including ID and name.
     """
     try:
         # Generate cache key
@@ -613,12 +615,17 @@ async def get_emergency_sections(
                 logger.info(f"Cache hit for {cache_key}")
                 return cached_result
                 
-        # Query distinct sections
-        stmt = text("SELECT DISTINCT section FROM emergency_item WHERE section IS NOT NULL ORDER BY section")
+        # Query distinct sections with their IDs
+        stmt = text("""
+            SELECT DISTINCT section_id, section 
+            FROM emergency_item 
+            WHERE section IS NOT NULL 
+            ORDER BY section_id
+        """)
         result = db.execute(stmt)
         
-        # Extract section values
-        sections = [row[0] for row in result]
+        # Extract section info
+        sections = [{"id": row[0], "name": row[1]} for row in result]
         
         # Store in cache if caching is enabled
         if use_cache:
@@ -683,6 +690,58 @@ async def get_emergency_contacts_by_section(
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
     except Exception as e:
         logger.error(f"Unexpected error in get_emergency_contacts_by_section: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
+
+@router.get("/emergency/section/{section_id}", response_model=List[EmergencyResponse])
+async def get_emergency_contacts_by_section_id(
+    section_id: int = Path(..., description="Section ID (1, 2, 3, or 4)"),
+    active_only: bool = True,
+    use_cache: bool = True,
+    db: Session = Depends(get_db)
+):
+    """
+    Get emergency contacts for a specific section ID.
+    
+    - **section_id**: Section ID (1: Tourist support, 2: Emergency numbers, 3: Emergency situations, 4: Tourist scams)
+    - **active_only**: If true, only return active items
+    - **use_cache**: If true, use cached results when available
+    """
+    try:
+        # Generate cache key based on query parameters
+        cache_key = f"emergency_section_id_{section_id}_{active_only}"
+        
+        # Try to get from cache if caching is enabled
+        if use_cache:
+            cached_result = emergencies_cache.get(cache_key)
+            if cached_result:
+                logger.info(f"Cache hit for {cache_key}")
+                return cached_result
+                
+        # Build query
+        query = db.query(EmergencyItem).filter(EmergencyItem.section_id == section_id)
+        
+        # Add active filter if needed
+        if active_only:
+            query = query.filter(EmergencyItem.is_active == True)
+        
+        # Order by priority for proper sorting
+        emergency_contacts = query.order_by(EmergencyItem.priority.desc()).all()
+        
+        # Convert to Pydantic models efficiently
+        result = [EmergencyResponse.model_validate(contact, from_attributes=True) for contact in emergency_contacts]
+        
+        # Store in cache if caching is enabled
+        if use_cache:
+            emergencies_cache[cache_key] = result
+            
+        return result
+    except SQLAlchemyError as e:
+        logger.error(f"Database error in get_emergency_contacts_by_section_id: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+    except Exception as e:
+        logger.error(f"Unexpected error in get_emergency_contacts_by_section_id: {e}")
         logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
 
@@ -3288,3 +3347,46 @@ async def get_emergency_summary(
         logger.error(f"Unexpected error in get_emergency_summary: {e}")
         logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
+
+@router.get("/emergency/help", response_model=Dict[str, Any])
+async def get_emergency_help():
+    """
+    Get help information about emergency routes.
+    
+    Returns information about available emergency API endpoints.
+    """
+    return {
+        "available_routes": [
+            {
+                "path": "/api/emergency/sections",
+                "description": "Get a list of all emergency sections with their IDs and names",
+                "method": "GET"
+            },
+            {
+                "path": "/api/emergency/section/{section_id}",
+                "description": "Get emergency contacts by section ID (1, 2, 3, or 4)",
+                "method": "GET"
+            },
+            {
+                "path": "/api/emergency/by-section/{section}",
+                "description": "Get emergency contacts by section name (legacy route)",
+                "method": "GET"
+            },
+            {
+                "path": "/api/emergency",
+                "description": "Get all emergency contacts with optional filtering",
+                "method": "GET"
+            },
+            {
+                "path": "/api/emergency/{emergency_id}",
+                "description": "Get a specific emergency contact by ID",
+                "method": "GET"
+            }
+        ],
+        "section_mapping": {
+            "1": "Tourist support centre and embassy contacts",
+            "2": "Emergency numbers",
+            "3": "Common Emergency Situations and How to Handle Them",
+            "4": "Tourist Scams to Watch Out For"
+        }
+    }
