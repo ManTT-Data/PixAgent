@@ -534,101 +534,6 @@ async def get_emergency_contacts_by_section_id(
         logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
 
-@router.get("/emergency/by-section/{section}", response_model=List[EmergencyResponse])
-async def get_emergency_contacts_by_section(
-    section: str = Path(..., description="Section ID (e.g., 16.1, 16.2.1, 16.2.2, 16.3)"),
-    active_only: bool = True,
-    use_cache: bool = True,
-    db: Session = Depends(get_db)
-):
-    """
-    Get emergency contacts for a specific section.
-    
-    - **section**: Section ID (16.1, 16.2.1, 16.2.2, 16.3)
-    - **active_only**: If true, only return active items
-    - **use_cache**: If true, use cached results when available
-    """
-    try:
-        # Generate cache key based on query parameters
-        cache_key = f"emergency_section_{section}_{active_only}"
-        
-        # Try to get from cache if caching is enabled
-        if use_cache:
-            cached_result = emergencies_cache.get(cache_key)
-            if cached_result:
-                logger.info(f"Cache hit for {cache_key}")
-                return cached_result
-                
-        # Build query
-        query = db.query(EmergencyItem).filter(EmergencyItem.section == section)
-        
-        # Add active filter if needed
-        if active_only:
-            query = query.filter(EmergencyItem.is_active == True)
-        
-        # Order by priority for proper sorting
-        emergency_contacts = query.order_by(EmergencyItem.priority.desc()).all()
-        
-        # Convert to Pydantic models efficiently
-        result = [EmergencyResponse.model_validate(contact, from_attributes=True) for contact in emergency_contacts]
-        
-        # Store in cache if caching is enabled
-        if use_cache:
-            emergencies_cache[cache_key] = result
-            
-        return result
-    except SQLAlchemyError as e:
-        logger.error(f"Database error in get_emergency_contacts_by_section: {e}")
-        logger.error(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
-    except Exception as e:
-        logger.error(f"Unexpected error in get_emergency_contacts_by_section: {e}")
-        logger.error(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
-
-@router.get("/emergency/help", response_model=Dict[str, Any])
-async def get_emergency_help():
-    """
-    Get help information about emergency routes.
-    
-    Returns information about available emergency API endpoints.
-    """
-    return {
-        "available_routes": [
-            {
-                "path": "/api/emergency/sections",
-                "description": "Get a list of all emergency sections with their IDs and names",
-                "method": "GET"
-            },
-            {
-                "path": "/api/emergency/section/{section_id}",
-                "description": "Get emergency contacts by section ID (1, 2, 3, or 4)",
-                "method": "GET"
-            },
-            {
-                "path": "/api/emergency/by-section/{section}",
-                "description": "Get emergency contacts by section name (legacy route)",
-                "method": "GET"
-            },
-            {
-                "path": "/api/emergency",
-                "description": "Get all emergency contacts with optional filtering",
-                "method": "GET"
-            },
-            {
-                "path": "/api/emergency/{emergency_id}",
-                "description": "Get a specific emergency contact by ID",
-                "method": "GET"
-            }
-        ],
-        "section_mapping": {
-            "1": "Tourist support centre and embassy contacts",
-            "2": "Emergency numbers",
-            "3": "Common Emergency Situations and How to Handle Them",
-            "4": "Tourist Scams to Watch Out For"
-        }
-    }
-
 @router.post("/emergency", response_model=EmergencyResponse)
 async def create_emergency_contact(
     emergency: EmergencyCreate,
@@ -3366,7 +3271,8 @@ async def get_vector_statuses(
     try:
         query = db.query(VectorStatus)
         
-        if status:
+        # Apply filters if provided
+        if status is not None:
             query = query.filter(VectorStatus.status == status)
             
         if document_id is not None:
@@ -3375,37 +3281,69 @@ async def get_vector_statuses(
         if vector_database_id is not None:
             query = query.filter(VectorStatus.vector_database_id == vector_database_id)
         
-        statuses = query.offset(skip).limit(limit).all()
-        return [VectorStatusResponse.model_validate(status, from_attributes=True) for status in statuses]
+        # Execute query with pagination
+        vector_statuses = query.offset(skip).limit(limit).all()
+        
+        # Convert to Pydantic models
+        return [VectorStatusResponse.model_validate(status, from_attributes=True) for status in vector_statuses]
     except SQLAlchemyError as e:
-        logger.error(f"Database error retrieving vector statuses: {e}")
+        logger.error(f"Database error in get_vector_statuses: {e}")
+        logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
     except Exception as e:
         logger.error(f"Error retrieving vector statuses: {e}")
         logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Error retrieving vector statuses: {str(e)}")
 
-class EmergencySummary(BaseModel):
-    total_contacts: int
-    section_breakdown: Dict[str, int]
-    priority_breakdown: Dict[int, int]
-    category_breakdown: Dict[str, int]
+@router.post("/emergency", response_model=EmergencyResponse)
+async def create_emergency_contact(
+    emergency: EmergencyCreate,
+    db: Session = Depends(get_db)
+):
+    """
+    Create a new emergency contact.
+    
+    - **name**: Contact name
+    - **phone_number**: Phone number
+    - **description**: Description (optional)
+    - **address**: Address (optional)
+    - **location**: Location coordinates (optional)
+    - **priority**: Priority order (default: 0)
+    - **is_active**: Whether the contact is active (default: True)
+    """
+    try:
+        db_emergency = EmergencyItem(**emergency.model_dump())
+        db.add(db_emergency)
+        db.commit()
+        db.refresh(db_emergency)
+        
+        # Invalidate emergency cache after creating a new item
+        emergencies_cache.clear()
+        
+        # Convert SQLAlchemy model to Pydantic model before returning
+        result = EmergencyResponse.model_validate(db_emergency, from_attributes=True)
+        return result
+    except SQLAlchemyError as e:
+        db.rollback()
+        logger.error(f"Database error in create_emergency_contact: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
-@router.get("/emergency/summary", response_model=EmergencySummary)
-async def get_emergency_summary(
+@router.get("/emergency/{emergency_id}", response_model=EmergencyResponse)
+async def get_emergency_contact(
+    emergency_id: int = Path(..., gt=0),
     use_cache: bool = True,
     db: Session = Depends(get_db)
 ):
     """
-    Get a summary of emergency contact data including:
-    - Total number of contacts
-    - Breakdown by section
-    - Breakdown by priority
-    - Breakdown by category
+    Get a single emergency contact by ID.
+    
+    - **emergency_id**: ID of the emergency contact
+    - **use_cache**: If true, use cached results when available
     """
     try:
         # Generate cache key
-        cache_key = "emergency_summary"
+        cache_key = f"emergency_{emergency_id}"
         
         # Try to get from cache if caching is enabled
         if use_cache:
@@ -3414,113 +3352,195 @@ async def get_emergency_summary(
                 logger.info(f"Cache hit for {cache_key}")
                 return cached_result
                 
-        # Get total count
-        total_count = db.query(func.count(EmergencyItem.id)).scalar()
+        # Use direct SQL query for better performance on single item lookup
+        stmt = text("SELECT * FROM emergency_item WHERE id = :id")
+        result = db.execute(stmt, {"id": emergency_id}).fetchone()
         
-        # Get section breakdown
-        section_query = text("""
-            SELECT section, COUNT(*) as count
-            FROM emergency_item
-            WHERE section IS NOT NULL
-            GROUP BY section
-            ORDER BY section
-        """)
-        section_result = db.execute(section_query)
-        section_breakdown = {row[0]: row[1] for row in section_result}
+        if not result:
+            raise HTTPException(status_code=404, detail="Emergency contact not found")
         
-        # Get priority breakdown
-        priority_query = text("""
-            SELECT priority, COUNT(*) as count
-            FROM emergency_item
-            GROUP BY priority
-            ORDER BY priority DESC
-        """)
-        priority_result = db.execute(priority_query)
-        priority_breakdown = {row[0]: row[1] for row in priority_result}
-        
-        # Get category breakdown
-        category_query = text("""
-            SELECT 
-                CASE 
-                    WHEN name LIKE '%Police%' THEN 'Police'
-                    WHEN name LIKE '%Hospita%' OR name LIKE '%Medical%' THEN 'Medical'
-                    WHEN name LIKE '%Rescue%' OR name LIKE '%Ambulance%' THEN 'Emergency Service'
-                    WHEN name LIKE '%Consulate%' OR name LIKE '%Embassy%' THEN 'Consular Service'
-                    WHEN name LIKE '%Immigra%' THEN 'Immigration'
-                    WHEN name LIKE '%Tour%' THEN 'Tourist Service'
-                    WHEN name LIKE '%Scam%' THEN 'Scam Warning'
-                    WHEN name LIKE '%Situation%' THEN 'Emergency Situation'
-                    ELSE 'Other'
-                END as category,
-                COUNT(*) as count
-            FROM emergency_item
-            GROUP BY category
-            ORDER BY count DESC
-        """)
-        category_result = db.execute(category_query)
-        category_breakdown = {row[0]: row[1] for row in category_result}
-        
-        # Create summary response
-        summary = {
-            "total_contacts": total_count,
-            "section_breakdown": section_breakdown,
-            "priority_breakdown": priority_breakdown,
-            "category_breakdown": category_breakdown
-        }
+        # Create an EmergencyItem model instance manually
+        emergency = EmergencyItem()
+        for key, value in result._mapping.items():
+            if hasattr(emergency, key):
+                setattr(emergency, key, value)
+                
+        # Convert to Pydantic model
+        response = EmergencyResponse.model_validate(emergency, from_attributes=True)
         
         # Store in cache if caching is enabled
         if use_cache:
-            emergencies_cache[cache_key] = summary
+            emergencies_cache[cache_key] = response
             
-        return summary
+        return response
     except SQLAlchemyError as e:
-        logger.error(f"Database error in get_emergency_summary: {e}")
+        logger.error(f"Database error in get_emergency_contact: {e}")
         logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
-    except Exception as e:
-        logger.error(f"Unexpected error in get_emergency_summary: {e}")
-        logger.error(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
 
-@router.get("/emergency/help", response_model=Dict[str, Any])
-async def get_emergency_help():
+@router.put("/emergency/{emergency_id}", response_model=EmergencyResponse)
+async def update_emergency_contact(
+    emergency_id: int = Path(..., gt=0),
+    emergency_update: EmergencyUpdate = Body(...),
+    db: Session = Depends(get_db)
+):
     """
-    Get help information about emergency routes.
+    Update a specific emergency contact.
     
-    Returns information about available emergency API endpoints.
+    - **emergency_id**: ID of the emergency contact to update
+    - **name**: New name (optional)
+    - **phone_number**: New phone number (optional)
+    - **description**: New description (optional)
+    - **address**: New address (optional)
+    - **location**: New location coordinates (optional)
+    - **priority**: New priority order (optional)
+    - **is_active**: New active status (optional)
     """
-    return {
-        "available_routes": [
-            {
-                "path": "/api/emergency/sections",
-                "description": "Get a list of all emergency sections with their IDs and names",
-                "method": "GET"
-            },
-            {
-                "path": "/api/emergency/section/{section_id}",
-                "description": "Get emergency contacts by section ID (1, 2, 3, or 4)",
-                "method": "GET"
-            },
-            {
-                "path": "/api/emergency/by-section/{section}",
-                "description": "Get emergency contacts by section name (legacy route)",
-                "method": "GET"
-            },
-            {
-                "path": "/api/emergency",
-                "description": "Get all emergency contacts with optional filtering",
-                "method": "GET"
-            },
-            {
-                "path": "/api/emergency/{emergency_id}",
-                "description": "Get a specific emergency contact by ID",
-                "method": "GET"
-            }
-        ],
-        "section_mapping": {
-            "1": "Tourist support centre and embassy contacts",
-            "2": "Emergency numbers",
-            "3": "Common Emergency Situations and How to Handle Them",
-            "4": "Tourist Scams to Watch Out For"
-        }
-    }
+    try:
+        emergency = db.query(EmergencyItem).filter(EmergencyItem.id == emergency_id).first()
+        if not emergency:
+            raise HTTPException(status_code=404, detail="Emergency contact not found")
+        
+        # Update fields if provided
+        update_data = emergency_update.model_dump(exclude_unset=True)
+        for key, value in update_data.items():
+            setattr(emergency, key, value)
+            
+        db.commit()
+        db.refresh(emergency)
+        
+        # Invalidate specific cache entries
+        emergencies_cache.delete(f"emergency_{emergency_id}")
+        emergencies_cache.clear()  # Clear all list caches
+        
+        # Convert to Pydantic model
+        return EmergencyResponse.model_validate(emergency, from_attributes=True)
+    except SQLAlchemyError as e:
+        db.rollback()
+        logger.error(f"Database error in update_emergency_contact: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+@router.delete("/emergency/{emergency_id}", response_model=dict)
+async def delete_emergency_contact(
+    emergency_id: int = Path(..., gt=0),
+    db: Session = Depends(get_db)
+):
+    """
+    Delete a specific emergency contact.
+    
+    - **emergency_id**: ID of the emergency contact to delete
+    """
+    try:
+        # Use optimized direct SQL with RETURNING for better performance
+        result = db.execute(
+            text("DELETE FROM emergency_item WHERE id = :id RETURNING id"),
+            {"id": emergency_id}
+        ).fetchone()
+        
+        if not result:
+            raise HTTPException(status_code=404, detail="Emergency contact not found")
+        
+        db.commit()
+        
+        # Invalidate cache entries
+        emergencies_cache.delete(f"emergency_{emergency_id}")
+        emergencies_cache.clear()  # Clear all list caches
+        
+        return {"status": "success", "message": f"Emergency contact {emergency_id} deleted"}
+    except SQLAlchemyError as e:
+        db.rollback()
+        logger.error(f"Database error in delete_emergency_contact: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+@router.put("/emergency/batch-update-status", response_model=BatchUpdateResult)
+async def batch_update_emergency_status(
+    emergency_ids: List[int] = Body(..., embed=True),
+    is_active: bool = Body(..., embed=True),
+    db: Session = Depends(get_db)
+):
+    """
+    Update the active status of multiple emergency contacts at once.
+    
+    This is much more efficient than updating emergency contacts one at a time.
+    """
+    try:
+        if not emergency_ids:
+            raise HTTPException(status_code=400, detail="No emergency contact IDs provided")
+        
+        # Prepare the update statement
+        stmt = text("""
+            UPDATE emergency_item 
+            SET is_active = :is_active, updated_at = NOW()
+            WHERE id = ANY(:emergency_ids)
+            RETURNING id
+        """)
+        
+        # Execute the update in a single query
+        result = db.execute(stmt, {"is_active": is_active, "emergency_ids": emergency_ids})
+        updated_ids = [row[0] for row in result]
+        
+        # Commit the transaction
+        db.commit()
+        
+        # Determine which IDs weren't found
+        failed_ids = [id for id in emergency_ids if id not in updated_ids]
+        
+        # Invalidate emergency cache
+        emergencies_cache.clear()
+        
+        return BatchUpdateResult(
+            success_count=len(updated_ids),
+            failed_ids=failed_ids,
+            message=f"Updated {len(updated_ids)} emergency contacts" if updated_ids else "No emergency contacts were updated"
+        )
+    except SQLAlchemyError as e:
+        db.rollback()
+        logger.error(f"Database error in batch_update_emergency_status: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+@router.delete("/emergency/batch", response_model=BatchUpdateResult)
+async def batch_delete_emergency_contacts(
+    emergency_ids: List[int] = Body(..., embed=True),
+    db: Session = Depends(get_db)
+):
+    """
+    Delete multiple emergency contacts at once.
+    
+    This is much more efficient than deleting emergency contacts one at a time with separate API calls.
+    """
+    try:
+        if not emergency_ids:
+            raise HTTPException(status_code=400, detail="No emergency contact IDs provided")
+        
+        # Prepare and execute the delete statement with RETURNING to get deleted IDs
+        stmt = text("""
+            DELETE FROM emergency_item
+            WHERE id = ANY(:emergency_ids)
+            RETURNING id
+        """)
+        
+        result = db.execute(stmt, {"emergency_ids": emergency_ids})
+        deleted_ids = [row[0] for row in result]
+        
+        # Commit the transaction
+        db.commit()
+        
+        # Determine which IDs weren't found
+        failed_ids = [id for id in emergency_ids if id not in deleted_ids]
+        
+        # Invalidate emergency cache
+        emergencies_cache.clear()
+        
+        return BatchUpdateResult(
+            success_count=len(deleted_ids),
+            failed_ids=failed_ids,
+            message=f"Deleted {len(deleted_ids)} emergency contacts" if deleted_ids else "No emergency contacts were deleted"
+        )
+    except SQLAlchemyError as e:
+        db.rollback()
+        logger.error(f"Database error in batch_delete_emergency_contacts: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
