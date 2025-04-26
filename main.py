@@ -13,6 +13,8 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKe
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from urllib.parse import urlparse, urljoin
 import asyncio
+import html
+from telegram.constants import ParseMode
 
 # Configure logging
 logging.basicConfig(
@@ -151,7 +153,11 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     
     # Send message to user
-    await update.message.reply_text(welcome_text, reply_markup=reply_markup)
+    await update.message.reply_text(
+        welcome_text,
+        parse_mode=ParseMode.HTML,
+        disable_web_page_preview=True,
+        reply_markup=reply_markup)
     
     # Log complete session including both command and response
     await log_complete_session(update, "start", "/start", welcome_text)
@@ -202,7 +208,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     
-    await update.message.reply_text(help_text, reply_markup=reply_markup)
+    await update.message.reply_text(
+        help_text,
+        parse_mode=ParseMode.HTML,
+        disable_web_page_preview=True,
+        reply_markup=reply_markup)
     
     # Log complete session including both command and response
     await log_complete_session(update, "help", "/help", help_text)
@@ -225,7 +235,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [KeyboardButton("Emergency"), KeyboardButton("FAQ")]
         ]
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-        await query.message.reply_text("Please use the main menu buttons:", reply_markup=reply_markup)
+        await query.message.reply_text(
+            "Please use the main menu buttons:",
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
+            reply_markup=reply_markup)
         
         # Log complete session
         await log_complete_session(update, "callback_handled", f"Callback data: {data}", "Callback received but not processed due to update")
@@ -319,7 +333,8 @@ async def get_events(update: Update, context: ContextTypes.DEFAULT_TYPE, action:
 
         await update.effective_message.reply_text(
             response_text,
-            parse_mode="Markdown",
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
             reply_markup=reply_markup
         )
         await log_complete_session(update, action, message, response_text)
@@ -329,17 +344,15 @@ async def get_events(update: Update, context: ContextTypes.DEFAULT_TYPE, action:
 
 
 async def get_emergency(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str, message: str):
-    """First show a list of emergency categories, then show details for the chosen category."""
+    """Show emergency categories, then details—automatically chunking long messages."""
     try:
         if not API_DATABASE_URL:
             logger.error("Database API not configured. Cannot fetch emergency information.")
             return
 
-        # If we haven't fetched sections yet, do phase 1
+        # Phase 1: list sections
         if "emergency_sections" not in context.user_data:
-            # 1) fetch list of categories
             sections_url = fix_url(API_DATABASE_URL, "/postgres/emergency/sections")
-            logger.info(f"Fetching emergency sections from: {sections_url}")
             resp = requests.get(sections_url)
             if resp.status_code != 200:
                 logger.error(f"Failed to fetch emergency sections: {resp.status_code} - {resp.text}")
@@ -347,40 +360,31 @@ async def get_emergency(update: Update, context: ContextTypes.DEFAULT_TYPE, acti
 
             sections = resp.json() or []
             if not sections:
-                response_text = "No emergency categories available."
-                await update.effective_message.reply_text(response_text)
-                await log_complete_session(update, action, message, response_text)
+                txt = "No emergency categories available."
+                await update.effective_message.reply_text(txt)
+                await log_complete_session(update, action, message, txt)
                 return
 
-            # build markdown list of names
             lines = ["*Please select an emergency category:*"]
             for sec in sections:
                 lines.append(f"- {sec['name']}")
-            response_text = "\n".join(lines)
+            text = "\n".join(lines)
 
-            # save name→id mapping for phase 2
             context.user_data["emergency_sections"] = {sec["name"]: sec["id"] for sec in sections}
-
-            # reply with a keyboard of category names
-            keyboard = [[KeyboardButton(sec["name"])] for sec in sections]
-            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-            await update.effective_message.reply_text(
-                response_text, parse_mode="Markdown", reply_markup=reply_markup
-            )
-            await log_complete_session(update, action, message, response_text)
+            kb = [[KeyboardButton(sec["name"])] for sec in sections]
+            markup = ReplyKeyboardMarkup(kb, resize_keyboard=True)
+            await update.effective_message.reply_text(text, parse_mode="Markdown", reply_markup=markup)
+            await log_complete_session(update, action, message, text)
             return
 
-        # phase 2: user has tapped a category name
+        # Phase 2: user picked one
         mapping = context.user_data.pop("emergency_sections", {})
         section_name = message
         section_id = mapping.get(section_name)
         if not section_id:
-            # unknown button: fall back to phase 1
             return await get_emergency(update, context, action, "")
 
-        # fetch details for this section
         detail_url = fix_url(API_DATABASE_URL, f"/postgres/emergency/section/{section_id}")
-        logger.info(f"Fetching emergency details from: {detail_url}")
         resp = requests.get(detail_url)
         if resp.status_code != 200:
             logger.error(f"Failed to fetch emergency details: {resp.status_code} - {resp.text}")
@@ -388,40 +392,52 @@ async def get_emergency(update: Update, context: ContextTypes.DEFAULT_TYPE, acti
 
         details = resp.json() or []
         if not details:
-            response_text = f"No entries found for '{section_name}'."
-        else:
-            # build markdown list of contacts
-            lines = [f"*{section_name}*"]
-            for c in details:
-                name = c.get("name", "Unknown")
-                phone = c.get("phone_number", "No phone")
-                lines.append(f"- *{name}*: {phone}")
-                if desc := c.get("description"):
-                    lines.append(f"  {desc}")
-                if addr := c.get("address"):
-                    lines.append(f"  {addr}")
-                lines.append("")  # blank line between entries
-            response_text = "\n".join(lines).rstrip()
+            text = f"No entries found for '{section_name}'."
+            await update.effective_message.reply_text(text)
+            await log_complete_session(update, action, section_name, text)
+            return
 
-        # send back to main menu
-        keyboard = [
+        # Build lines
+        lines = [f"*{section_name}*"]
+        for c in details:
+            name = c.get("name", "Unknown")
+            phone = c.get("phone_number", "No phone")
+            lines.append(f"- *{name}*: {phone}")
+            if desc := c.get("description"):
+                lines.append(f"  {desc}")
+            if addr := c.get("address"):
+                lines.append(f"  {addr}")
+            lines.append("")  # blank separator
+
+        # Chunk into <=4000-char messages
+        MAX_LEN = 4000
+        chunk = ""
+        kb = [
             [KeyboardButton("Da Nang's bucket list"), KeyboardButton("Solana Summit Event")],
             [KeyboardButton("Events"), KeyboardButton("About Pixity")],
             [KeyboardButton("Emergency"), KeyboardButton("FAQ")]
         ]
-        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-        await update.effective_message.reply_text(
-            response_text, parse_mode="Markdown", reply_markup=reply_markup
-        )
-        # log with message = category name
-        await log_complete_session(update, action, section_name, response_text)
+        markup = ReplyKeyboardMarkup(kb, resize_keyboard=True)
+
+        for line in lines:
+            # +1 for newline
+            if len(chunk) + len(line) + 1 > MAX_LEN:
+                # send current chunk
+                await update.effective_message.reply_text(chunk.rstrip("\n"), parse_mode="Markdown", reply_markup=markup)
+                chunk = ""
+            chunk += line + "\n"
+
+        # send any remaining
+        if chunk:
+            await update.effective_message.reply_text(chunk.rstrip("\n"), parse_mode="Markdown", reply_markup=markup)
+
+        await log_complete_session(update, action, section_name, "\n".join(lines).rstrip("\n"))
 
     except Exception as e:
         logger.error(f"Error fetching emergency info: {e}")
 
-
 async def get_faq(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str, message: str):
-    """Get FAQ information from API and display it."""
+    """Get FAQ information from API and display it safely using HTML parsing."""
     try:
         if not API_DATABASE_URL:
             logger.error("Database API not configured. Cannot fetch FAQ information.")
@@ -431,20 +447,24 @@ async def get_faq(update: Update, context: ContextTypes.DEFAULT_TYPE, action: st
         params = {"active_only": True, "limit": 10, "use_cache": True}
         logger.info(f"Fetching FAQ from: {endpoint_url}")
 
-        response = requests.get(endpoint_url, params=params)
-        if response.status_code != 200:
-            logger.error(f"Failed to fetch FAQ info: {response.status_code} - {response.text}")
+        resp = requests.get(endpoint_url, params=params)
+        if resp.status_code != 200:
+            logger.error(f"Failed to fetch FAQ info: {resp.status_code} - {resp.text}")
             return
 
-        faqs = response.json() or []
+        faqs = resp.json() or []
         if not faqs:
             response_text = "No FAQ information available."
         else:
-            lines = ["📋 *Frequently Asked Questions*\n"]
+            lines = ["<b>Frequently Asked Questions</b>\n"]
             for i, faq in enumerate(faqs, 1):
-                lines.append(f"❓ *{faq.get('question', f'Question {i}')}*")
-                lines.append(f"✅ {faq.get('answer','No answer available')}\n")
-            response_text = "\n".join(lines)
+                q = html.escape(faq.get("question", f"Question {i}"))
+                a = html.escape(faq.get("answer", "No answer available"))
+                lines.append(f"<b>{i}. {q}</b>")
+                lines.append(a)
+                lines.append("")  # blank line
+
+            response_text = "\n".join(lines).rstrip()
 
         keyboard = [
             [KeyboardButton("Da Nang's bucket list"), KeyboardButton("Solana Summit Event")],
@@ -455,7 +475,7 @@ async def get_faq(update: Update, context: ContextTypes.DEFAULT_TYPE, action: st
 
         await update.effective_message.reply_text(
             response_text,
-            parse_mode="Markdown",
+            parse_mode=ParseMode.HTML,
             reply_markup=reply_markup
         )
         await log_complete_session(update, action, message, response_text)
