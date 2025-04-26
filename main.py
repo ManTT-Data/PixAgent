@@ -329,45 +329,92 @@ async def get_events(update: Update, context: ContextTypes.DEFAULT_TYPE, action:
 
 
 async def get_emergency(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str, message: str):
-    """Fetch and display emergency contacts without extra sorting or processing."""
+    """First show a list of emergency categories, then show details for the chosen category."""
     try:
         if not API_DATABASE_URL:
             logger.error("Database API not configured. Cannot fetch emergency information.")
             return
 
-        endpoint_url = fix_url(API_DATABASE_URL, "/postgres/emergency")
-        logger.info(f"Fetching emergency information from: {endpoint_url}")
+        # If we haven't fetched sections yet, do phase 1
+        if "emergency_sections" not in context.user_data:
+            # 1) fetch list of categories
+            sections_url = fix_url(API_DATABASE_URL, "/postgres/emergency/sections")
+            logger.info(f"Fetching emergency sections from: {sections_url}")
+            resp = requests.get(sections_url)
+            if resp.status_code != 200:
+                logger.error(f"Failed to fetch emergency sections: {resp.status_code} - {resp.text}")
+                return
 
-        response = requests.get(endpoint_url)
-        if response.status_code != 200:
-            logger.error(f"Failed to fetch emergency info: {response.status_code} - {response.text}")
-            return
+            sections = resp.json() or []
+            if not sections:
+                response_text = "No emergency categories available."
+                await update.effective_message.reply_text(response_text)
+                await log_complete_session(update, action, message, response_text)
+                return
 
-        emergency_info = response.json() or []
-        if not emergency_info:
-            response_text = "No emergency information available."
-        else:
-            lines = ["🚨 *Emergency Information* 🚨\n"]
-            for contact in emergency_info:
-                line = f"• *{contact.get('name','Unknown')}*: {contact.get('phone','No phone')}"
-                if contact.get("description"):
-                    line += f" — {contact['description']}"
-                lines.append(line)
+            # build markdown list of names
+            lines = ["*Please select an emergency category:*"]
+            for sec in sections:
+                lines.append(f"- {sec['name']}")
             response_text = "\n".join(lines)
 
+            # save name→id mapping for phase 2
+            context.user_data["emergency_sections"] = {sec["name"]: sec["id"] for sec in sections}
+
+            # reply with a keyboard of category names
+            keyboard = [[KeyboardButton(sec["name"])] for sec in sections]
+            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+            await update.effective_message.reply_text(
+                response_text, parse_mode="Markdown", reply_markup=reply_markup
+            )
+            await log_complete_session(update, action, message, response_text)
+            return
+
+        # phase 2: user has tapped a category name
+        mapping = context.user_data.pop("emergency_sections", {})
+        section_name = message
+        section_id = mapping.get(section_name)
+        if not section_id:
+            # unknown button: fall back to phase 1
+            return await get_emergency(update, context, action, "")
+
+        # fetch details for this section
+        detail_url = fix_url(API_DATABASE_URL, f"/postgres/emergency/section/{section_id}")
+        logger.info(f"Fetching emergency details from: {detail_url}")
+        resp = requests.get(detail_url)
+        if resp.status_code != 200:
+            logger.error(f"Failed to fetch emergency details: {resp.status_code} - {resp.text}")
+            return
+
+        details = resp.json() or []
+        if not details:
+            response_text = f"No entries found for '{section_name}'."
+        else:
+            # build markdown list of contacts
+            lines = [f"*{section_name}*"]
+            for c in details:
+                name = c.get("name", "Unknown")
+                phone = c.get("phone_number", "No phone")
+                lines.append(f"- *{name}*: {phone}")
+                if desc := c.get("description"):
+                    lines.append(f"  {desc}")
+                if addr := c.get("address"):
+                    lines.append(f"  {addr}")
+                lines.append("")  # blank line between entries
+            response_text = "\n".join(lines).rstrip()
+
+        # send back to main menu
         keyboard = [
             [KeyboardButton("Da Nang's bucket list"), KeyboardButton("Solana Summit Event")],
             [KeyboardButton("Events"), KeyboardButton("About Pixity")],
             [KeyboardButton("Emergency"), KeyboardButton("FAQ")]
         ]
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-
         await update.effective_message.reply_text(
-            response_text,
-            parse_mode="Markdown",
-            reply_markup=reply_markup
+            response_text, parse_mode="Markdown", reply_markup=reply_markup
         )
-        await log_complete_session(update, action, message, response_text)
+        # log with message = category name
+        await log_complete_session(update, action, section_name, response_text)
 
     except Exception as e:
         logger.error(f"Error fetching emergency info: {e}")
