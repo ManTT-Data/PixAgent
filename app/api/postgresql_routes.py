@@ -56,8 +56,7 @@ class InfoContentResponse(InfoContentBase):
     created_at: datetime
     updated_at: datetime
     
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)
 
 # FAQ models
 class FAQBase(BaseModel):
@@ -78,9 +77,7 @@ class FAQResponse(FAQBase):
     created_at: datetime
     updated_at: datetime
     
-    # Use class Config for Pydantic v1
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)
 
 # Emergency contact models
 class EmergencyBase(BaseModel):
@@ -111,9 +108,7 @@ class EmergencyResponse(EmergencyBase):
     created_at: datetime
     updated_at: datetime
     
-    # Use class Config for Pydantic v1
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)
 
 # Event models
 class EventBase(BaseModel):
@@ -148,9 +143,7 @@ class EventResponse(EventBase):
     created_at: datetime
     updated_at: datetime
     
-    # Use class Config for Pydantic v1
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)
 
 # --- Batch operations for better performance ---
 
@@ -206,11 +199,11 @@ async def get_faqs(
         faqs = query.offset(skip).limit(limit).all()
         
         # Convert to Pydantic models
-        result = [FAQResponse.from_orm(faq) for faq in faqs]
+        result = [FAQResponse.model_validate(faq, from_attributes=True) for faq in faqs]
         
         # Store in cache if caching is enabled
         if use_cache:
-            faqs_cache.set(cache_key, result)
+            faqs_cache[cache_key] = result
             
         return result
     except SQLAlchemyError as e:
@@ -236,7 +229,7 @@ async def create_faq(
     """
     try:
         # Create new FAQ item
-        db_faq = FAQItem(**faq.dict())
+        db_faq = FAQItem(**faq.model_dump())
         db.add(db_faq)
         db.commit()
         db.refresh(db_faq)
@@ -245,7 +238,7 @@ async def create_faq(
         faqs_cache.clear()
         
         # Convert to Pydantic model
-        return FAQResponse.from_orm(db_faq)
+        return FAQResponse.model_validate(db_faq, from_attributes=True)
     except SQLAlchemyError as e:
         db.rollback()
         logger.error(f"Database error in create_faq: {e}")
@@ -259,7 +252,7 @@ async def get_faq(
     db: Session = Depends(get_db)
 ):
     """
-    Get a specific FAQ item by ID.
+    Get a single FAQ item by ID.
     
     - **faq_id**: ID of the FAQ item
     - **use_cache**: If true, use cached results when available
@@ -289,11 +282,11 @@ async def get_faq(
                 setattr(faq, key, value)
                 
         # Convert to Pydantic model
-        response = FAQResponse.from_orm(faq)
+        response = FAQResponse.model_validate(faq, from_attributes=True)
         
         # Store in cache if caching is enabled
         if use_cache:
-            faqs_cache.set(cache_key, response)
+            faqs_cache[cache_key] = response
             
         return response
     except SQLAlchemyError as e:
@@ -308,21 +301,21 @@ async def update_faq(
     db: Session = Depends(get_db)
 ):
     """
-    Update a specific FAQ item.
+    Update an existing FAQ item.
     
     - **faq_id**: ID of the FAQ item to update
-    - **question**: New question text (optional)
-    - **answer**: New answer text (optional)
-    - **is_active**: New active status (optional)
+    - **question**: Updated question text (optional)
+    - **answer**: Updated answer text (optional)
+    - **is_active**: Updated active status (optional)
     """
     try:
         # Check if FAQ exists
         faq = db.query(FAQItem).filter(FAQItem.id == faq_id).first()
-        if not faq:
-            raise HTTPException(status_code=404, detail="FAQ item not found")
+        if faq is None:
+            raise HTTPException(status_code=404, detail=f"FAQ with ID {faq_id} not found")
         
         # Update fields with optimized dict handling
-        update_data = faq_update.dict(exclude_unset=True)
+        update_data = faq_update.model_dump(exclude_unset=True)
         for key, value in update_data.items():
             setattr(faq, key, value)
             
@@ -335,7 +328,7 @@ async def update_faq(
         faqs_cache.clear()  # Clear all list caches
         
         # Convert to Pydantic model
-        return FAQResponse.from_orm(faq)
+        return FAQResponse.model_validate(faq, from_attributes=True)
     except SQLAlchemyError as e:
         db.rollback()
         logger.error(f"Database error in update_faq: {e}")
@@ -348,7 +341,7 @@ async def delete_faq(
     db: Session = Depends(get_db)
 ):
     """
-    Delete a specific FAQ item.
+    Delete an FAQ item.
     
     - **faq_id**: ID of the FAQ item to delete
     """
@@ -375,7 +368,7 @@ async def delete_faq(
         logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
-# --- Emergency endpoints ---
+# --- Emergency contact endpoints ---
 
 @router.get("/emergency", response_model=List[EmergencyResponse])
 async def get_emergency_contacts(
@@ -424,11 +417,11 @@ async def get_emergency_contacts(
         emergency_contacts = query.order_by(EmergencyItem.priority.desc()).offset(skip).limit(limit).all()
         
         # Convert to Pydantic models efficiently
-        result = [EmergencyResponse.from_orm(contact) for contact in emergency_contacts]
+        result = [EmergencyResponse.model_validate(contact, from_attributes=True) for contact in emergency_contacts]
         
         # Store in cache if caching is enabled
         if use_cache:
-            emergencies_cache.set(cache_key, result)
+            emergencies_cache[cache_key] = result
             
         return result
     except SQLAlchemyError as e:
@@ -457,7 +450,7 @@ async def create_emergency_contact(
     - **is_active**: Whether the contact is active (default: True)
     """
     try:
-        db_emergency = EmergencyItem(**emergency.dict())
+        db_emergency = EmergencyItem(**emergency.model_dump())
         db.add(db_emergency)
         db.commit()
         db.refresh(db_emergency)
@@ -466,7 +459,7 @@ async def create_emergency_contact(
         emergencies_cache.clear()
         
         # Convert SQLAlchemy model to Pydantic model before returning
-        result = EmergencyResponse.from_orm(db_emergency)
+        result = EmergencyResponse.model_validate(db_emergency, from_attributes=True)
         return result
     except SQLAlchemyError as e:
         db.rollback()
@@ -481,7 +474,7 @@ async def get_emergency_contact(
     db: Session = Depends(get_db)
 ):
     """
-    Get a specific emergency contact by ID.
+    Get a single emergency contact by ID.
     
     - **emergency_id**: ID of the emergency contact
     - **use_cache**: If true, use cached results when available
@@ -511,11 +504,11 @@ async def get_emergency_contact(
                 setattr(emergency, key, value)
                 
         # Convert to Pydantic model
-        response = EmergencyResponse.from_orm(emergency)
+        response = EmergencyResponse.model_validate(emergency, from_attributes=True)
         
         # Store in cache if caching is enabled
         if use_cache:
-            emergencies_cache.set(cache_key, response)
+            emergencies_cache[cache_key] = response
             
         return response
     except SQLAlchemyError as e:
@@ -547,7 +540,7 @@ async def update_emergency_contact(
             raise HTTPException(status_code=404, detail="Emergency contact not found")
         
         # Update fields if provided
-        update_data = emergency_update.dict(exclude_unset=True)
+        update_data = emergency_update.model_dump(exclude_unset=True)
         for key, value in update_data.items():
             setattr(emergency, key, value)
             
@@ -559,7 +552,7 @@ async def update_emergency_contact(
         emergencies_cache.clear()  # Clear all list caches
         
         # Convert to Pydantic model
-        return EmergencyResponse.from_orm(emergency)
+        return EmergencyResponse.model_validate(emergency, from_attributes=True)
     except SQLAlchemyError as e:
         db.rollback()
         logger.error(f"Database error in update_emergency_contact: {e}")
@@ -740,11 +733,11 @@ async def get_events(
         events = query.order_by(EventItem.date_start.desc()).offset(skip).limit(limit).all()
         
         # Convert to Pydantic models efficiently
-        result = [EventResponse.from_orm(event) for event in events]
+        result = [EventResponse.model_validate(event, from_attributes=True) for event in events]
         
         # Store in cache if caching is enabled (30 seconds TTL for events list)
         if use_cache:
-            events_cache.set(cache_key, result, ttl=30)
+            events_cache[cache_key] = result
             
         return result
     except SQLAlchemyError as e:
@@ -775,7 +768,7 @@ async def create_event(
     - **featured**: Whether the event is featured (default: False)
     """
     try:
-        db_event = EventItem(**event.dict())
+        db_event = EventItem(**event.model_dump())
         db.add(db_event)
         db.commit()
         db.refresh(db_event)
@@ -784,7 +777,7 @@ async def create_event(
         events_cache.clear()
         
         # Convert SQLAlchemy model to Pydantic model before returning
-        result = EventResponse.from_orm(db_event)
+        result = EventResponse.model_validate(db_event, from_attributes=True)
         return result
     except SQLAlchemyError as e:
         logger.error(f"Database error in create_event: {e}")
@@ -798,7 +791,7 @@ async def get_event(
     db: Session = Depends(get_db)
 ):
     """
-    Get a specific event by ID.
+    Get a single event by ID.
     
     - **event_id**: ID of the event
     - **use_cache**: If true, use cached results when available
@@ -828,11 +821,11 @@ async def get_event(
                 setattr(event, key, value)
                 
         # Convert SQLAlchemy model to Pydantic model
-        response = EventResponse.from_orm(event)
+        response = EventResponse.model_validate(event, from_attributes=True)
         
         # Store in cache if caching is enabled (60 seconds TTL for single event)
         if use_cache:
-            events_cache.set(cache_key, response, ttl=60)
+            events_cache[cache_key] = response
             
         return response
     except SQLAlchemyError as e:
@@ -853,7 +846,7 @@ def update_event(
             raise HTTPException(status_code=404, detail="Event not found")
             
         # Update event fields
-        for key, value in event.dict(exclude_unset=True).items():
+        for key, value in event.model_dump(exclude_unset=True).items():
             setattr(db_event, key, value)
             
         db.commit()
@@ -864,7 +857,7 @@ def update_event(
         events_cache.clear()  # Clear all list caches
         
         # Convert SQLAlchemy model to Pydantic model before returning
-        result = EventResponse.from_orm(db_event)
+        result = EventResponse.model_validate(db_event, from_attributes=True)
         return result
     except SQLAlchemyError as e:
         logger.error(f"Database error in update_event: {e}")
@@ -879,8 +872,8 @@ async def delete_event(
     """Delete a specific event."""
     try:
         event = db.query(EventItem).filter(EventItem.id == event_id).first()
-        if not event:
-            raise HTTPException(status_code=404, detail="Event not found")
+        if event is None:
+            raise HTTPException(status_code=404, detail=f"Event with ID {event_id} not found")
         
         db.delete(event)
         db.commit()
@@ -893,7 +886,7 @@ async def delete_event(
     except SQLAlchemyError as e:
         db.rollback()
         logger.error(f"Database error: {e}")
-        raise HTTPException(status_code=500, detail="Failed to delete event")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 # --- Batch operations for better performance ---
 
@@ -910,7 +903,7 @@ async def batch_create_events(
     try:
         db_events = []
         for event_data in batch.events:
-            db_event = EventItem(**event_data.dict())
+            db_event = EventItem(**event_data.model_dump())
             db.add(db_event)
             db_events.append(db_event)
         
@@ -922,7 +915,7 @@ async def batch_create_events(
             db.refresh(db_event)
         
         # Convert SQLAlchemy models to Pydantic models
-        result = [EventResponse.from_orm(event) for event in db_events]
+        result = [EventResponse.model_validate(event, from_attributes=True) for event in db_events]
         return result
     except SQLAlchemyError as e:
         db.rollback()
@@ -1048,7 +1041,7 @@ async def batch_create_faqs(
     try:
         db_faqs = []
         for faq_data in batch.faqs:
-            db_faq = FAQItem(**faq_data.dict())
+            db_faq = FAQItem(**faq_data.model_dump())
             db.add(db_faq)
             db_faqs.append(db_faq)
         
@@ -1063,7 +1056,7 @@ async def batch_create_faqs(
         faqs_cache.clear()
         
         # Convert SQLAlchemy models to Pydantic models
-        result = [FAQResponse.from_orm(faq) for faq in db_faqs]
+        result = [FAQResponse.model_validate(faq, from_attributes=True) for faq in db_faqs]
         return result
     except SQLAlchemyError as e:
         db.rollback()
@@ -1179,7 +1172,7 @@ async def batch_create_emergency_contacts(
     try:
         db_emergency_contacts = []
         for emergency_data in batch.emergency_contacts:
-            db_emergency = EmergencyItem(**emergency_data.dict())
+            db_emergency = EmergencyItem(**emergency_data.model_dump())
             db.add(db_emergency)
             db_emergency_contacts.append(db_emergency)
         
@@ -1194,7 +1187,7 @@ async def batch_create_emergency_contacts(
         emergencies_cache.clear()
         
         # Convert SQLAlchemy models to Pydantic models
-        result = [EmergencyResponse.from_orm(emergency) for emergency in db_emergency_contacts]
+        result = [EmergencyResponse.model_validate(emergency, from_attributes=True) for emergency in db_emergency_contacts]
         return result
     except SQLAlchemyError as e:
         db.rollback()
@@ -1341,7 +1334,7 @@ Tiktok: tiktok.com/@pixity.aibot"""
         
         # Store in cache if caching is enabled
         if use_cache:
-            about_pixity_cache.set("about_pixity", response)
+            about_pixity_cache["about_pixity"] = response
             
         return response
     except SQLAlchemyError as e:
@@ -1401,8 +1394,7 @@ class DaNangBucketListResponse(DaNangBucketListBase):
     created_at: datetime
     updated_at: datetime
     
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)
         
 class DaNangBucketListCreate(DaNangBucketListBase):
     pass
@@ -1453,7 +1445,7 @@ async def get_danang_bucket_list(
             db_bucket_list = new_bucket_list
             
         # Convert to Pydantic model
-        response = DaNangBucketListResponse.from_orm(db_bucket_list)
+        response = DaNangBucketListResponse.model_validate(db_bucket_list, from_attributes=True)
         
         # Store in cache if caching is enabled
         if use_cache:
@@ -1497,7 +1489,7 @@ async def update_danang_bucket_list(
             del danang_bucket_list_cache["danang_bucket_list"]
         
         # Convert to Pydantic model
-        return DaNangBucketListResponse.from_orm(db_bucket_list)
+        return DaNangBucketListResponse.model_validate(db_bucket_list, from_attributes=True)
         
     except SQLAlchemyError as e:
         error_msg = f"Database error in update_danang_bucket_list: {str(e)}"
@@ -1514,8 +1506,7 @@ class SolanaSummitResponse(SolanaSummitBase):
     created_at: datetime
     updated_at: datetime
     
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)
         
 class SolanaSummitCreate(SolanaSummitBase):
     pass
@@ -1570,7 +1561,7 @@ async def get_solana_summit(
             db_solana_summit = new_solana_summit
             
         # Convert to Pydantic model
-        response = SolanaSummitResponse.from_orm(db_solana_summit)
+        response = SolanaSummitResponse.model_validate(db_solana_summit, from_attributes=True)
         
         # Store in cache if caching is enabled
         if use_cache:
@@ -1614,7 +1605,7 @@ async def update_solana_summit(
             del solana_summit_cache["solana_summit"]
         
         # Convert to Pydantic model
-        return SolanaSummitResponse.from_orm(db_solana_summit)
+        return SolanaSummitResponse.model_validate(db_solana_summit, from_attributes=True)
         
     except SQLAlchemyError as e:
         error_msg = f"Database error in update_solana_summit: {str(e)}"

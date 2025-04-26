@@ -11,7 +11,9 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 try:
-    from app.py import app
+    # Sửa lại cách import đúng - 'app.py' không phải là module hợp lệ
+    # 'app' là tên module, '.py' là phần mở rộng tệp
+    from app import app
 except ImportError:
     # Thử cách khác nếu import trực tiếp không hoạt động
     import importlib.util

@@ -64,11 +64,9 @@ async def lifespan(app: FastAPI):
     # Startup: kiểm tra kết nối các database
     logger.info("Starting application...")
     db_status = check_database_connections()
-    if all(db_status.values()):
-        logger.info("All database connections are working")
     
     # Khởi tạo bảng trong cơ sở dữ liệu (nếu chưa tồn tại)
-    if DEBUG:  # Chỉ khởi tạo bảng trong chế độ debug
+    if DEBUG and all(db_status.values()):  # Chỉ khởi tạo bảng trong chế độ debug và khi tất cả kết nối DB thành công
         from app.database.postgresql import create_tables
         if create_tables():
             logger.info("Database tables created or already exist")
@@ -91,6 +89,9 @@ try:
     
     # Import debug utilities
     from app.utils.debug_utils import debug_view, DebugInfo, error_tracker, performance_monitor
+    
+    # Import cache
+    from app.utils.cache import get_cache
     
 except ImportError as e:
     logger.error(f"Error importing routes or middlewares: {e}")
@@ -151,6 +152,25 @@ def health_check():
         "databases": db_status
     }
 
+@app.get("/api/ping")
+async def ping():
+    return {"status": "pong"}
+
+# Cache stats endpoint
+@app.get("/cache/stats")
+def cache_stats():
+    """Trả về thống kê về cache"""
+    cache = get_cache()
+    return cache.stats()
+
+# Cache clear endpoint
+@app.delete("/cache/clear")
+def cache_clear():
+    """Xóa tất cả dữ liệu trong cache"""
+    cache = get_cache()
+    cache.clear()
+    return {"message": "Cache cleared successfully"}
+
 # Debug endpoints (chỉ có trong chế độ debug)
 if DEBUG:
     @app.get("/debug/config")
@@ -192,6 +212,29 @@ if DEBUG:
     def debug_full_report(request: Request):
         """Hiển thị báo cáo debug đầy đủ (chỉ trong chế độ debug)"""
         return debug_view(request)
+    
+    @app.get("/debug/cache")
+    def debug_cache():
+        """Hiển thị thông tin chi tiết về cache (chỉ trong chế độ debug)"""
+        cache = get_cache()
+        cache_stats = cache.stats()
+        
+        # Thêm thông tin chi tiết về các key trong cache
+        cache_keys = list(cache.cache.keys())
+        history_users = list(cache.user_history_queues.keys())
+        
+        return {
+            "stats": cache_stats,
+            "keys": cache_keys,
+            "history_users": history_users,
+            "config": {
+                "ttl": cache.ttl,
+                "cleanup_interval": cache.cleanup_interval,
+                "max_size": cache.max_size,
+                "history_queue_size": os.getenv("HISTORY_QUEUE_SIZE", "10"),
+                "history_cache_ttl": os.getenv("HISTORY_CACHE_TTL", "3600"),
+            }
+        }
 
 # Run the app with uvicorn when executed directly
 if __name__ == "__main__":

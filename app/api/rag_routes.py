@@ -11,9 +11,9 @@ import google.generativeai as genai
 from datetime import datetime
 from langchain.prompts import PromptTemplate
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
-from app.utils.utils import cache, timer_decorator
+from app.utils.utils import timer_decorator
 
-from app.database.mongodb import get_user_history, get_chat_history, get_request_history, save_session, session_collection
+from app.database.mongodb import get_user_history, get_chat_history, get_request_history, session_collection
 from app.database.pinecone import (
     search_vectors, 
     get_chain, 
@@ -33,32 +33,6 @@ from app.models.rag_models import (
     UserMessageModel
 )
 
-# Sử dụng bộ nhớ đệm thay vì Redis
-class SimpleCache:
-    def __init__(self):
-        self.cache = {}
-        self.expiration = {}
-    
-    async def get(self, key):
-        if key in self.cache:
-            # Kiểm tra xem cache đã hết hạn chưa
-            if key in self.expiration and self.expiration[key] > time.time():
-                return self.cache[key]
-            else:
-                # Xóa cache đã hết hạn
-                if key in self.cache:
-                    del self.cache[key]
-                if key in self.expiration:
-                    del self.expiration[key]
-        return None
-    
-    async def set(self, key, value, ex=300):  # Mặc định 5 phút
-        self.cache[key] = value
-        self.expiration[key] = time.time() + ex
-
-# Khởi tạo SimpleCache
-redis_client = SimpleCache()
-
 # Configure logging
 logger = logging.getLogger(__name__)
 
@@ -70,6 +44,29 @@ genai.configure(api_key=GOOGLE_API_KEY)
 router = APIRouter(
     prefix="/rag",
     tags=["RAG"],
+)
+
+fix_request = PromptTemplate(
+    template = """Goal:
+Your task is generate one request that have all information of history chat.
+You will received a conversation history and current request of user.
+Generate a new request that make sense if current request related to history conversation.
+
+Return Format:
+Only return the fully request with all the important keywords.
+If the current message is NOT related to the conversation history or there is no chat history: Return user's current request.
+If the current message IS related to the conversation history: Return new request based on information from the conversation history and the current request.
+
+Warning:
+Only use history chat if current request is truly relevant to the previous conversation.
+
+Conversation History:
+{chat_history}
+
+User current message:
+{question}
+""",
+    input_variables = ["chat_history", "question"],
 )
 
 # Create a prompt template with conversation history
@@ -162,102 +159,18 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
     """
     start_time = time.time()
     try:
-        # Create cache key for request
-        cache_key = f"rag_chat:{request.user_id}:{request.question}:{request.include_history}:{request.use_rag}:{request.similarity_top_k}:{request.limit_k}:{request.similarity_metric}:{request.similarity_threshold}"
-        
-        # Check cache using redis_client instead of cache
-        cached_response = await redis_client.get(cache_key)
-        if cached_response is not None:
-            logger.info(f"Cache hit for RAG chat request from user {request.user_id}")
-            try:
-                # If cached_response is string (JSON), parse it
-                if isinstance(cached_response, str):
-                    cached_data = json.loads(cached_response)
-                    return ChatResponse(
-                        answer=cached_data.get("answer", ""),
-                        processing_time=cached_data.get("processing_time", 0.0)
-                    )
-                # If cached_response is object with sources, extract answer and processing_time
-                elif hasattr(cached_response, 'sources'):
-                    return ChatResponse(
-                        answer=cached_response.answer,
-                        processing_time=cached_response.processing_time
-                    )
-                # Otherwise, return cached response as is
-                return cached_response
-            except Exception as e:
-                logger.error(f"Error parsing cached response: {e}")
-                # Continue processing if cache parsing fails
-        
         # Save user message first (so it's available for user history)
         session_id = request.session_id or f"{request.user_id}_{datetime.now().strftime('%Y-%m-%d_%H:%M:%S')}"
         logger.info(f"Processing chat request for user {request.user_id}, session {session_id}")
-        
-        # First, save the user's message so it's available for history lookups
-        try:
-            # Save user's question
-            save_session(
-                session_id=session_id,
-                factor="user",
-                action="asking_freely",
-                first_name=getattr(request, 'first_name', "User"),
-                last_name=getattr(request, 'last_name', ""),
-                message=request.question,
-                user_id=request.user_id,
-                username=getattr(request, 'username', ""),
-                response=None  # No response yet
-            )
-            logger.info(f"User message saved for session {session_id}")
-        except Exception as e:
-            logger.error(f"Error saving user message to session: {e}")
-            # Continue processing even if saving fails
-        
-        # Use the RAG pipeline
-        if request.use_rag:
-            # Get the retriever with custom parameters
-            retriever = get_chain(
-                top_k=request.similarity_top_k,
-                limit_k=request.limit_k,
-                similarity_metric=request.similarity_metric,
-                similarity_threshold=request.similarity_threshold
-            )
-            if not retriever:
-                raise HTTPException(status_code=500, detail="Failed to initialize retriever")
-            
-            # Get request history for context
-            context_query = get_request_history(request.user_id) if request.include_history else request.question
-            logger.info(f"Using context query for retrieval: {context_query[:100]}...")
-            
-            # Retrieve relevant documents
-            retrieved_docs = retriever.invoke(context_query)
-            context = "\n".join([doc.page_content for doc in retrieved_docs])
-            
-            # Prepare sources
-            sources = []
-            for doc in retrieved_docs:
-                source = None
-                metadata = {}
-                
-                if hasattr(doc, 'metadata'):
-                    source = doc.metadata.get('source', None)
-                    # Extract score information
-                    score = doc.metadata.get('score', None)
-                    normalized_score = doc.metadata.get('normalized_score', None)
-                    # Remove score info from metadata to avoid duplication
-                    metadata = {k: v for k, v in doc.metadata.items() 
-                               if k not in ['text', 'source', 'score', 'normalized_score']}
-                
-                sources.append(SourceDocument(
-                    text=doc.page_content,
-                    source=source,
-                    score=score,
-                    normalized_score=normalized_score,
-                    metadata=metadata
-                ))
-        else:
-            # No RAG
-            context = ""
-            sources = None
+
+        retriever = get_chain(
+            top_k=request.similarity_top_k,
+            limit_k=request.limit_k,
+            similarity_metric=request.similarity_metric,
+            similarity_threshold=request.similarity_threshold
+        )
+        if not retriever:
+            raise HTTPException(status_code=500, detail="Failed to initialize retriever")
         
         # Get chat history
         chat_history = get_chat_history(request.user_id) if request.include_history else ""
@@ -295,11 +208,48 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
             generation_config=generation_config,
             safety_settings=safety_settings
         )
+
+        prompt_request = fix_request.format(
+            question=request.question,
+            chat_history=chat_history
+        )
+        
+        # Log thời gian bắt đầu final_request
+        final_request_start_time = time.time()
+        final_request = model.generate_content(prompt_request)
+        # Log thời gian hoàn thành final_request
+        logger.info(f"Final request generation time: {time.time() - final_request_start_time:.2f} seconds")
+        # print(final_request.text)
+
+        retrieved_docs = retriever.invoke(final_request.text)
+        context = "\n".join([doc.page_content for doc in retrieved_docs])
+
+        sources = []
+        for doc in retrieved_docs:
+            source = None
+            metadata = {}
+            
+            if hasattr(doc, 'metadata'):
+                source = doc.metadata.get('source', None)
+                # Extract score information
+                score = doc.metadata.get('score', None)
+                normalized_score = doc.metadata.get('normalized_score', None)
+                # Remove score info from metadata to avoid duplication
+                metadata = {k: v for k, v in doc.metadata.items() 
+                            if k not in ['text', 'source', 'score', 'normalized_score']}
+            
+            sources.append(SourceDocument(
+                text=doc.page_content,
+                source=source,
+                score=score,
+                normalized_score=normalized_score,
+                metadata=metadata
+            ))
         
         # Generate the prompt using template
         prompt_text = prompt.format(
             context=context,
-            question=request.question,
+            question=final_request.text,
             chat_history=chat_history
         )
         logger.info(f"Full prompt with history and context: {prompt_text}")
@@ -308,52 +258,8 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
         response = model.generate_content(prompt_text)
         answer = response.text
         
-        # Save the RAG response
-        try:
-            # Now save the RAG response with the same session_id
-            save_session(
-                session_id=session_id,
-                factor="rag",
-                action="RAG_response",
-                first_name=getattr(request, 'first_name', "User"),
-                last_name=getattr(request, 'last_name', ""),
-                message=request.question,
-                user_id=request.user_id,
-                username=getattr(request, 'username', ""),
-                response=answer
-            )
-            logger.info(f"RAG response saved for session {session_id}")
-            
-            # Check if the response starts with "I don't know" and trigger notification
-            if answer.strip().lower().startswith("i don't know"):
-                from app.api.websocket_routes import send_notification
-                notification_data = {
-                    "session_id": session_id,
-                    "factor": "rag",
-                    "action": "RAG_response",
-                    "message": request.question,
-                    "user_id": request.user_id,
-                    "username": getattr(request, 'username', ""),
-                    "first_name": getattr(request, 'first_name', "User"),
-                    "last_name": getattr(request, 'last_name', ""),
-                    "response": answer,
-                    "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                }
-                background_tasks.add_task(send_notification, notification_data)
-                logger.info(f"Notification queued for session {session_id} - response starts with 'I don't know'")
-        except Exception as e:
-            logger.error(f"Error saving RAG response to session: {e}")
-            # Continue processing even if saving fails
-        
         # Calculate processing time
         processing_time = time.time() - start_time
-        
-        # Create internal response object with sources for logging
-        internal_response = ChatResponseInternal(
-            answer=answer,
-            sources=sources,
-            processing_time=processing_time
-        )
         
         # Log full response with sources
         logger.info(f"Generated response for user {request.user_id}: {answer}")
@@ -367,18 +273,6 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
             answer=answer,
             processing_time=processing_time
         )
-        
-        # Cache result using redis_client instead of cache
-        try:
-            # Convert to JSON to ensure it can be cached
-            cache_data = {
-                "answer": answer,
-                "processing_time": processing_time
-            }
-            await redis_client.set(cache_key, json.dumps(cache_data), ex=300)
-        except Exception as e:
-            logger.error(f"Error caching response: {e}")
-            # Continue even if caching fails
         
         # Return response
         return chat_response
@@ -444,95 +338,3 @@ async def health_check():
         "retrieval_config": retrieval_config,
         "timestamp": datetime.now().isoformat()
     }
-
-@router.post("/rag")
-async def process_rag(request: Request, user_data: UserMessageModel, background_tasks: BackgroundTasks):
-    """
-    Process a user message through the RAG pipeline and return a response.
-    
-    Parameters:
-    - **user_id**: User ID from the client application
-    - **session_id**: Session ID for tracking the conversation
-    - **message**: User's message/question
-    - **similarity_top_k**: (Optional) Number of top similar documents to return after filtering
-    - **limit_k**: (Optional) Maximum number of documents to retrieve from vector store
-    - **similarity_metric**: (Optional) Similarity metric to use (cosine, dotproduct, euclidean)
-    - **similarity_threshold**: (Optional) Threshold for vector similarity (0-1)
-    """
-    try:
-        # Extract request data
-        user_id = user_data.user_id
-        session_id = user_data.session_id
-        message = user_data.message
-        
-        # Extract retrieval parameters (use defaults if not provided)
-        top_k = user_data.similarity_top_k or DEFAULT_TOP_K
-        limit_k = user_data.limit_k or DEFAULT_LIMIT_K
-        similarity_metric = user_data.similarity_metric or DEFAULT_SIMILARITY_METRIC
-        similarity_threshold = user_data.similarity_threshold or DEFAULT_SIMILARITY_THRESHOLD
-        
-        logger.info(f"RAG request received for user_id={user_id}, session_id={session_id}")
-        logger.info(f"Message: {message[:100]}..." if len(message) > 100 else f"Message: {message}")
-        logger.info(f"Retrieval parameters: top_k={top_k}, limit_k={limit_k}, metric={similarity_metric}, threshold={similarity_threshold}")
-        
-        # Create a cache key for this request to avoid reprocessing identical questions
-        cache_key = f"rag_{user_id}_{session_id}_{hashlib.md5(message.encode()).hexdigest()}_{top_k}_{limit_k}_{similarity_metric}_{similarity_threshold}"
-        
-        # Check if we have this response cached
-        cached_result = await redis_client.get(cache_key)
-        if cached_result:
-            logger.info(f"Cache hit for key: {cache_key}")
-            if isinstance(cached_result, str):  # If stored as JSON string
-                return json.loads(cached_result)
-            return cached_result
-        
-        # Save user message to MongoDB
-        try:
-            # Save user's question
-            save_session(
-                session_id=session_id,
-                factor="user",
-                action="asking_freely",
-                first_name="User",  # You can update this with actual data if available
-                last_name="",
-                message=message,
-                user_id=user_id,
-                username="",
-                response=None  # No response yet
-            )
-            logger.info(f"User message saved to MongoDB with session_id: {session_id}")
-        except Exception as e:
-            logger.error(f"Error saving user message: {e}")
-            # Continue anyway to try to get a response
-        
-        # Create a ChatRequest object to reuse the existing chat endpoint
-        chat_request = ChatRequest(
-            user_id=user_id,
-            question=message,
-            include_history=True,
-            use_rag=True,
-            similarity_top_k=top_k,
-            limit_k=limit_k,
-            similarity_metric=similarity_metric,
-            similarity_threshold=similarity_threshold,
-            session_id=session_id
-        )
-        
-        # Process through the chat endpoint
-        response = await chat(chat_request, background_tasks)
-        
-        # Cache the response
-        try:
-            await redis_client.set(cache_key, json.dumps({
-                "answer": response.answer,
-                "processing_time": response.processing_time
-            }))
-            logger.info(f"Cached response for key: {cache_key}")
-        except Exception as e:
-            logger.error(f"Failed to cache response: {e}")
-        
-        return response
-    except Exception as e:
-        logger.error(f"Error processing RAG request: {e}")
-        logger.error(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=f"Error processing request: {str(e)}") 

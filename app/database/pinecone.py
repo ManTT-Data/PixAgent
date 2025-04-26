@@ -6,7 +6,6 @@ from typing import Optional, List, Dict, Any, Union, Tuple
 import time
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 import google.generativeai as genai
-from app.utils.utils import cache
 from langchain_core.retrievers import BaseRetriever
 from langchain.callbacks.manager import Callbacks
 from langchain_core.documents import Document
@@ -73,23 +72,39 @@ def init_pinecone():
         if pc is None:
             logger.info(f"Initializing Pinecone connection to index {PINECONE_INDEX_NAME}...")
             
+            # Check if API key and index name are set
+            if not PINECONE_API_KEY:
+                logger.error("PINECONE_API_KEY is not set in environment variables")
+                return None
+                
+            if not PINECONE_INDEX_NAME:
+                logger.error("PINECONE_INDEX_NAME is not set in environment variables")
+                return None
+            
             # Initialize Pinecone client using the new API
             pc = Pinecone(api_key=PINECONE_API_KEY)
             
-            # Check if index exists
-            index_list = pc.list_indexes()
-            
-            if not hasattr(index_list, 'names') or PINECONE_INDEX_NAME not in index_list.names():
-                logger.error(f"Index {PINECONE_INDEX_NAME} does not exist in Pinecone")
+            try:
+                # Check if index exists
+                index_list = pc.list_indexes()
+                
+                if not hasattr(index_list, 'names') or PINECONE_INDEX_NAME not in index_list.names():
+                    logger.error(f"Index {PINECONE_INDEX_NAME} does not exist in Pinecone")
+                    return None
+                
+                # Get existing index
+                index = pc.Index(PINECONE_INDEX_NAME)
+                logger.info(f"Pinecone connection established to index {PINECONE_INDEX_NAME}")
+            except Exception as connection_error:
+                logger.error(f"Error connecting to Pinecone index: {connection_error}")
                 return None
             
-            # Get existing index
-            index = pc.Index(PINECONE_INDEX_NAME)
-            logger.info(f"Pinecone connection established to index {PINECONE_INDEX_NAME}")
-            
         return index
+    except ImportError as e:
+        logger.error(f"Required package for Pinecone is missing: {e}")
+        return None
     except Exception as e:
-        logger.error(f"Error initializing Pinecone: {e}")
+        logger.error(f"Unexpected error initializing Pinecone: {e}")
         return None
 
 # Get Pinecone index singleton
@@ -211,23 +226,13 @@ async def search_vectors(
         if limit_k < top_k:
             logger.warning(f"limit_k ({limit_k}) must be greater than or equal to top_k ({top_k}). Setting limit_k to {top_k}")
             limit_k = top_k
-            
-        # Create cache key from parameters
-        vector_hash = hash(str(query_vector))
-        cache_key = f"pinecone_search:{vector_hash}:{limit_k}:{similarity_metric}:{similarity_threshold}:{namespace}:{filter}"
         
-        # Check cache first
-        cached_result = cache.get(cache_key)
-        if cached_result is not None:
-            logger.info("Returning cached Pinecone search results")
-            return cached_result
-        
-        # If not in cache, perform search
+        # Perform search directly without cache
         pinecone_index = get_pinecone_index()
         if pinecone_index is None:
             logger.error("Failed to get Pinecone index for search")
             return None
-        
+            
         # Query Pinecone with the provided metric and higher limit_k to allow for threshold filtering
         results = pinecone_index.query(
             vector=query_vector,
@@ -251,9 +256,6 @@ async def search_vectors(
         # Log search result metrics
         match_count = len(filtered_matches)
         logger.info(f"Pinecone search returned {match_count} matches after threshold filtering (metric: {similarity_metric}, threshold: {similarity_threshold})")
-        
-        # Store result in cache with 5 minute TTL
-        cache.set(cache_key, results, ttl=300)
         
         return results
     except Exception as e:
@@ -441,7 +443,7 @@ class ThresholdRetriever(BaseRetriever):
                     similarity_metric=self.similarity_metric,
                     similarity_threshold=self.similarity_threshold,
                     namespace=getattr(self.vectorstore, "namespace", ""),
-                    filter=self.search_kwargs.get("filter", None)
+                    # filter=self.search_kwargs.get("filter", None)
                 ))
             
             # Run the async function in a thread
@@ -456,7 +458,7 @@ class ThresholdRetriever(BaseRetriever):
                 similarity_metric=self.similarity_metric,
                 similarity_threshold=self.similarity_threshold,
                 namespace=getattr(self.vectorstore, "namespace", ""),
-                filter=self.search_kwargs.get("filter", None)
+                # filter=self.search_kwargs.get("filter", None)
             ))
         
         # Convert to documents
@@ -517,14 +519,6 @@ def get_chain(
         if _retriever_instance is not None:
             return _retriever_instance
             
-        # Check if chain has been cached
-        cache_key = f"pinecone_retriever:{index_name}:{namespace}:{top_k}:{limit_k}:{similarity_metric}:{similarity_threshold}"
-        cached_retriever = cache.get(cache_key)
-        if cached_retriever is not None:
-            _retriever_instance = cached_retriever
-            logger.info("Retrieved cached Pinecone retriever")
-            return _retriever_instance
-            
         start_time = time.time()
         logger.info("Initializing new retriever chain with threshold-based filtering")
         
@@ -571,9 +565,6 @@ def get_chain(
         )
         
         logger.info(f"Pinecone retriever initialized in {time.time() - start_time:.2f} seconds")
-        
-        # Cache the retriever with longer TTL (1 hour) since it rarely changes
-        cache.set(cache_key, _retriever_instance, ttl=3600)
         
         return _retriever_instance
     except Exception as e:

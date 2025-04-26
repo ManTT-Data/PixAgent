@@ -20,6 +20,10 @@ COLLECTION_NAME = os.getenv("COLLECTION_NAME", "session_chat")
 # Set timeout for MongoDB connection
 MONGODB_TIMEOUT = int(os.getenv("MONGODB_TIMEOUT", "5000"))  # 5 seconds by default
 
+# Legacy cache settings - now only used for configuration purposes
+HISTORY_CACHE_TTL = int(os.getenv("HISTORY_CACHE_TTL", "3600"))  # 1 hour by default
+HISTORY_QUEUE_SIZE = int(os.getenv("HISTORY_QUEUE_SIZE", "10"))  # 10 items by default
+
 # Create MongoDB connection with timeout
 try:
     client = MongoClient(MONGODB_URL, serverSelectionTimeoutMS=MONGODB_TIMEOUT)
@@ -82,6 +86,7 @@ def save_session(session_id, factor, action, first_name, last_name, message, use
         }
         result = session_collection.insert_one(session_data)
         logger.info(f"Session saved with ID: {result.inserted_id}")
+        
         return {
             "acknowledged": result.acknowledged,
             "inserted_id": str(result.inserted_id),
@@ -94,15 +99,18 @@ def save_session(session_id, factor, action, first_name, last_name, message, use
 def update_session_response(session_id, response):
     """Update a session with response"""
     try:
+        # Lấy session hiện có
+        existing_session = session_collection.find_one({"session_id": session_id})
+        
+        if not existing_session:
+            logger.warning(f"No session found with ID: {session_id}")
+            return False
+        
         result = session_collection.update_one(
             {"session_id": session_id},
             {"$set": {"response": response}}
         )
         
-        if result.matched_count == 0:
-            logger.warning(f"No session found with ID: {session_id}")
-            return False
-            
         logger.info(f"Session {session_id} updated with response")
         return True
     except Exception as e:
@@ -112,19 +120,26 @@ def update_session_response(session_id, response):
 def get_recent_sessions(user_id, action, n=3):
     """Get n most recent sessions for a specific user and action"""
     try:
-        return list(
+        # Truy vấn trực tiếp từ MongoDB
+        result = list(
             session_collection.find(
                 {"user_id": user_id, "action": action},
                 {"_id": 0, "message": 1, "response": 1}
             ).sort("created_at_datetime", -1).limit(n)
         )
+        
+        logger.debug(f"Retrieved {len(result)} recent sessions for user {user_id}, action {action}")
+        return result
     except Exception as e:
         logger.error(f"Error getting recent sessions: {e}")
         return []
 
-def get_user_history(user_id, n=3):
+def get_user_history(user_id, n=5):
     """Get user history for a specific user"""
     try:
+        # Truy vấn trực tiếp từ MongoDB, không sử dụng cache
+        logger.debug(f"Getting user history from database for user: {user_id}")
+        
         # Find all messages of this user
         user_messages = list(
             session_collection.find(
@@ -133,7 +148,7 @@ def get_user_history(user_id, n=3):
                     "message": {"$exists": True, "$ne": None},
                     # Include all user messages regardless of action type
                 }
-            ).sort("created_at_datetime", -1).limit(n * 2)  # Get more to ensure we have enough pairs
+            ).sort("created_at_datetime", -1).limit(n * 2 + 1)  # Get more to ensure we have enough pairs
         )
         
         # Group messages by session_id to find pairs
@@ -155,7 +170,8 @@ def get_user_history(user_id, n=3):
             if "question" in data and "answer" in data and data.get("answer"):
                 history.append({
                     "question": data["question"],
-                    "answer": data["answer"]
+                    "answer": data["answer"],
+                    "timestamp": data.get("timestamp")
                 })
         
         # Sort by timestamp and limit to n
@@ -171,6 +187,7 @@ def get_user_history(user_id, n=3):
 def get_chat_history(user_id, n=5):
     """Get conversation history for a specific user from MongoDB in format suitable for LLM prompt"""
     try:
+        # Lấy lịch sử trực tiếp từ MongoDB (thông qua get_user_history đã sửa đổi)
         history = get_user_history(user_id, n)
         
         # Format history for prompt context
@@ -186,6 +203,7 @@ def get_chat_history(user_id, n=5):
 def get_request_history(user_id, n=3):
     """Get the most recent user requests to use as context for retrieval"""
     try:
+        # Lấy lịch sử trực tiếp từ MongoDB (thông qua get_user_history đã sửa đổi)
         history = get_user_history(user_id, n)
         
         # Just extract the questions for context

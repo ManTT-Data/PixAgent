@@ -50,7 +50,7 @@ try:
         future=True,                # Use SQLAlchemy 2.0 features
         # Execution options for common queries
         execution_options={
-            "compiled_cache": True, # Enable compiled query caching
+            "compiled_cache": {},   # Use an empty dict for compiled query caching
             "logging_token": "SQL", # Tag for query logging
         }
     )
@@ -110,7 +110,10 @@ def create_tables():
         logger.info("Database tables created or already exist")
         return True
     except SQLAlchemyError as e:
-        logger.error(f"Failed to create database tables: {e}")
+        logger.error(f"Failed to create database tables (SQLAlchemy error): {e}")
+        return False
+    except Exception as e:
+        logger.error(f"Failed to create database tables (unexpected error): {e}")
         return False
 
 # Function to create indexes for better performance
