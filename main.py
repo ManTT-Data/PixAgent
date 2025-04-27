@@ -14,7 +14,73 @@ from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQu
 from urllib.parse import urlparse, urljoin
 import asyncio
 import html
+import re
 from telegram.constants import ParseMode
+
+# Hàm tiện ích để loại bỏ thẻ HTML không hợp lệ và tự động escape nội dung
+def clean_html(text):
+    """
+    Xử lý nội dung để hiển thị an toàn trong Telegram.
+    Giữ lại các thẻ HTML hợp lệ: <b>, <i>, <a>, <code>, <pre>, <s>.
+    Escape các ký tự đặc biệt khác.
+    """
+    if not text:
+        return ""
+        
+    # Danh sách các thẻ HTML được Telegram hỗ trợ
+    valid_tags = ['<b>', '</b>', '<i>', '</i>', '<code>', '</code>', 
+                 '<pre>', '</pre>', '<s>', '</s>']
+    
+    # Mẫu regex cho thẻ <a>
+    a_tag_pattern = r'<a\s+href=[\'"]([^\'"]+)[\'"]>(.*?)</a>'
+    
+    # Kiểm tra nếu văn bản đã có chứa thẻ HTML
+    has_html_tags = any(tag in text.lower() for tag in valid_tags) or re.search(a_tag_pattern, text)
+    
+    if has_html_tags:
+        # Danh sách các mẫu regex để phát hiện thẻ và nội dung của chúng
+        tag_patterns = {
+            'b': (r'<b>(.*?)</b>', r'<b>\1</b>'),
+            'i': (r'<i>(.*?)</i>', r'<i>\1</i>'),
+            'code': (r'<code>(.*?)</code>', r'<code>\1</code>'),
+            'pre': (r'<pre>(.*?)</pre>', r'<pre>\1</pre>'),
+            's': (r'<s>(.*?)</s>', r'<s>\1</s>'),
+            'a': (a_tag_pattern, None)  # None vì chúng ta sẽ xử lý đặc biệt
+        }
+        
+        # Đánh dấu thẻ hợp lệ để giữ lại
+        placeholder_map = {}
+        counter = 0
+        
+        # Thay thế tạm thời các thẻ hợp lệ bằng placeholder
+        for tag, (pattern, replacement) in tag_patterns.items():
+            matches = re.finditer(pattern, text, re.DOTALL)
+            for match in matches:
+                placeholder = f"PLACEHOLDER_{counter}"
+                counter += 1
+                
+                if tag == 'a':
+                    href = match.group(1)
+                    content = match.group(2)
+                    placeholder_map[placeholder] = f'<a href="{href}">{html.escape(content)}</a>'
+                else:
+                    content = match.group(1)
+                    replacement_format = replacement.replace('\\1', html.escape(content))
+                    placeholder_map[placeholder] = replacement_format
+                
+                text = text.replace(match.group(0), placeholder)
+        
+        # Escape toàn bộ văn bản còn lại
+        text = html.escape(text)
+        
+        # Khôi phục các thẻ đã đánh dấu
+        for placeholder, original in placeholder_map.items():
+            text = text.replace(placeholder, original)
+            
+        return text
+    else:
+        # Nếu không có thẻ HTML, escape toàn bộ văn bản
+        return html.escape(text)
 
 # Configure logging
 logging.basicConfig(
@@ -30,6 +96,12 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 API_RAG_URL = os.getenv("API_RAG_URL")
 API_DATABASE_URL = os.getenv("API_DATABASE_URL")
 
+# Define main menu keyboard for reuse throughout the application
+MAIN_MENU = [
+    [KeyboardButton("Da Nang's bucket list"), KeyboardButton("Solana Summit Event")],
+    [KeyboardButton("Events"), KeyboardButton("About Pixity")],
+    [KeyboardButton("Emergency"), KeyboardButton("FAQ")]
+]
 
 # Helper function to fix URL paths
 def fix_url(base_url, path):
@@ -303,34 +375,29 @@ async def get_events(update: Update, context: ContextTypes.DEFAULT_TYPE, action:
         if not events:
             response_text = "No upcoming events at the moment."
         else:
-            lines = ["*Upcoming Events*\n"]
+            lines = ["<b>Upcoming Events</b>\n"]
             for ev in events:
-                block = [f"🎉 *{ev.get('name', 'Event')}*"]
+                block = [f"🎉 <b>{clean_html(ev.get('name', 'Event'))}</b>"]
                 if ev.get("description"):
-                    block.append(f"{ev['description']}")
+                    block.append(f"{clean_html(ev['description'])}")
                 if ev.get("address"):
-                    block.append(f"📍 Location: {ev['address']}")
+                    block.append(f"📍 Location: {clean_html(ev['address'])}")
                 if ev.get("date_start"):
                     start = ev["date_start"].replace("T", " ").split(".")[0]
-                    block.append(f"Start: {start}")
+                    block.append(f"Start: {clean_html(start)}")
                 if ev.get("date_end"):
                     end = ev["date_end"].replace("T", " ").split(".")[0]
-                    block.append(f"End: {end}")
+                    block.append(f"End: {clean_html(end)}")
                 price_info = "💰 Price: Free"
                 if ev.get("price"):
                     p = ev["price"][0]
                     if p.get("amount", 0) > 0:
-                        price_info = f"💰 Price: {p['amount']} {p.get('currency', '')}"
+                        price_info = f"💰 Price: {p['amount']} {clean_html(p.get('currency', ''))}"
                 block.append(price_info)
                 lines.append("\n".join(block))
             response_text = "\n\n".join(lines)
 
-        keyboard = [
-            [KeyboardButton("Da Nang's bucket list"), KeyboardButton("Solana Summit Event")],
-            [KeyboardButton("Events"), KeyboardButton("About Pixity")],
-            [KeyboardButton("Emergency"), KeyboardButton("FAQ")]
-        ]
-        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        reply_markup = ReplyKeyboardMarkup(MAIN_MENU, resize_keyboard=True)
 
         await update.effective_message.reply_text(
             response_text,
@@ -348,7 +415,6 @@ async def get_emergency(update: Update, context: ContextTypes.DEFAULT_TYPE, acti
     """
     Phase-1: list emergency categories.
     Phase-2: show details for the selected category.
-    All replies use default parsing (no parse_mode).
     """
     try:
         if not API_DATABASE_URL:
@@ -374,13 +440,17 @@ async def get_emergency(update: Update, context: ContextTypes.DEFAULT_TYPE, acti
             mapping = {sec["name"]: sec["id"] for sec in sections}
             lines = ["Please select an emergency category:"]
             for name in mapping:
-                lines.append(f"- {name}")
+                lines.append(f"- {clean_html(name)}")
             menu_text = "\n".join(lines)
 
             context.user_data["emergency_map"] = mapping
             keyboard = [[KeyboardButton(name)] for name in mapping]
             reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-            await update.effective_message.reply_text(menu_text, reply_markup=reply_markup)
+            await update.effective_message.reply_text(
+                menu_text,
+                reply_markup=reply_markup,
+                parse_mode=ParseMode.HTML
+            )
             await log_complete_session(update, action, message, menu_text)
             return
 
@@ -404,20 +474,24 @@ async def get_emergency(update: Update, context: ContextTypes.DEFAULT_TYPE, acti
             return
 
         # build detail text
-        lines = [message]
+        lines = [clean_html(message)]
         for e in items:
             name = e.get("name", "Unknown")
             phone = e.get("phone_number", "No phone")
-            lines.append(f"• {name}: {phone}")
+            lines.append(f"• {clean_html(name)}: {clean_html(phone)}")
             if desc := e.get("description"):
-                lines.append(f"  {desc}")
+                lines.append(f"  {clean_html(desc)}")
             if addr := e.get("address"):
-                lines.append(f"  {addr}")
+                lines.append(f"  {clean_html(addr)}")
             lines.append("")
         detail_text = "\n".join(lines).strip()
 
         reply_markup = ReplyKeyboardMarkup(MAIN_MENU, resize_keyboard=True)
-        await update.effective_message.reply_text(detail_text, reply_markup=reply_markup)
+        await update.effective_message.reply_text(
+            detail_text, 
+            reply_markup=reply_markup,
+            parse_mode=ParseMode.HTML
+        )
         await log_complete_session(update, action, message, detail_text)
 
     except Exception as e:
@@ -428,7 +502,6 @@ async def get_faq(update: Update, context: ContextTypes.DEFAULT_TYPE, action: st
     """
     Phase-1: list FAQ questions.
     Phase-2: show the selected answer.
-    All replies use default parsing (no parse_mode).
     """
     try:
         if not API_DATABASE_URL:
@@ -453,13 +526,17 @@ async def get_faq(update: Update, context: ContextTypes.DEFAULT_TYPE, action: st
             mapping = {faq["question"]: faq["id"] for faq in faqs}
             lines = ["Frequently Asked Questions:"]
             for q in mapping:
-                lines.append(f"- {q}")
+                lines.append(f"- {clean_html(q)}")
             menu_text = "\n".join(lines)
 
             context.user_data["faq_map"] = mapping
             keyboard = [[KeyboardButton(q)] for q in mapping]
             reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-            await update.effective_message.reply_text(menu_text, reply_markup=reply_markup)
+            await update.effective_message.reply_text(
+                menu_text, 
+                reply_markup=reply_markup,
+                parse_mode=ParseMode.HTML
+            )
             await log_complete_session(update, action, message, menu_text)
             return
 
@@ -477,10 +554,15 @@ async def get_faq(update: Update, context: ContextTypes.DEFAULT_TYPE, action: st
 
         data = resp.json() or {}
         answer = data.get("answer", "No answer available.")
-        detail_text = f"{message}\n\n{answer}"
+        # Chuẩn bị văn bản đảm bảo an toàn HTML
+        detail_text = f"{clean_html(message)}\n\n{clean_html(answer)}"
 
         reply_markup = ReplyKeyboardMarkup(MAIN_MENU, resize_keyboard=True)
-        await update.effective_message.reply_text(detail_text, reply_markup=reply_markup)
+        await update.effective_message.reply_text(
+            detail_text, 
+            reply_markup=reply_markup,
+            parse_mode=ParseMode.HTML
+        )
         await log_complete_session(update, action, message, answer)
 
     except Exception as e:
@@ -520,21 +602,32 @@ async def get_rag_response(update: Update, context: ContextTypes.DEFAULT_TYPE, a
 
         result = response.json()
         answer = result.get("answer", "I couldn't find an answer to your question.")
+        
+        # Đảm bảo an toàn HTML cho câu trả lời
+        escaped_answer = clean_html(answer)
+        
         if sources := result.get("sources"):
-            answer += "\n\nSources:"
+            escaped_answer += "\n\nSources:"
             for i, src in enumerate(sources[:3], 1):
-                answer += f"\n{i}. {src.get('source','Unknown')}"
+                source = clean_html(src.get('source','Unknown'))
+                escaped_answer += f"\n{i}. {source}"
 
-        # Send answer and log
-        await update.message.reply_text(answer)
+        # Send answer with HTML parsing mode
+        await update.message.reply_text(
+            escaped_answer,
+            parse_mode=ParseMode.HTML
+        )
         await log_complete_session(update, action, query_text, answer)
 
         # Re-show main keyboard
-        keyboard = [
-            [KeyboardButton("Da Nang's bucket list"), KeyboardButton("Solana Summit Event")],
-            [KeyboardButton("Events"), KeyboardButton("About Pixity")],
-            [KeyboardButton("Emergency"), KeyboardButton("FAQ")]
-        ]
+        reply_markup = ReplyKeyboardMarkup(MAIN_MENU, resize_keyboard=True)
+        
+        # Send another message with the keyboard if not already sent
+        if not escaped_answer:
+            await update.message.reply_text(
+                "Is there anything else I can help you with?",
+                reply_markup=reply_markup
+            )
 
     except Exception as e:
         logger.error(f"Error getting RAG response: {e}")
@@ -563,14 +656,16 @@ async def get_about_pixity(update: Update, context: ContextTypes.DEFAULT_TYPE, a
             about_text = content_obj.get("content", raw).strip()
         except:
             about_text = raw.strip()
+            
+        # Đảm bảo an toàn HTML cho nội dung
+        escaped_about_text = clean_html(about_text)
 
-        keyboard = [
-            [KeyboardButton("Da Nang's bucket list"), KeyboardButton("Solana Summit Event")],
-            [KeyboardButton("Events"), KeyboardButton("About Pixity")],
-            [KeyboardButton("Emergency"), KeyboardButton("FAQ")]
-        ]
-        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-        await update.effective_message.reply_text(about_text or "Information unavailable.", reply_markup=reply_markup)
+        reply_markup = ReplyKeyboardMarkup(MAIN_MENU, resize_keyboard=True)
+        await update.effective_message.reply_text(
+            escaped_about_text or "Information unavailable.", 
+            reply_markup=reply_markup,
+            parse_mode=ParseMode.HTML
+        )
         await log_complete_session(update, action, message, about_text)
 
     except Exception as e:
@@ -652,15 +747,15 @@ async def get_danang_bucket_list(update: Update, context: ContextTypes.DEFAULT_T
             description = content_json.get("description", "").strip()
             items = content_json.get("items", [])
 
-            # Build a clean list of lines
-            lines = [f"📋 {title}:"]
+            # Build a clean list of lines with HTML escaping
+            lines = [f"📋 <b>{clean_html(title)}</b>:"]
             if description:
-                lines.append(description)
+                lines.append(clean_html(description))
 
             for item in items:
                 emoji = item.get("emoji", "•")
-                name = item.get("name", "").strip()
-                desc = item.get("description", "").strip()
+                name = clean_html(item.get("name", "").strip())
+                desc = clean_html(item.get("description", "").strip())
                 line = f"{emoji} {name}" + (f" – {desc}" if desc else "")
                 lines.append(line)
 
@@ -668,16 +763,15 @@ async def get_danang_bucket_list(update: Update, context: ContextTypes.DEFAULT_T
 
         except Exception:
             # Fallback nếu JSON malformed
-            bucket_text = raw.strip() or "Da Nang's Bucket List information is unavailable."
+            bucket_text = clean_html(raw.strip()) or "Da Nang's Bucket List information is unavailable."
 
         # Gửi cùng keyboard
-        keyboard = [
-            [KeyboardButton("Da Nang's bucket list"), KeyboardButton("Solana Summit Event")],
-            [KeyboardButton("Events"), KeyboardButton("About Pixity")],
-            [KeyboardButton("Emergency"), KeyboardButton("FAQ")]
-        ]
-        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-        await update.effective_message.reply_text(bucket_text, parse_mode="Markdown", reply_markup=reply_markup)
+        reply_markup = ReplyKeyboardMarkup(MAIN_MENU, resize_keyboard=True)
+        await update.effective_message.reply_text(
+            bucket_text, 
+            parse_mode=ParseMode.HTML, 
+            reply_markup=reply_markup
+        )
 
         # Log session
         session_id = await log_session(update, "danang_bucket_list")
