@@ -461,11 +461,21 @@ async def get_emergency(update: Update, context: ContextTypes.DEFAULT_TYPE, acti
             return
 
         url = fix_url(API_DATABASE_URL, f"/postgres/emergency/section/{section_id}")
-        resp = requests.get(url)
+        # Thêm các tham số vào URL để đảm bảo lấy dữ liệu đúng
+        params = {
+            "active_only": True,
+            "use_cache": True
+        }
+        logger.info(f"Fetching emergency data from: {url} with params: {params}")
+        
+        resp = requests.get(url, params=params)
         if resp.status_code != 200:
             logger.error(f"Failed to fetch section {section_id}: {resp.status_code}")
             return
 
+        # Log nội dung JSON nhận được để debug
+        logger.info(f"Emergency response for section {section_id}: {resp.text[:200]}...")
+        
         items = resp.json() or []
         if not items:
             text = f"No entries found for {message}."
@@ -474,15 +484,19 @@ async def get_emergency(update: Update, context: ContextTypes.DEFAULT_TYPE, acti
             return
 
         # build detail text
-        lines = [clean_html(message)]
+        lines = [f"<b>{clean_html(message)}</b>"]
         for e in items:
             name = e.get("name", "Unknown")
-            phone = e.get("phone_number", "No phone")
-            lines.append(f"• {clean_html(name)}: {clean_html(phone)}")
+            phone = e.get("phone_number", "No phone") or "N/A"  # Đảm bảo phone_number không bị None
+            lines.append(f"• <b>{clean_html(name)}</b>: {clean_html(phone)}")
             if desc := e.get("description"):
-                lines.append(f"  {clean_html(desc)}")
+                # Chia nhỏ mô tả thành nhiều dòng nếu quá dài
+                desc_lines = desc.split("\n")
+                for dl in desc_lines:
+                    if dl.strip():  # Chỉ thêm dòng không trống
+                        lines.append(f"  {clean_html(dl.strip())}")
             if addr := e.get("address"):
-                lines.append(f"  {clean_html(addr)}")
+                lines.append(f"  📍 {clean_html(addr)}")
             lines.append("")
         detail_text = "\n".join(lines).strip()
 
@@ -496,6 +510,12 @@ async def get_emergency(update: Update, context: ContextTypes.DEFAULT_TYPE, acti
 
     except Exception as e:
         logger.error(f"Error in get_emergency: {e}")
+        # In trường hợp có lỗi, vẫn hiển thị menu chính
+        reply_markup = ReplyKeyboardMarkup(MAIN_MENU, resize_keyboard=True)
+        await update.effective_message.reply_text(
+            f"Có lỗi khi tải thông tin khẩn cấp: {str(e)}",
+            reply_markup=reply_markup
+        )
 
 
 async def get_faq(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str, message: str):
