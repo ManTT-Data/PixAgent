@@ -343,22 +343,22 @@ async def get_events(update: Update, context: ContextTypes.DEFAULT_TYPE, action:
         logger.error(f"Error fetching events: {e}")
 
 async def get_emergency(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str, message: str):
-    """Show emergency categories, then details—custom formatting per section, HTML mode, with Back button."""
+    """Phase-1: list emergency categories. Phase-2: show details of selected category with Back button."""
     try:
         if not API_DATABASE_URL:
             logger.error("Database API not configured. Cannot fetch emergency information.")
             return
 
-        # If user tapped Back, restart to phase 1 without logging
+        # Handle Back button: clear stored mapping and restart phase 1
         if message == "Back":
-            context.user_data.pop("emergency_sections", None)
+            context.user_data.pop("emergency_map", None)
 
         # Phase 1: list categories
-        if "emergency_sections" not in context.user_data:
-            sections_url = fix_url(API_DATABASE_URL, "/postgres/emergency/sections")
-            resp = requests.get(sections_url)
+        if "emergency_map" not in context.user_data:
+            url = fix_url(API_DATABASE_URL, "/postgres/emergency/sections")
+            resp = requests.get(url)
             if resp.status_code != 200:
-                logger.error(f"Failed to fetch emergency sections: {resp.status_code} - {resp.text}")
+                logger.error(f"Failed to fetch sections: {resp.status_code}")
                 return
 
             sections = resp.json() or []
@@ -368,121 +368,85 @@ async def get_emergency(update: Update, context: ContextTypes.DEFAULT_TYPE, acti
                 await log_complete_session(update, action, message, txt)
                 return
 
-            lines = ["<b>Please select an emergency category:</b>"]
+            # Build list text and mapping
+            lines = ["Please select an emergency category:"]
+            mapping = {}
             for sec in sections:
-                lines.append(f"• {html.escape(sec['name'])}")
-            text = "".join(lines)
+                lines.append(f"- {sec['name']}")
+                mapping[sec['name']] = sec['id']
 
-            context.user_data["emergency_sections"] = {sec["name"]: sec["id"] for sec in sections}
-            keyboard = [[KeyboardButton(sec["name"])] for sec in sections]
-            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-            await update.effective_message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+            text = "\n".join(lines)
+            context.user_data['emergency_map'] = mapping
+
+            # Reply with buttons for each category
+            kb = [[KeyboardButton(name)] for name in mapping]
+            reply_markup = ReplyKeyboardMarkup(kb, resize_keyboard=True)
+            await update.effective_message.reply_text(text, reply_markup=reply_markup)
             await log_complete_session(update, action, message, text)
             return
 
-        # Phase 2: user picked a category
-        mapping = context.user_data.pop("emergency_sections", {})
-        section_name = message
-        section_id = mapping.get(section_name)
+        # Phase 2: show details for selected category
+        mapping = context.user_data.pop('emergency_map', {})
+        section_id = mapping.get(message)
         if not section_id:
-            # invalid tap → restart phase 1
+            # invalid or missing, restart
             return await get_emergency(update, context, action, "")
 
-        # fetch details for this section
-        detail_url = fix_url(API_DATABASE_URL, f"/postgres/emergency/section/{section_id}")
-        resp = requests.get(detail_url)
+        url = fix_url(API_DATABASE_URL, f"/postgres/emergency/section/{section_id}")
+        resp = requests.get(url)
         if resp.status_code != 200:
-            logger.error(f"Failed to fetch emergency details: {resp.status_code} - {resp.text}")
+            logger.error(f"Failed to fetch section {section_id}: {resp.status_code}")
             return
 
-        entries = resp.json() or []
-        if not entries:
-            txt = f"No entries found for '{html.escape(section_name)}'."
+        items = resp.json() or []
+        if not items:
+            txt = f"No entries for {message}."
             await update.effective_message.reply_text(txt)
-            await log_complete_session(update, action, section_name, txt)
+            await log_complete_session(update, action, message, txt)
             return
 
-        # Custom formatting per section ID
-        lines = [f"<b>{html.escape(section_name)}</b>", ""]
-        if section_id == 1:
-            for e in entries:
-                name = html.escape(e["name"])
-                phone = html.escape(e["phone_number"])
-                lines.append(f"• {name}: {phone}")
-                if desc := e.get("description"):
-                    lines.append(f"  {html.escape(desc)}")
-                if addr := e.get("address"):
-                    lines.append(f"  {html.escape(addr)}")
-                lines.append("")
-        elif section_id == 2:
-            for e in entries:
-                name = html.escape(e["name"])
-                phone = html.escape(e["phone_number"])
-                lines.append(f"• {name}: {phone}")
-        elif section_id == 3:
-            for e in entries:
-                title = html.escape(e["name"])
-                lines.append(f"• {title}")
-                for para in e.get("description", "").split("  "):
-                    if para.strip():
-                        lines.append(f"  {html.escape(para.strip())}")
-                lines.append("")
-        elif section_id == 4:
-            for e in entries:
-                title = html.escape(e["name"])
-                lines.append(f"• {title}")
-                for para in e.get("description", "").split(""):
-                    if para.strip():
-                        lines.append(f"  {html.escape(para.strip())}")
-                lines.append("")
-        else:
-            for e in entries:
-                name = html.escape(e.get("name", "Unknown"))
-                phone = html.escape(e.get("phone_number", "No phone"))
-                lines.append(f"• {name}: {phone}")
-                if desc := e.get("description"):
-                    lines.append(f"  {html.escape(desc)}")
-                if addr := e.get("address"):
-                    lines.append(f"  {html.escape(addr)}")
-                lines.append("")
+        # Build details text
+        lines = [message]
+        for e in items:
+            lines.append(f"• {e.get('name','Unknown')}: {e.get('phone_number','No phone')}")
+            if desc := e.get('description'):
+                lines.append(f"  {desc}")
+            if addr := e.get('address'):
+                lines.append(f"  {addr}")
+            lines.append("")
+        text = "\n".join(lines).strip()
 
-        response_text = "".join(lines).rstrip()
+        # Buttons: Back + main menu
+        kb = [[KeyboardButton("Back")],
+              [KeyboardButton("Da Nang's bucket list"), KeyboardButton("Solana Summit Event")],
+              [KeyboardButton("Events"), KeyboardButton("About Pixity")],
+              [KeyboardButton("Emergency"), KeyboardButton("FAQ")]]
+        reply_markup = ReplyKeyboardMarkup(kb, resize_keyboard=True)
 
-        # include Back and main menu
-        keyboard = [[KeyboardButton("Back")]]
-        keyboard += [
-            [KeyboardButton("Da Nang's bucket list"), KeyboardButton("Solana Summit Event")],
-            [KeyboardButton("Events"), KeyboardButton("About Pixity")],
-            [KeyboardButton("Emergency"), KeyboardButton("FAQ")]
-        ]
-        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-
-        await update.effective_message.reply_text(response_text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
-        await log_complete_session(update, action, section_name, response_text)
+        await update.effective_message.reply_text(text, reply_markup=reply_markup)
+        await log_complete_session(update, action, message, text)
 
     except Exception as e:
-        logger.error(f"Error fetching emergency info: {e}")
+        logger.error(f"Error in get_emergency: {e}")
 
 
 async def get_faq(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str, message: str):
-    """Phase-1: list questions. Phase-2: show answer for selected question, with Back button."""
+    """Phase-1: list questions. Phase-2: show answer for tapped question with Back button."""
     try:
         if not API_DATABASE_URL:
-            logger.error("Database API not configured. Cannot fetch FAQ information.")
+            logger.error("Database API not configured. Cannot fetch FAQ.")
             return
 
-        # If back from an answer, restart phase 1
-        if message == "Back to FAQ":
-            context.user_data.pop("faq_map", None)
+        # Handle Back button
+        if message == "Back":
+            context.user_data.pop('faq_map', None)
 
         # Phase 1: list questions
-        if "faq_map" not in context.user_data:
-            endpoint_url = fix_url(API_DATABASE_URL, "/postgres/faq")
-            params = {"active_only": True, "limit": 10, "use_cache": True}
-            logger.info(f"Fetching FAQ list from: {endpoint_url}")
-            resp = requests.get(endpoint_url, params=params)
+        if 'faq_map' not in context.user_data:
+            url = fix_url(API_DATABASE_URL, "/postgres/faq")
+            resp = requests.get(url, params={"active_only":True, "limit":10, "use_cache":True})
             if resp.status_code != 200:
-                logger.error(f"Failed to fetch FAQ list: {resp.status_code} - {resp.text}")
+                logger.error(f"Failed to fetch FAQs: {resp.status_code}")
                 return
 
             faqs = resp.json() or []
@@ -492,49 +456,49 @@ async def get_faq(update: Update, context: ContextTypes.DEFAULT_TYPE, action: st
                 await log_complete_session(update, action, message, txt)
                 return
 
-            questions = [faq["question"] for faq in faqs]
-            context.user_data["faq_map"] = {faq["question"]: faq["id"] for faq in faqs}
+            # build menu and mapping
+            questions = [f['question'] for f in faqs]
+            mapping = {f['question']: f['id'] for f in faqs}
+            context.user_data['faq_map'] = mapping
 
-            lines = ["<b>Frequently Asked Questions:</b>"]
+            lines = ["Frequently Asked Questions:"]
             for q in questions:
-                lines.append(f"• {html.escape(q)}")
-            text = "".join(lines)
+                lines.append(f"- {q}")
+            text = "\n".join(lines)
 
             kb = [[KeyboardButton(q)] for q in questions]
             reply_markup = ReplyKeyboardMarkup(kb, resize_keyboard=True)
-            await update.effective_message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+            await update.effective_message.reply_text(text, reply_markup=reply_markup)
             await log_complete_session(update, action, message, text)
             return
 
         # Phase 2: show answer
-        faq_map = context.user_data.pop("faq_map", {})
-        question = message
-        faq_id = faq_map.get(question)
+        mapping = context.user_data.pop('faq_map', {})
+        faq_id = mapping.get(message)
         if not faq_id:
             return await get_faq(update, context, action, "")
 
-        detail_url = fix_url(API_DATABASE_URL, f"/postgres/faq/{faq_id}")
-        resp = requests.get(detail_url)
+        url = fix_url(API_DATABASE_URL, f"/postgres/faq/{faq_id}")
+        resp = requests.get(url)
         if resp.status_code != 200:
-            logger.error(f"Failed to fetch FAQ answer: {resp.status_code} - {resp.text}")
+            logger.error(f"Failed fetch FAQ {faq_id}: {resp.status_code}")
             return
 
         data = resp.json() or {}
-        answer_html = data.get("answer", "No answer available.")
+        answer = data.get('answer','No answer available.')
 
-        text = f"<b>{html.escape(question)}</b>{answer_html}"
-        kb = [[KeyboardButton("Back to FAQ")]]
-        kb += [
-            [KeyboardButton("Da Nang's bucket list"), KeyboardButton("Solana Summit Event")],
-            [KeyboardButton("Events"), KeyboardButton("About Pixity")],
-            [KeyboardButton("Emergency"), KeyboardButton("FAQ")]
-        ]
+        text = f"{message}\n\n{answer}"
+        kb = [[KeyboardButton("Back")],
+              [KeyboardButton("Da Nang's bucket list"), KeyboardButton("Solana Summit Event")],
+              [KeyboardButton("Events"), KeyboardButton("About Pixity")],
+              [KeyboardButton("Emergency"), KeyboardButton("FAQ")]]
         reply_markup = ReplyKeyboardMarkup(kb, resize_keyboard=True)
-        await update.effective_message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
-        await log_complete_session(update, action, question, answer_html)
+
+        await update.effective_message.reply_text(text, reply_markup=reply_markup)
+        await log_complete_session(update, action, message, answer)
 
     except Exception as e:
-        logger.error(f"Error fetching FAQ information: {e}")
+        logger.error(f"Error in get_faq: {e}")
 
 async def get_rag_response(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str, query_text: str):
     """Get response from RAG API, falling back to the database URL if needed."""
