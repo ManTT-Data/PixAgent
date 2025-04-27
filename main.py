@@ -343,11 +343,15 @@ async def get_events(update: Update, context: ContextTypes.DEFAULT_TYPE, action:
         logger.error(f"Error fetching events: {e}")
 
 async def get_emergency(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str, message: str):
-    """Show emergency categories, then details—custom formatting per section, HTML mode."""
+    """Show emergency categories, then details—custom formatting per section, HTML mode, with Back button."""
     try:
         if not API_DATABASE_URL:
             logger.error("Database API not configured. Cannot fetch emergency information.")
             return
+
+        # If user tapped Back, restart to phase 1 without logging
+        if message == "Back":
+            context.user_data.pop("emergency_sections", None)
 
         # Phase 1: list categories
         if "emergency_sections" not in context.user_data:
@@ -367,7 +371,7 @@ async def get_emergency(update: Update, context: ContextTypes.DEFAULT_TYPE, acti
             lines = ["<b>Please select an emergency category:</b>"]
             for sec in sections:
                 lines.append(f"• {html.escape(sec['name'])}")
-            text = "\n".join(lines)
+            text = "".join(lines)
 
             context.user_data["emergency_sections"] = {sec["name"]: sec["id"] for sec in sections}
             keyboard = [[KeyboardButton(sec["name"])] for sec in sections]
@@ -399,78 +403,60 @@ async def get_emergency(update: Update, context: ContextTypes.DEFAULT_TYPE, acti
             return
 
         # Custom formatting per section ID
+        lines = [f"<b>{html.escape(section_name)}</b>", ""]
         if section_id == 1:
-            # Tourist support centre and embassy contacts
-            lines = [f"{html.escape(section_name)}", ""]
             for e in entries:
                 name = html.escape(e["name"])
                 phone = html.escape(e["phone_number"])
-                lines.append(f"• <b>{name}</b>: {phone}")
+                lines.append(f"• {name}: {phone}")
                 if desc := e.get("description"):
                     lines.append(f"  {html.escape(desc)}")
                 if addr := e.get("address"):
                     lines.append(f"  {html.escape(addr)}")
                 lines.append("")
-            response_text = "\n".join(lines).rstrip()
-
         elif section_id == 2:
-            # Emergency numbers
-            lines = [f"{html.escape(section_name)}", ""]
             for e in entries:
                 name = html.escape(e["name"])
                 phone = html.escape(e["phone_number"])
-                lines.append(f"• <b>{name}:</b> {phone}")
-            response_text = "\n".join(lines)
-
+                lines.append(f"• {name}: {phone}")
         elif section_id == 3:
-            # Common Emergency Situations and How to Handle Them
-            lines = [f"{html.escape(section_name)}", ""]
             for e in entries:
                 title = html.escape(e["name"])
-                desc = e.get("description", "")
-                # split into paragraphs
-                paras = [p.strip() for p in desc.split("  ") if p.strip()]
-                lines.append(f"• <b>{title}</b>")
-                for p in paras:
-                    lines.append(f"  {html.escape(p)}")
-                lines.append("")
-            response_text = "\n".join(lines).rstrip()
-
-        elif section_id == 4:
-            # Tourist Scams to Watch Out For
-            lines = [f"{html.escape(section_name)}", ""]
-            for e in entries:
-                title = html.escape(e["name"])
-                desc = e.get("description", "")
-                lines.append(f"• <b>{title}</b>")
-                # preserve newlines in description
-                for para in desc.split("\n"):
+                lines.append(f"• {title}")
+                for para in e.get("description", "").split("  "):
                     if para.strip():
                         lines.append(f"  {html.escape(para.strip())}")
                 lines.append("")
-            response_text = "\n".join(lines).rstrip()
-
+        elif section_id == 4:
+            for e in entries:
+                title = html.escape(e["name"])
+                lines.append(f"• {title}")
+                for para in e.get("description", "").split(""):
+                    if para.strip():
+                        lines.append(f"  {html.escape(para.strip())}")
+                lines.append("")
         else:
-            # fallback generic
-            lines = [f"{html.escape(section_name)}", ""]
             for e in entries:
                 name = html.escape(e.get("name", "Unknown"))
                 phone = html.escape(e.get("phone_number", "No phone"))
-                lines.append(f"• <b>{name}</b>: {phone}")
+                lines.append(f"• {name}: {phone}")
                 if desc := e.get("description"):
                     lines.append(f"  {html.escape(desc)}")
                 if addr := e.get("address"):
                     lines.append(f"  {html.escape(addr)}")
                 lines.append("")
-            response_text = "\n".join(lines).rstrip()
 
-        # show main menu again
-        keyboard = [
+        response_text = "".join(lines).rstrip()
+
+        # include Back and main menu
+        keyboard = [[KeyboardButton("Back")]]
+        keyboard += [
             [KeyboardButton("Da Nang's bucket list"), KeyboardButton("Solana Summit Event")],
             [KeyboardButton("Events"), KeyboardButton("About Pixity")],
             [KeyboardButton("Emergency"), KeyboardButton("FAQ")]
         ]
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
         await update.effective_message.reply_text(response_text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
         await log_complete_session(update, action, section_name, response_text)
 
@@ -479,13 +465,17 @@ async def get_emergency(update: Update, context: ContextTypes.DEFAULT_TYPE, acti
 
 
 async def get_faq(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str, message: str):
-    """Phase-1: list questions. Phase-2: show answer for selected question."""
+    """Phase-1: list questions. Phase-2: show answer for selected question, with Back button."""
     try:
         if not API_DATABASE_URL:
             logger.error("Database API not configured. Cannot fetch FAQ information.")
             return
 
-        # Phase 1: show list of questions
+        # If back from an answer, restart phase 1
+        if message == "Back to FAQ":
+            context.user_data.pop("faq_map", None)
+
+        # Phase 1: list questions
         if "faq_map" not in context.user_data:
             endpoint_url = fix_url(API_DATABASE_URL, "/postgres/faq")
             params = {"active_only": True, "limit": 10, "use_cache": True}
@@ -502,61 +492,46 @@ async def get_faq(update: Update, context: ContextTypes.DEFAULT_TYPE, action: st
                 await log_complete_session(update, action, message, txt)
                 return
 
-            # build menu of questions
             questions = [faq["question"] for faq in faqs]
             context.user_data["faq_map"] = {faq["question"]: faq["id"] for faq in faqs}
 
             lines = ["<b>Frequently Asked Questions:</b>"]
             for q in questions:
                 lines.append(f"• {html.escape(q)}")
-            text = "\n".join(lines)
+            text = "".join(lines)
 
-            # keyboard: one button per question
             kb = [[KeyboardButton(q)] for q in questions]
             reply_markup = ReplyKeyboardMarkup(kb, resize_keyboard=True)
-
-            await update.effective_message.reply_text(
-                text,
-                parse_mode=ParseMode.HTML,
-                reply_markup=reply_markup
-            )
+            await update.effective_message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
             await log_complete_session(update, action, message, text)
             return
 
-        # Phase 2: user tapped a question
-        mapping = context.user_data.pop("faq_map", {})
+        # Phase 2: show answer
+        faq_map = context.user_data.pop("faq_map", {})
         question = message
-        faq_id = mapping.get(question)
+        faq_id = faq_map.get(question)
         if not faq_id:
-            # invalid tap: restart phase 1
             return await get_faq(update, context, action, "")
 
-        # fetch the single FAQ answer
         detail_url = fix_url(API_DATABASE_URL, f"/postgres/faq/{faq_id}")
-        logger.info(f"Fetching FAQ answer from: {detail_url}")
         resp = requests.get(detail_url)
         if resp.status_code != 200:
             logger.error(f"Failed to fetch FAQ answer: {resp.status_code} - {resp.text}")
             return
 
         data = resp.json() or {}
-        answer = html.escape(data.get("answer", "No answer available."))
+        answer_html = data.get("answer", "No answer available.")
 
-        # display answer with a “Back to FAQ” button
-        text = f"{html.escape(question)}\n\n{answer}"
+        text = f"<b>{html.escape(question)}</b>{answer_html}"
         kb = [[KeyboardButton("Back to FAQ")]]
-        # add main menu underneath
-        kb.append([KeyboardButton("Da Nang's bucket list"), KeyboardButton("Solana Summit Event")])
-        kb.append([KeyboardButton("Events"), KeyboardButton("About Pixity")])
-        kb.append([KeyboardButton("Emergency"), KeyboardButton("FAQ")])
+        kb += [
+            [KeyboardButton("Da Nang's bucket list"), KeyboardButton("Solana Summit Event")],
+            [KeyboardButton("Events"), KeyboardButton("About Pixity")],
+            [KeyboardButton("Emergency"), KeyboardButton("FAQ")]
+        ]
         reply_markup = ReplyKeyboardMarkup(kb, resize_keyboard=True)
-
-        await update.effective_message.reply_text(
-            text,
-            parse_mode=ParseMode.HTML,
-            reply_markup=reply_markup
-        )
-        await log_complete_session(update, action, question, answer)
+        await update.effective_message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+        await log_complete_session(update, action, question, answer_html)
 
     except Exception as e:
         logger.error(f"Error fetching FAQ information: {e}")
