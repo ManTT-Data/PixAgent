@@ -30,12 +30,6 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 API_RAG_URL = os.getenv("API_RAG_URL")
 API_DATABASE_URL = os.getenv("API_DATABASE_URL")
 
-# shared main menu keyboard
-MAIN_MENU = [
-    [KeyboardButton("Da Nang's bucket list"), KeyboardButton("Solana Summit Event")],
-    [KeyboardButton("Events"), KeyboardButton("About Pixity")],
-    [KeyboardButton("Emergency"), KeyboardButton("FAQ")]
-]
 
 # Helper function to fix URL paths
 def fix_url(base_url, path):
@@ -349,27 +343,19 @@ async def get_events(update: Update, context: ContextTypes.DEFAULT_TYPE, action:
     except Exception as e:
         logger.error(f"Error fetching events: {e}")
 
+
 async def get_emergency(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str, message: str):
     """
-    Phase-1: List emergency categories.
-    Phase-2: Show details for the selected category.
-    Pressing 'Back' returns to the main menu.
+    Phase-1: list emergency categories.
+    Phase-2: show details for the selected category.
+    All replies use default parsing (no parse_mode).
     """
     try:
         if not API_DATABASE_URL:
             logger.error("Database API not configured. Cannot fetch emergency data.")
             return
 
-        # If user pressed Back -> clear state and show main menu
-        if message == "Back":
-            context.user_data.pop("emergency_map", None)
-            await update.effective_message.reply_text(
-                "What would you like to do next?",
-                reply_markup=ReplyKeyboardMarkup(MAIN_MENU, resize_keyboard=True)
-            )
-            return
-
-        # Phase 1: list categories if not yet stored
+        # Phase 1: list categories
         if "emergency_map" not in context.user_data:
             url = fix_url(API_DATABASE_URL, "/postgres/emergency/sections")
             resp = requests.get(url)
@@ -379,38 +365,30 @@ async def get_emergency(update: Update, context: ContextTypes.DEFAULT_TYPE, acti
 
             sections = resp.json() or []
             if not sections:
-                txt = "No emergency categories available."
-                await update.effective_message.reply_text(txt)
-                await log_complete_session(update, action, message, txt)
+                text = "No emergency categories available."
+                await update.effective_message.reply_text(text)
+                await log_complete_session(update, action, message, text)
                 return
 
-            # Build menu text and mapping
+            # build menu text and mapping
+            mapping = {sec["name"]: sec["id"] for sec in sections}
             lines = ["Please select an emergency category:"]
-            mapping = {}
-            for sec in sections:
-                name = sec.get("name", "")
+            for name in mapping:
                 lines.append(f"- {name}")
-                mapping[name] = sec.get("id")
-
             menu_text = "\n".join(lines)
-            context.user_data["emergency_map"] = mapping
 
-            # Keyboard: category buttons + Back
-            kb = [[KeyboardButton(name)] for name in mapping]
-            kb.append([KeyboardButton("Back")])
-            await update.effective_message.reply_text(
-                menu_text,
-                reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True)
-            )
+            context.user_data["emergency_map"] = mapping
+            keyboard = [[KeyboardButton(name)] for name in mapping]
+            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+            await update.effective_message.reply_text(menu_text, reply_markup=reply_markup)
             await log_complete_session(update, action, message, menu_text)
             return
 
-        # Phase 2: show details for selected category
+        # Phase 2: show details
         mapping = context.user_data.pop("emergency_map", {})
         section_id = mapping.get(message)
         if not section_id:
-            # invalid selection -> restart phase 1
-            return await get_emergency(update, context, action, "")
+            return
 
         url = fix_url(API_DATABASE_URL, f"/postgres/emergency/section/{section_id}")
         resp = requests.get(url)
@@ -420,31 +398,26 @@ async def get_emergency(update: Update, context: ContextTypes.DEFAULT_TYPE, acti
 
         items = resp.json() or []
         if not items:
-            txt = f"No entries found for {message}."
-            await update.effective_message.reply_text(txt)
-            await log_complete_session(update, action, message, txt)
+            text = f"No entries found for {message}."
+            await update.effective_message.reply_text(text)
+            await log_complete_session(update, action, message, text)
             return
 
-        # Build detail text, strip out any HTML tags
+        # build detail text
         lines = [message]
         for e in items:
-            name = re.sub(r'<[^>]+>', '', e.get("name", "Unknown"))
+            name = e.get("name", "Unknown")
             phone = e.get("phone_number", "No phone")
             lines.append(f"• {name}: {phone}")
             if desc := e.get("description"):
-                desc_clean = re.sub(r'<[^>]+>', '', desc)
-                lines.append(f"  {desc_clean}")
+                lines.append(f"  {desc}")
             if addr := e.get("address"):
                 lines.append(f"  {addr}")
             lines.append("")
         detail_text = "\n".join(lines).strip()
 
-        # Keyboard: Back + main menu
-        kb = [[KeyboardButton("Back")]] + MAIN_MENU
-        await update.effective_message.reply_text(
-            detail_text,
-            reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True)
-        )
+        reply_markup = ReplyKeyboardMarkup(MAIN_MENU, resize_keyboard=True)
+        await update.effective_message.reply_text(detail_text, reply_markup=reply_markup)
         await log_complete_session(update, action, message, detail_text)
 
     except Exception as e:
@@ -453,25 +426,16 @@ async def get_emergency(update: Update, context: ContextTypes.DEFAULT_TYPE, acti
 
 async def get_faq(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str, message: str):
     """
-    Phase-1: List FAQ questions.
-    Phase-2: Show the selected answer.
-    Pressing 'Back' returns to the main menu.
+    Phase-1: list FAQ questions.
+    Phase-2: show the selected answer.
+    All replies use default parsing (no parse_mode).
     """
     try:
         if not API_DATABASE_URL:
             logger.error("Database API not configured. Cannot fetch FAQs.")
             return
 
-        # If user pressed Back -> clear state and show main menu
-        if message == "Back":
-            context.user_data.pop("faq_map", None)
-            await update.effective_message.reply_text(
-                "What would you like to do next?",
-                reply_markup=ReplyKeyboardMarkup(MAIN_MENU, resize_keyboard=True)
-            )
-            return
-
-        # Phase 1: list questions if not stored
+        # Phase 1: list questions
         if "faq_map" not in context.user_data:
             url = fix_url(API_DATABASE_URL, "/postgres/faq")
             resp = requests.get(url, params={"active_only": True, "limit": 10, "use_cache": True})
@@ -481,35 +445,29 @@ async def get_faq(update: Update, context: ContextTypes.DEFAULT_TYPE, action: st
 
             faqs = resp.json() or []
             if not faqs:
-                txt = "No FAQs available."
-                await update.effective_message.reply_text(txt)
-                await log_complete_session(update, action, message, txt)
+                text = "No FAQs available."
+                await update.effective_message.reply_text(text)
+                await log_complete_session(update, action, message, text)
                 return
 
-            mapping = {f['question']: f['id'] for f in faqs}
-            context.user_data['faq_map'] = mapping
-
+            mapping = {faq["question"]: faq["id"] for faq in faqs}
             lines = ["Frequently Asked Questions:"]
             for q in mapping:
                 lines.append(f"- {q}")
             menu_text = "\n".join(lines)
 
-            # Keyboard: question buttons + Back
-            kb = [[KeyboardButton(q)] for q in mapping]
-            kb.append([KeyboardButton("Back")])
-            await update.effective_message.reply_text(
-                menu_text,
-                reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True)
-            )
+            context.user_data["faq_map"] = mapping
+            keyboard = [[KeyboardButton(q)] for q in mapping]
+            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+            await update.effective_message.reply_text(menu_text, reply_markup=reply_markup)
             await log_complete_session(update, action, message, menu_text)
             return
 
-        # Phase 2: show selected answer
-        mapping = context.user_data.pop('faq_map', {})
+        # Phase 2: show answer
+        mapping = context.user_data.pop("faq_map", {})
         faq_id = mapping.get(message)
         if not faq_id:
-            # invalid tap -> restart phase 1
-            return await get_faq(update, context, action, "")
+            return
 
         url = fix_url(API_DATABASE_URL, f"/postgres/faq/{faq_id}")
         resp = requests.get(url)
@@ -518,16 +476,12 @@ async def get_faq(update: Update, context: ContextTypes.DEFAULT_TYPE, action: st
             return
 
         data = resp.json() or {}
-        answer = data.get('answer', 'No answer available.')
-        answer_clean = re.sub(r'<[^>]+>', '', answer)
+        answer = data.get("answer", "No answer available.")
+        detail_text = f"{message}\n\n{answer}"
 
-        detail_text = f"{message}\n\n{answer_clean}"
-        kb = [[KeyboardButton("Back")]] + MAIN_MENU
-        await update.effective_message.reply_text(
-            detail_text,
-            reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True)
-        )
-        await log_complete_session(update, action, message, answer_clean)
+        reply_markup = ReplyKeyboardMarkup(MAIN_MENU, resize_keyboard=True)
+        await update.effective_message.reply_text(detail_text, reply_markup=reply_markup)
+        await log_complete_session(update, action, message, answer)
 
     except Exception as e:
         logger.error(f"Error in get_faq: {e}")
