@@ -342,14 +342,15 @@ async def get_events(update: Update, context: ContextTypes.DEFAULT_TYPE, action:
     except Exception as e:
         logger.error(f"Error fetching events: {e}")
 
+
 async def get_emergency(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str, message: str):
-    """Phase-1: list emergency categories. Phase-2: show details of selected category with Back button."""
+    """Phase-1: list emergency categories. Phase-2: show details of selected category with Back and main-menu buttons."""
     try:
         if not API_DATABASE_URL:
             logger.error("Database API not configured. Cannot fetch emergency information.")
             return
 
-        # Handle Back button: clear stored mapping and restart phase 1
+        # If user tapped Back, restart phase 1 without logging
         if message == "Back":
             context.user_data.pop("emergency_map", None)
 
@@ -368,7 +369,7 @@ async def get_emergency(update: Update, context: ContextTypes.DEFAULT_TYPE, acti
                 await log_complete_session(update, action, message, txt)
                 return
 
-            # Build list text and mapping
+            # Build list and mapping
             lines = ["Please select an emergency category:"]
             mapping = {}
             for sec in sections:
@@ -378,18 +379,17 @@ async def get_emergency(update: Update, context: ContextTypes.DEFAULT_TYPE, acti
             text = "\n".join(lines)
             context.user_data['emergency_map'] = mapping
 
-            # Reply with buttons for each category
+            # Buttons for each category
             kb = [[KeyboardButton(name)] for name in mapping]
             reply_markup = ReplyKeyboardMarkup(kb, resize_keyboard=True)
             await update.effective_message.reply_text(text, reply_markup=reply_markup)
             await log_complete_session(update, action, message, text)
             return
 
-        # Phase 2: show details for selected category
+        # Phase 2: show details
         mapping = context.user_data.pop('emergency_map', {})
         section_id = mapping.get(message)
         if not section_id:
-            # invalid or missing, restart
             return await get_emergency(update, context, action, "")
 
         url = fix_url(API_DATABASE_URL, f"/postgres/emergency/section/{section_id}")
@@ -417,10 +417,12 @@ async def get_emergency(update: Update, context: ContextTypes.DEFAULT_TYPE, acti
         text = "\n".join(lines).strip()
 
         # Buttons: Back + main menu
-        kb = [[KeyboardButton("Back")],
-              [KeyboardButton("Da Nang's bucket list"), KeyboardButton("Solana Summit Event")],
-              [KeyboardButton("Events"), KeyboardButton("About Pixity")],
-              [KeyboardButton("Emergency"), KeyboardButton("FAQ")]]
+        kb = [
+            [KeyboardButton("Back")],
+            [KeyboardButton("Da Nang's bucket list"), KeyboardButton("Solana Summit Event")],
+            [KeyboardButton("Events"), KeyboardButton("About Pixity")],
+            [KeyboardButton("Emergency"), KeyboardButton("FAQ")]
+        ]
         reply_markup = ReplyKeyboardMarkup(kb, resize_keyboard=True)
 
         await update.effective_message.reply_text(text, reply_markup=reply_markup)
@@ -431,13 +433,13 @@ async def get_emergency(update: Update, context: ContextTypes.DEFAULT_TYPE, acti
 
 
 async def get_faq(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str, message: str):
-    """Phase-1: list questions. Phase-2: show answer for tapped question with Back button."""
+    """Phase-1: list FAQs. Phase-2: show answer for tapped question with Back + main-menu buttons."""
     try:
         if not API_DATABASE_URL:
             logger.error("Database API not configured. Cannot fetch FAQ.")
             return
 
-        # Handle Back button
+        # If user tapped Back, restart phase 1
         if message == "Back":
             context.user_data.pop('faq_map', None)
 
@@ -456,7 +458,7 @@ async def get_faq(update: Update, context: ContextTypes.DEFAULT_TYPE, action: st
                 await log_complete_session(update, action, message, txt)
                 return
 
-            # build menu and mapping
+            # Build menu and mapping
             questions = [f['question'] for f in faqs]
             mapping = {f['question']: f['id'] for f in faqs}
             context.user_data['faq_map'] = mapping
@@ -488,17 +490,19 @@ async def get_faq(update: Update, context: ContextTypes.DEFAULT_TYPE, action: st
         answer = data.get('answer','No answer available.')
 
         text = f"{message}\n\n{answer}"
-        kb = [[KeyboardButton("Back")],
-              [KeyboardButton("Da Nang's bucket list"), KeyboardButton("Solana Summit Event")],
-              [KeyboardButton("Events"), KeyboardButton("About Pixity")],
-              [KeyboardButton("Emergency"), KeyboardButton("FAQ")]]
+        kb = [
+            [KeyboardButton("Back")],
+            [KeyboardButton("Da Nang's bucket list"), KeyboardButton("Solana Summit Event")],
+            [KeyboardButton("Events"), KeyboardButton("About Pixity")],
+            [KeyboardButton("Emergency"), KeyboardButton("FAQ")]
+        ]
         reply_markup = ReplyKeyboardMarkup(kb, resize_keyboard=True)
-
         await update.effective_message.reply_text(text, reply_markup=reply_markup)
         await log_complete_session(update, action, message, answer)
 
     except Exception as e:
         logger.error(f"Error in get_faq: {e}")
+
 
 async def get_rag_response(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str, query_text: str):
     """Get response from RAG API, falling back to the database URL if needed."""
