@@ -401,7 +401,7 @@ async def get_emergency(update: Update, context: ContextTypes.DEFAULT_TYPE, acti
         # Custom formatting per section ID
         if section_id == 1:
             # Tourist support centre and embassy contacts
-            lines = [f"<b>{html.escape(section_name)}</b>", ""]
+            lines = [f"{html.escape(section_name)}", ""]
             for e in entries:
                 name = html.escape(e["name"])
                 phone = html.escape(e["phone_number"])
@@ -415,7 +415,7 @@ async def get_emergency(update: Update, context: ContextTypes.DEFAULT_TYPE, acti
 
         elif section_id == 2:
             # Emergency numbers
-            lines = [f"<b>{html.escape(section_name)}</b>", ""]
+            lines = [f"{html.escape(section_name)}", ""]
             for e in entries:
                 name = html.escape(e["name"])
                 phone = html.escape(e["phone_number"])
@@ -424,7 +424,7 @@ async def get_emergency(update: Update, context: ContextTypes.DEFAULT_TYPE, acti
 
         elif section_id == 3:
             # Common Emergency Situations and How to Handle Them
-            lines = [f"<b>{html.escape(section_name)}</b>", ""]
+            lines = [f"{html.escape(section_name)}", ""]
             for e in entries:
                 title = html.escape(e["name"])
                 desc = e.get("description", "")
@@ -438,7 +438,7 @@ async def get_emergency(update: Update, context: ContextTypes.DEFAULT_TYPE, acti
 
         elif section_id == 4:
             # Tourist Scams to Watch Out For
-            lines = [f"<b>{html.escape(section_name)}</b>", ""]
+            lines = [f"{html.escape(section_name)}", ""]
             for e in entries:
                 title = html.escape(e["name"])
                 desc = e.get("description", "")
@@ -452,7 +452,7 @@ async def get_emergency(update: Update, context: ContextTypes.DEFAULT_TYPE, acti
 
         else:
             # fallback generic
-            lines = [f"<b>{html.escape(section_name)}</b>", ""]
+            lines = [f"{html.escape(section_name)}", ""]
             for e in entries:
                 name = html.escape(e.get("name", "Unknown"))
                 phone = html.escape(e.get("phone_number", "No phone"))
@@ -477,7 +477,7 @@ async def get_emergency(update: Update, context: ContextTypes.DEFAULT_TYPE, acti
     except Exception as e:
         logger.error(f"Error fetching emergency info: {e}")
 
-        
+
 async def get_faq(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str, message: str):
     """Phase-1: list questions. Phase-2: show answer for selected question."""
     try:
@@ -543,7 +543,7 @@ async def get_faq(update: Update, context: ContextTypes.DEFAULT_TYPE, action: st
         answer = html.escape(data.get("answer", "No answer available."))
 
         # display answer with a “Back to FAQ” button
-        text = f"<b>{html.escape(question)}</b>\n\n{answer}"
+        text = f"{html.escape(question)}\n\n{answer}"
         kb = [[KeyboardButton("Back to FAQ")]]
         # add main menu underneath
         kb.append([KeyboardButton("Da Nang's bucket list"), KeyboardButton("Solana Summit Event")])
