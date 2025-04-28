@@ -455,13 +455,7 @@ async def get_emergency(update: Update, context: ContextTypes.DEFAULT_TYPE, acti
             reply_markup=reply_markup,
             parse_mode=ParseMode.HTML
         )
-        
-        # Luôn hiển thị menu chính
-        await update.effective_message.reply_text(
-            "You can also continue to use the main menu:",
-            reply_markup=ReplyKeyboardMarkup(MAIN_MENU, resize_keyboard=True)
-        )
-        
+
         await log_complete_session(update, action, message, "Emergency categories shown as inline buttons")
 
     except Exception as e:
@@ -521,13 +515,7 @@ async def get_faq(update: Update, context: ContextTypes.DEFAULT_TYPE, action: st
             reply_markup=reply_markup,
             parse_mode=ParseMode.HTML
         )
-        
-        # Luôn hiển thị menu chính
-        await update.effective_message.reply_text(
-            "You can also continue to use the main menu:",
-            reply_markup=ReplyKeyboardMarkup(MAIN_MENU, resize_keyboard=True)
-        )
-        
+
         await log_complete_session(update, action, message, "FAQ questions shown as inline buttons")
 
     except Exception as e:
