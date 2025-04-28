@@ -161,7 +161,7 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
     try:
         # Save user message first (so it's available for user history)
         session_id = request.session_id or f"{request.user_id}_{datetime.now().strftime('%Y-%m-%d_%H:%M:%S')}"
-        logger.info(f"Processing chat request for user {request.user_id}, session {session_id}")
+        # logger.info(f"Processing chat request for user {request.user_id}, session {session_id}")
 
         retriever = get_chain(
             top_k=request.similarity_top_k,
@@ -218,6 +218,7 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
         final_request_start_time = time.time()
         final_request = model.generate_content(prompt_request)
         # Log thời gian hoàn thành final_request
+        logger.info("Fixed Request: ", final_request)
         logger.info(f"Final request generation time: {time.time() - final_request_start_time:.2f} seconds")
         # print(final_request.text)
 
@@ -252,7 +253,7 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
             question=final_request.text,
             chat_history=chat_history
         )
-        logger.info(f"Full prompt with history and context: {prompt_text}")
+        # logger.info(f"Full prompt with history and context: {prompt_text}")
         
         # Generate response
         response = model.generate_content(prompt_text)
@@ -262,11 +263,7 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
         processing_time = time.time() - start_time
         
         # Log full response with sources
-        logger.info(f"Generated response for user {request.user_id}: {answer}")
-        if sources:
-            logger.info(f"Sources used: {len(sources)} documents")
-            for i, source in enumerate(sources):
-                logger.info(f"Source {i+1}: {source.source or 'Unknown'} (score: {source.score})")
+        # logger.info(f"Generated response for user {request.user_id}: {answer}")
         
         # Create response object for API (without sources)
         chat_response = ChatResponse(
