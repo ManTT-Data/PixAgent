@@ -25,6 +25,8 @@ class EmergencyItem(Base):
     location = Column(String, nullable=True)  # Will be converted to/from PostGIS POINT type
     priority = Column(Integer, default=0)
     is_active = Column(Boolean, default=True)
+    section = Column(String, nullable=True)  # Section field (16.1, 16.2.1, 16.2.2, 16.3)
+    section_id = Column(Integer, nullable=True)  # Numeric identifier for section
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 

@@ -79,3 +79,5 @@ Thumbs.db
 *.log
 .env
 main.py
+
+test/
