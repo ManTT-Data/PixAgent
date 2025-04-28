@@ -295,32 +295,31 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle button callbacks."""
     query = update.callback_query
     data = query.data
+    
+    try:
+        await query.answer()  # Acknowledge the button press to stop the loading indicator
         
-    if data.startswith("emergency_") or data.startswith("faq_") or data.startswith("events_"):
-        # Log that we received a callback but we're not processing it anymore since we show all info directly
-        logger.info(f"Received callback {data}, but now showing all information directly")
-        await query.answer("This feature has been updated. Please use the main menu buttons.")
-        
-        # Show the keyboard again
-        keyboard = [
-            [KeyboardButton("Da Nang's bucket list"), KeyboardButton("Solana Summit Event")],
-            [KeyboardButton("Events"), KeyboardButton("About Pixity")],
-            [KeyboardButton("Emergency"), KeyboardButton("FAQ")]
-        ]
-        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        if data.startswith("emergency_"):
+            # Extract section ID from callback data
+            section_id = data.split("_")[1]
+            await show_emergency_details(update, context, section_id)
+        elif data.startswith("faq_"):
+            # Extract FAQ ID from callback data
+            faq_id = data.split("_")[1]
+            await show_faq_answer(update, context, faq_id)
+        else:
+            # Handle other callbacks or undefined callbacks
+            logger.warning(f"Unhandled callback query received: {data}")
+            await query.message.reply_text(
+                "Sorry, I couldn't process that request.",
+                reply_markup=ReplyKeyboardMarkup(MAIN_MENU, resize_keyboard=True)
+            )
+    except Exception as e:
+        logger.error(f"Error handling callback: {e}")
         await query.message.reply_text(
-            "Please use the main menu buttons:",
-            parse_mode=ParseMode.HTML,
-            disable_web_page_preview=True,
-            reply_markup=reply_markup)
-        
-        # Log complete session
-        await log_complete_session(update, "callback_handled", f"Callback data: {data}", "Callback received but not processed due to update")
-    else:
-        # Handle other callbacks or undefined callbacks
-        await query.answer("Unknown callback query")
-        logger.warning(f"Unhandled callback query received: {data}")
-        await log_complete_session(update, "callback_handled", f"Unknown callback data: {data}", "Callback not recognized")
+            f"Error processing your selection: {str(e)}",
+            reply_markup=ReplyKeyboardMarkup(MAIN_MENU, resize_keyboard=True)
+        )
 
 # Message handler
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -413,180 +412,132 @@ async def get_events(update: Update, context: ContextTypes.DEFAULT_TYPE, action:
 
 async def get_emergency(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str, message: str):
     """
-    Phase-1: list emergency categories.
-    Phase-2: show details for the selected category.
+    Show emergency categories as inline buttons and then display details for selected category.
     """
     try:
         if not API_DATABASE_URL:
             logger.error("Database API not configured. Cannot fetch emergency data.")
             return
 
-        # Phase 1: list categories
-        if "emergency_map" not in context.user_data:
-            url = fix_url(API_DATABASE_URL, "/postgres/emergency/sections")
-            resp = requests.get(url)
-            if resp.status_code != 200:
-                logger.error(f"Failed to fetch sections: {resp.status_code}")
-                return
-
-            sections = resp.json() or []
-            if not sections:
-                text = "No emergency categories available."
-                await update.effective_message.reply_text(text)
-                await log_complete_session(update, action, message, text)
-                return
-
-            # build menu text and mapping
-            mapping = {sec["name"]: sec["id"] for sec in sections}
-            lines = ["Please select an emergency category:"]
-            for name in mapping:
-                lines.append(f"- {clean_html(name)}")
-            menu_text = "\n".join(lines)
-
-            context.user_data["emergency_map"] = mapping
-            keyboard = [[KeyboardButton(name)] for name in mapping]
-            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-            await update.effective_message.reply_text(
-                menu_text,
-                reply_markup=reply_markup,
-                parse_mode=ParseMode.HTML
-            )
-            await log_complete_session(update, action, message, menu_text)
-            return
-
-        # Phase 2: show details
-        mapping = context.user_data.pop("emergency_map", {})
-        section_id = mapping.get(message)
-        if not section_id:
-            return
-
-        url = fix_url(API_DATABASE_URL, f"/postgres/emergency/section/{section_id}")
-        # Thêm các tham số vào URL để đảm bảo lấy dữ liệu đúng
-        params = {
-            "active_only": True,
-            "use_cache": True
-        }
-        logger.info(f"Fetching emergency data from: {url} with params: {params}")
+        # Phase 1: list categories as inline buttons
+        url = fix_url(API_DATABASE_URL, "/postgres/emergency/sections")
+        logger.info(f"Fetching emergency sections from: {url}")
         
-        resp = requests.get(url, params=params)
+        resp = requests.get(url)
         if resp.status_code != 200:
-            logger.error(f"Failed to fetch section {section_id}: {resp.status_code}")
+            logger.error(f"Failed to fetch emergency sections: {resp.status_code}")
             return
 
-        # Log nội dung JSON nhận được để debug
-        logger.info(f"Emergency response for section {section_id}: {resp.text[:200]}...")
-        
-        items = resp.json() or []
-        if not items:
-            text = f"No entries found for {message}."
-            await update.effective_message.reply_text(text)
+        sections = resp.json() or []
+        if not sections:
+            text = "No emergency categories available."
+            await update.effective_message.reply_text(
+                text,
+                reply_markup=ReplyKeyboardMarkup(MAIN_MENU, resize_keyboard=True)
+            )
             await log_complete_session(update, action, message, text)
             return
 
-        # build detail text
-        lines = [f"<b>{clean_html(message)}</b>"]
-        for e in items:
-            name = e.get("name", "Unknown")
-            phone = e.get("phone_number", "No phone") or "N/A"  # Đảm bảo phone_number không bị None
-            lines.append(f"• <b>{clean_html(name)}</b>: {clean_html(phone)}")
-            if desc := e.get("description"):
-                # Chia nhỏ mô tả thành nhiều dòng nếu quá dài
-                desc_lines = desc.split("\n")
-                for dl in desc_lines:
-                    if dl.strip():  # Chỉ thêm dòng không trống
-                        lines.append(f"  {clean_html(dl.strip())}")
-            if addr := e.get("address"):
-                lines.append(f"  📍 {clean_html(addr)}")
-            lines.append("")
-        detail_text = "\n".join(lines).strip()
-
-        reply_markup = ReplyKeyboardMarkup(MAIN_MENU, resize_keyboard=True)
+        # Create inline keyboard with emergency categories
+        keyboard = []
+        for sec in sections:
+            section_id = sec.get("id")
+            section_name = sec.get("name", "Unknown")
+            if section_id and section_name:
+                # Sử dụng callback_data có định dạng: emergency_{section_id}
+                keyboard.append([InlineKeyboardButton(section_name, callback_data=f"emergency_{section_id}")])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        # Hiển thị menu lựa chọn với nút inline
         await update.effective_message.reply_text(
-            detail_text, 
+            "Please select an emergency category:",
             reply_markup=reply_markup,
             parse_mode=ParseMode.HTML
         )
-        await log_complete_session(update, action, message, detail_text)
+        
+        # Luôn hiển thị menu chính
+        await update.effective_message.reply_text(
+            "You can also continue to use the main menu:",
+            reply_markup=ReplyKeyboardMarkup(MAIN_MENU, resize_keyboard=True)
+        )
+        
+        await log_complete_session(update, action, message, "Emergency categories shown as inline buttons")
 
     except Exception as e:
         logger.error(f"Error in get_emergency: {e}")
-        # In trường hợp có lỗi, vẫn hiển thị menu chính
+        # Hiển thị menu chính trong trường hợp lỗi
         reply_markup = ReplyKeyboardMarkup(MAIN_MENU, resize_keyboard=True)
         await update.effective_message.reply_text(
-            f"Có lỗi khi tải thông tin khẩn cấp: {str(e)}",
+            f"Error loading emergency categories: {str(e)}",
             reply_markup=reply_markup
         )
 
 
 async def get_faq(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str, message: str):
     """
-    Phase-1: list FAQ questions.
-    Phase-2: show the selected answer.
+    Show FAQ questions as inline buttons and then display answer for selected question.
     """
     try:
         if not API_DATABASE_URL:
             logger.error("Database API not configured. Cannot fetch FAQs.")
             return
 
-        # Phase 1: list questions
-        if "faq_map" not in context.user_data:
-            url = fix_url(API_DATABASE_URL, "/postgres/faq")
-            resp = requests.get(url, params={"active_only": True, "limit": 10, "use_cache": True})
-            if resp.status_code != 200:
-                logger.error(f"Failed to fetch FAQs: {resp.status_code}")
-                return
-
-            faqs = resp.json() or []
-            if not faqs:
-                text = "No FAQs available."
-                await update.effective_message.reply_text(text)
-                await log_complete_session(update, action, message, text)
-                return
-
-            mapping = {faq["question"]: faq["id"] for faq in faqs}
-            lines = ["Frequently Asked Questions:"]
-            for q in mapping:
-                lines.append(f"- {clean_html(q)}")
-            menu_text = "\n".join(lines)
-
-            context.user_data["faq_map"] = mapping
-            keyboard = [[KeyboardButton(q)] for q in mapping]
-            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-            await update.effective_message.reply_text(
-                menu_text, 
-                reply_markup=reply_markup,
-                parse_mode=ParseMode.HTML
-            )
-            await log_complete_session(update, action, message, menu_text)
-            return
-
-        # Phase 2: show answer
-        mapping = context.user_data.pop("faq_map", {})
-        faq_id = mapping.get(message)
-        if not faq_id:
-            return
-
-        url = fix_url(API_DATABASE_URL, f"/postgres/faq/{faq_id}")
-        resp = requests.get(url)
+        # Phase 1: list questions as inline buttons
+        url = fix_url(API_DATABASE_URL, "/postgres/faq")
+        logger.info(f"Fetching FAQs from: {url}")
+        
+        resp = requests.get(url, params={"active_only": True, "limit": 10, "use_cache": True})
         if resp.status_code != 200:
-            logger.error(f"Failed to fetch FAQ {faq_id}: {resp.status_code}")
+            logger.error(f"Failed to fetch FAQs: {resp.status_code}")
             return
 
-        data = resp.json() or {}
-        answer = data.get("answer", "No answer available.")
-        # Chuẩn bị văn bản đảm bảo an toàn HTML
-        detail_text = f"{clean_html(message)}\n\n{clean_html(answer)}"
+        faqs = resp.json() or []
+        if not faqs:
+            text = "No FAQs available."
+            await update.effective_message.reply_text(
+                text,
+                reply_markup=ReplyKeyboardMarkup(MAIN_MENU, resize_keyboard=True)
+            )
+            await log_complete_session(update, action, message, text)
+            return
 
-        reply_markup = ReplyKeyboardMarkup(MAIN_MENU, resize_keyboard=True)
+        # Create inline keyboard with FAQ questions
+        keyboard = []
+        for faq in faqs:
+            faq_id = faq.get("id")
+            question = faq.get("question", "Unknown")
+            if faq_id and question:
+                # Giới hạn độ dài của câu hỏi để tránh vượt quá giới hạn callback_data
+                short_question = question[:30] + "..." if len(question) > 30 else question
+                # Sử dụng callback_data có định dạng: faq_{faq_id}
+                keyboard.append([InlineKeyboardButton(short_question, callback_data=f"faq_{faq_id}")])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        # Hiển thị menu lựa chọn với nút inline
         await update.effective_message.reply_text(
-            detail_text, 
+            "Frequently Asked Questions:",
             reply_markup=reply_markup,
             parse_mode=ParseMode.HTML
         )
-        await log_complete_session(update, action, message, answer)
+        
+        # Luôn hiển thị menu chính
+        await update.effective_message.reply_text(
+            "You can also continue to use the main menu:",
+            reply_markup=ReplyKeyboardMarkup(MAIN_MENU, resize_keyboard=True)
+        )
+        
+        await log_complete_session(update, action, message, "FAQ questions shown as inline buttons")
 
     except Exception as e:
         logger.error(f"Error in get_faq: {e}")
+        # Hiển thị menu chính trong trường hợp lỗi
+        reply_markup = ReplyKeyboardMarkup(MAIN_MENU, resize_keyboard=True)
+        await update.effective_message.reply_text(
+            f"Error loading FAQ questions: {str(e)}",
+            reply_markup=reply_markup
+        )
 
 
 async def get_rag_response(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str, query_text: str):
@@ -887,6 +838,20 @@ async def get_rag_endpoint():
             endpoint_base = "/chat"
     return endpoint_base
 
+# Hàm để đăng ký các lệnh gợi ý khi người dùng nhấn / trên Telegram
+async def set_commands(application):
+    """Register bot commands to be shown in Telegram interface."""
+    commands = [
+        ("start", "Start the bot and display the main menu"),
+        ("events", "Show upcoming events"),
+        ("faq", "Show frequently asked questions"),
+        ("emergency", "List of emergency contacts"),
+        ("help", "Display help information")
+    ]
+    
+    await application.bot.set_my_commands(commands)
+    logger.info("Bot commands have been set successfully")
+
 # Thêm vào startup hoặc init
 if __name__ == "__main__":
     # Verify API endpoints and store results
@@ -910,6 +875,9 @@ if __name__ == "__main__":
     # Add message handler
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
+    # Set bot commands for menu suggestions
+    asyncio.run(set_commands(application))
+    
     # Start the Bot with a dedicated event loop
     logger.info("Starting bot...")
     try:
@@ -926,4 +894,135 @@ if __name__ == "__main__":
     finally:
         # Properly close the application
         loop.run_until_complete(application.stop())
-        loop.close() 
+        loop.close()
+
+async def show_emergency_details(update: Update, context: ContextTypes.DEFAULT_TYPE, section_id):
+    """Show details for selected emergency category."""
+    query = update.callback_query
+    
+    try:
+        if not API_DATABASE_URL:
+            await query.message.reply_text("Database API not configured.")
+            return
+
+        url = fix_url(API_DATABASE_URL, f"/postgres/emergency/section/{section_id}")
+        # Thêm các tham số vào URL để đảm bảo lấy dữ liệu đúng
+        params = {
+            "active_only": True,
+            "use_cache": True
+        }
+        logger.info(f"Fetching emergency details from: {url} with params: {params}")
+        
+        resp = requests.get(url, params=params)
+        if resp.status_code != 200:
+            logger.error(f"Failed to fetch emergency details: {resp.status_code} - {resp.text}")
+            await query.message.reply_text(
+                f"Failed to get emergency details. Status code: {resp.status_code}",
+                reply_markup=ReplyKeyboardMarkup(MAIN_MENU, resize_keyboard=True)
+            )
+            return
+        
+        # Log full response for debugging
+        logger.info(f"Emergency response data: {resp.text[:500]}...")
+        
+        items = resp.json() or []
+        if not items:
+            await query.message.reply_text(
+                "No entries found for this category.",
+                reply_markup=ReplyKeyboardMarkup(MAIN_MENU, resize_keyboard=True)
+            )
+            return
+
+        # Get section name from first item
+        section_name = items[0].get("section", "Emergency Information")
+        
+        # Build detail text
+        lines = [f"<b>{clean_html(section_name)}</b>"]
+        for e in items:
+            name = e.get("name", "Unknown")
+            phone = e.get("phone_number") if e.get("phone_number") else "N/A"
+            lines.append(f"• <b>{clean_html(name)}</b>: {clean_html(phone)}")
+            if desc := e.get("description"):
+                # Split long descriptions into multiple lines
+                desc_lines = desc.split("\n")
+                for dl in desc_lines:
+                    if dl.strip():
+                        lines.append(f"  {clean_html(dl.strip())}")
+            if addr := e.get("address"):
+                lines.append(f"  📍 {clean_html(addr)}")
+            lines.append("")
+        
+        detail_text = "\n".join(lines).strip()
+        
+        # Send details
+        await query.message.reply_text(
+            detail_text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=ReplyKeyboardMarkup(MAIN_MENU, resize_keyboard=True)
+        )
+        
+        # Log session
+        await log_complete_session(
+            update,
+            "emergency_details",
+            f"Emergency details for section {section_id}",
+            detail_text
+        )
+        
+    except Exception as e:
+        logger.error(f"Error showing emergency details: {e}")
+        await query.message.reply_text(
+            f"Error showing emergency details: {str(e)}",
+            reply_markup=ReplyKeyboardMarkup(MAIN_MENU, resize_keyboard=True)
+        )
+
+
+async def show_faq_answer(update: Update, context: ContextTypes.DEFAULT_TYPE, faq_id):
+    """Show answer for selected FAQ question."""
+    query = update.callback_query
+    
+    try:
+        if not API_DATABASE_URL:
+            await query.message.reply_text("Database API not configured.")
+            return
+
+        url = fix_url(API_DATABASE_URL, f"/postgres/faq/{faq_id}")
+        logger.info(f"Fetching FAQ answer from: {url}")
+        
+        resp = requests.get(url)
+        if resp.status_code != 200:
+            logger.error(f"Failed to fetch FAQ answer: {resp.status_code}")
+            await query.message.reply_text(
+                f"Failed to get FAQ answer. Status code: {resp.status_code}",
+                reply_markup=ReplyKeyboardMarkup(MAIN_MENU, resize_keyboard=True)
+            )
+            return
+        
+        data = resp.json() or {}
+        question = data.get("question", "Unknown question")
+        answer = data.get("answer", "No answer available.")
+        
+        # Format response
+        detail_text = f"<b>{clean_html(question)}</b>\n\n{clean_html(answer)}"
+        
+        # Send answer
+        await query.message.reply_text(
+            detail_text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=ReplyKeyboardMarkup(MAIN_MENU, resize_keyboard=True)
+        )
+        
+        # Log session
+        await log_complete_session(
+            update,
+            "faq_answer",
+            f"FAQ answer for question ID {faq_id}",
+            detail_text
+        )
+        
+    except Exception as e:
+        logger.error(f"Error showing FAQ answer: {e}")
+        await query.message.reply_text(
+            f"Error showing FAQ answer: {str(e)}",
+            reply_markup=ReplyKeyboardMarkup(MAIN_MENU, resize_keyboard=True)
+        ) 

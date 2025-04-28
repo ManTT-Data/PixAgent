@@ -20,6 +20,7 @@ from main import (
     verify_api_endpoints,
     get_session_endpoint,
     get_rag_endpoint,
+    set_commands,
 )
 
 # Logging setup
@@ -42,49 +43,25 @@ bot_app.add_handler(CommandHandler("help", help_command, block=False))
 bot_app.add_handler(CallbackQueryHandler(handle_callback))
 bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-
+# Initialize bot app and set commands
+async def init_bot():
+    await bot_app.initialize()
+    await set_commands(bot_app)
+    
 @app.on_event("startup")
-async def startup():
-    logger.info("🚀 Starting bot app...")
-
-    # Try initializing Telegram bot (getMe, etc.)
-    for attempt in range(3):
-        try:
-            await bot_app.initialize()
-            logger.info("✅ Bot initialized properly")
-            break
-        except Exception as e:
-            logger.error(f"❌ Attempt {attempt+1} to initialize bot failed: {e}")
-            if attempt < 2:
-                logger.info("⏳ Retrying in 3 seconds...")
-                await asyncio.sleep(3)
-            else:
-                logger.warning("⚠️ Giving up. Marking bot as initialized temporarily.")
-                bot_app._initialized = True  # Force as initialized to avoid username crash
-
-    # Log our Database API URL
-    if API_DATABASE_URL:
-        logger.info(f"🔗 Database API URL: {API_DATABASE_URL}")
-        logger.info("✅ Using legacy API endpoints: /mongodb/session and /rag/chat")
+async def on_startup():
+    await init_bot()
+    await bot_app.start()
+    logger.info("Bot started through FastAPI")
     
-    # Kiểm tra các handlers đã được đăng ký
-    logger.info(f"👉 Registered handlers: {len(bot_app.handlers[0])} handlers")
-    for handler in bot_app.handlers[0]:
-        if isinstance(handler, CommandHandler):
-            logger.info(f"📝 Command handler registered: /{list(handler.commands)[0]}")
-        elif isinstance(handler, CallbackQueryHandler):
-            logger.info(f"🔘 Callback handler registered: {handler.callback}")
-        elif isinstance(handler, MessageHandler):
-            logger.info(f"💬 Message handler registered")
-    
-    # --- AUTO SET TELEGRAM WEBHOOK ---
-    webhook_url = os.getenv("WEBHOOK_URL")
-    if webhook_url:
-        try:
-            await bot_app.bot.set_webhook(webhook_url)
-            logger.info(f"✅ Webhook set to {webhook_url}")
-        except Exception as e:
-            logger.error(f"❌ Failed to set webhook: {e}")
+    # Verify API endpoints
+    try:
+        endpoints = await verify_api_endpoints()
+        get_session_endpoint.verified_endpoints = endpoints
+        get_rag_endpoint.verified_endpoints = endpoints
+        logger.info(f"API endpoints verified: {endpoints}")
+    except Exception as e:
+        logger.error(f"Error verifying API endpoints: {e}")
 
 
 @app.on_event("shutdown")
