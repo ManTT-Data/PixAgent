@@ -13,7 +13,7 @@ from langchain.prompts import PromptTemplate
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from app.utils.utils import timer_decorator
 
-from app.database.mongodb import get_user_history, get_chat_history, get_request_history, session_collection
+from app.database.mongodb import get_chat_history, get_request_history, session_collection
 from app.database.pinecone import (
     search_vectors, 
     get_chain, 
@@ -48,12 +48,12 @@ router = APIRouter(
 
 fix_request = PromptTemplate(
     template = """Goal:
-Your task is generate one request that have all information of history chat.
+Your task is fixing user'srequest to get all information of history chat.
 You will received a conversation history and current request of user.
 Generate a new request that make sense if current request related to history conversation.
 
 Return Format:
-Only return the fully request with all the important keywords.
+Only return the fully users' request with all the important keywords.
 If the current message is NOT related to the conversation history or there is no chat history: Return user's current request.
 If the current message IS related to the conversation history: Return new request based on information from the conversation history and the current request.
 
@@ -84,7 +84,7 @@ Warning:
 Let's support users like a real tour guide, not a bot. The information in core knowledge is your own knowledge.
 Your knowledge is provided in the Core Knowledge. All of information in Core Knowledge is about Da Nang, Vietnam.
 You just care about current time that user mention when user ask about Solana event.
-If you do not have enough information to answer user's question, please reply with "I don't know. I don't have information about that".
+Only use core knowledge to answer. If you do not have enough information to answer user's question, please reply with "I'm sorry. I don't have information about that" and Give users some more options to ask.
 
 Core knowledge:
 {context}
@@ -218,7 +218,7 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
         final_request_start_time = time.time()
         final_request = model.generate_content(prompt_request)
         # Log thời gian hoàn thành final_request
-        logger.info("Fixed Request: ", final_request)
+        logger.info("Fixed Request: ", final_request.text)
         logger.info(f"Final request generation time: {time.time() - final_request_start_time:.2f} seconds")
         # print(final_request.text)
 

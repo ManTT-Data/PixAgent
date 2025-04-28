@@ -134,70 +134,41 @@ def get_recent_sessions(user_id, action, n=3):
         logger.error(f"Error getting recent sessions: {e}")
         return []
 
-def get_user_history(user_id, n=5):
-    """Get user history for a specific user"""
+def get_chat_history(user_id, n = 5) -> str:
+    """
+    Lấy lịch sử chat cho user_id từ MongoDB và ghép thành chuỗi theo định dạng:
+    
+    User: ...
+    Bot: ...
+    User: ...
+    Bot: ...
+    """
     try:
-        # Truy vấn trực tiếp từ MongoDB, không sử dụng cache
-        logger.debug(f"Getting user history from database for user: {user_id}")
+        # Truy vấn các document có user_id, sắp xếp theo created_at tăng dần
+        # Get the 4 most recent documents first, then sort them in ascending order
+        docs = list(session_collection.find({"user_id": str(user_id)}).sort("created_at", -1).limit(n))
+        # Reverse the list to get chronological order (oldest to newest)
+        docs.reverse()
+        if not docs:
+            logger.info(f"Không tìm thấy dữ liệu cho user_id: {user_id}")
+            return ""
         
-        # Find all messages of this user
-        user_messages = list(
-            session_collection.find(
-                {
-                    "user_id": user_id, 
-                    "message": {"$exists": True, "$ne": None},
-                    # Include all user messages regardless of action type
-                }
-            ).sort("created_at_datetime", -1).limit(n * 2 + 1)  # Get more to ensure we have enough pairs
-        )
-        
-        # Group messages by session_id to find pairs
-        session_dict = {}
-        for msg in user_messages:
-            session_id = msg.get("session_id")
-            if session_id not in session_dict:
-                session_dict[session_id] = {}
-                
-            if msg.get("factor", "").lower() == "user":
-                session_dict[session_id]["question"] = msg.get("message", "")
-                session_dict[session_id]["timestamp"] = msg.get("created_at_datetime")
-            elif msg.get("factor", "").lower() == "rag":
-                session_dict[session_id]["answer"] = msg.get("response", "")
-                
-        # Build history from complete pairs only (with both question and answer)
-        history = []
-        for session_id, data in session_dict.items():
-            if "question" in data and "answer" in data and data.get("answer"):
-                history.append({
-                    "question": data["question"],
-                    "answer": data["answer"],
-                    "timestamp": data.get("timestamp")
-                })
-        
-        # Sort by timestamp and limit to n
-        history = sorted(history, key=lambda x: x.get("timestamp", 0), reverse=True)[:n]
-        
-        logger.info(f"Retrieved {len(history)} history items for user {user_id}")
-        return history
-    except Exception as e:
-        logger.error(f"Error getting user history: {e}")
-        return []
-
-# Functions from chatbot.py
-def get_chat_history(user_id, n=5):
-    """Get conversation history for a specific user from MongoDB in format suitable for LLM prompt"""
-    try:
-        # Lấy lịch sử trực tiếp từ MongoDB (thông qua get_user_history đã sửa đổi)
-        history = get_user_history(user_id, n)
-        
-        # Format history for prompt context
-        formatted_history = ""
-        for item in history:
-            formatted_history += f"User: {item['question']}\nAssistant: {item['answer']}\n\n"
+        conversation_lines = []
+        # Xử lý từng document theo cấu trúc mới
+        for doc in docs:
+            factor = doc.get("factor", "").lower()
+            action = doc.get("action", "").lower()
+            message = doc.get("message", "")
+            response = doc.get("response", "")
             
-        return formatted_history
+            if factor == "user" and action == "asking_freely":
+                conversation_lines.append(f"User: {message}")
+                conversation_lines.append(f"Bot: {response}")
+        
+        # Ghép các dòng thành chuỗi
+        return "\n".join(conversation_lines)
     except Exception as e:
-        logger.error(f"Error getting chat history for prompt: {e}")
+        logger.error(f"Lỗi khi lấy lịch sử chat cho user_id {user_id}: {e}")
         return ""
 
 def get_request_history(user_id, n=3):

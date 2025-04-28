@@ -8,7 +8,7 @@ import asyncio
 
 from app.database.mongodb import (
     save_session, 
-    get_user_history,
+    get_chat_history,
     update_session_response,
     check_db_connection,
     session_collection
@@ -178,7 +178,7 @@ async def get_history(user_id: str, n: int = Query(3, ge=1, le=10)):
             )
         
         # Get user history from MongoDB
-        history_data = get_user_history(user_id=user_id, n=n)
+        history_data = get_chat_history(user_id=user_id, n=n)
         
         # Convert to response model
         return HistoryResponse(history=history_data)
