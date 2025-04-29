@@ -53,6 +53,11 @@ async def on_startup():
     await init_bot()
     await bot_app.start()
     logger.info("Bot started through FastAPI")
+
+    WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+    if WEBHOOK_URL:
+        await bot_app.bot.set_webhook(WEBHOOK_URL)
+        logger.info(f"Webhook set to: {WEBHOOK_URL}")
     
     # Verify API endpoints
     try:
