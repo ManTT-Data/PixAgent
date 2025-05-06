@@ -5,6 +5,7 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 import logging
+import pinecone
 
 from app.database.pinecone import get_pinecone_index, init_pinecone
 
@@ -17,17 +18,27 @@ embeddings_model = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
 class PDFProcessor:
     """Lớp xử lý file PDF và tạo embeddings"""
     
-    def __init__(self, index_name="testbot768", namespace="Default"):
-        """Khởi tạo với tên index và namespace Pinecone mặc định"""
+    def __init__(self, index_name="testbot768", namespace="Default", api_key=None):
+        """Khởi tạo với tên index, namespace Pinecone và API key"""
         self.index_name = index_name
         self.namespace = namespace
         self.pinecone_index = None
+        self.api_key = api_key
         
     def _init_pinecone_connection(self):
         """Khởi tạo kết nối đến Pinecone"""
         try:
-            # Sử dụng singleton pattern từ module database.pinecone
-            self.pinecone_index = get_pinecone_index()
+            # Nếu có API key riêng, sử dụng nó thay vì dùng singleton
+            if self.api_key:
+                # Khởi tạo Pinecone với API key được cung cấp
+                pinecone.init(api_key=self.api_key)
+                # Kết nối đến index
+                self.pinecone_index = pinecone.Index(self.index_name)
+                logger.info(f"Đã kết nối đến Pinecone index {self.index_name} với API key riêng")
+            else:
+                # Sử dụng singleton pattern từ module database.pinecone nếu không có API key
+                self.pinecone_index = get_pinecone_index()
+                
             if not self.pinecone_index:
                 logger.error("Không thể kết nối đến Pinecone")
                 return False

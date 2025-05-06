@@ -7,6 +7,7 @@ class PDFUploadRequest(BaseModel):
     index_name: Optional[str] = Field("testbot768", description="Tên index trong Pinecone")
     title: Optional[str] = Field(None, description="Tiêu đề của tài liệu")
     description: Optional[str] = Field(None, description="Mô tả về tài liệu")
+    vector_database_id: Optional[int] = Field(None, description="ID của vector database trong PostgreSQL để sử dụng")
 
 class PDFResponse(BaseModel):
     """Response model cho xử lý PDF"""
