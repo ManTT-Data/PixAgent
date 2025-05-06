@@ -218,11 +218,12 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
         final_request_start_time = time.time()
         final_request = model.generate_content(prompt_request)
         # Log thời gian hoàn thành final_request
-        logger.info("Fixed Request: ", final_request.text)
+        logger.info(f"Fixed Request: {final_request.text}")
         logger.info(f"Final request generation time: {time.time() - final_request_start_time:.2f} seconds")
         # print(final_request.text)
 
         retrieved_docs = retriever.invoke(final_request.text)
+        logger.info(f"Retrieve: {retrieved_docs}")
         context = "\n".join([doc.page_content for doc in retrieved_docs])
 
         sources = []
@@ -253,7 +254,7 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
             question=final_request.text,
             chat_history=chat_history
         )
-        # logger.info(f"Full prompt with history and context: {prompt_text}")
+        logger.info(f"Full prompt with history and context: {prompt_text}")
         
         # Generate response
         response = model.generate_content(prompt_text)
