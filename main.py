@@ -410,27 +410,70 @@ async def get_events(update: Update, context: ContextTypes.DEFAULT_TYPE, action:
         logger.error(f"Error fetching events: {e}")
 
 
-async def get_emergency(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def get_emergency(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    action: str,
+    message: str
+):
     """
-    Phase 1: list emergency categories as inline buttons.
+    Show emergency categories as inline buttons and then display details for selected category.
     """
-    url = fix_url(API_DATABASE_URL, "/postgres/emergency/sections")
-    resp = requests.get(url)
-    sections = resp.json() or []
+    try:
+        if not API_DATABASE_URL:
+            logger.error("Database API not configured. Cannot fetch emergency data.")
+            return
 
-    # build inline keyboard
-    keyboard = []
-    for sec in sections:
-        sid = sec.get("id")
-        name = sec.get("name")
-        if sid and name:
-            keyboard.append([InlineKeyboardButton(name, callback_data=f"emergency_section_{sid}")])
-    reply_markup = InlineKeyboardMarkup(keyboard)
+        # Log giai đoạn 1: user nhấn "Emergency"
+        await log_complete_session(update, action, message, "Requested emergency categories")
 
-    await update.message.reply_text(
-        "Please select an emergency category:",
-        reply_markup=reply_markup
-    )
+        # Phase 1: list categories as inline buttons
+        url = fix_url(API_DATABASE_URL, "/postgres/emergency/sections")
+        logger.info(f"Fetching emergency sections from: {url}")
+
+        resp = requests.get(url)
+        if resp.status_code != 200:
+            logger.error(f"Failed to fetch emergency sections: {resp.status_code}")
+            return
+
+        sections = resp.json() or []
+        if not sections:
+            text = "No emergency categories available."
+            await update.effective_message.reply_text(
+                text,
+                reply_markup=ReplyKeyboardMarkup(MAIN_MENU, resize_keyboard=True)
+            )
+            await log_complete_session(update, action, message, text)
+            return
+
+        # Tạo inline keyboard cho các section
+        keyboard = []
+        for sec in sections:
+            sec_id = sec.get("id")
+            sec_name = sec.get("name", "Unknown")
+            if sec_id and sec_name:
+                keyboard.append([
+                    InlineKeyboardButton(sec_name, callback_data=f"emergency_{sec_id}")
+                ])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        await update.effective_message.reply_text(
+            "Please select an emergency category:",
+            reply_markup=reply_markup,
+            parse_mode=ParseMode.HTML
+        )
+
+        # Ghi lại lần show menu
+        await log_complete_session(update, action, message, "Emergency categories shown as inline buttons")
+
+    except Exception as e:
+        logger.error(f"Error in get_emergency: {e}")
+        # Nếu có lỗi, show lại main menu
+        reply_markup = ReplyKeyboardMarkup(MAIN_MENU, resize_keyboard=True)
+        await update.effective_message.reply_text(
+            f"Error loading emergency categories: {e}",
+            reply_markup=reply_markup
+        )
 
 
 async def get_faq(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str, message: str):
@@ -461,36 +504,35 @@ async def get_faq(update: Update, context: ContextTypes.DEFAULT_TYPE, action: st
             await log_complete_session(update, action, message, text)
             return
 
-        # Create inline keyboard with FAQ questions
+        # Create inline keyboard with full FAQ questions
         keyboard = []
         for faq in faqs:
             faq_id = faq.get("id")
             question = faq.get("question", "Unknown")
             if faq_id and question:
-                # Giới hạn độ dài của câu hỏi để tránh vượt quá giới hạn callback_data
-                short_question = question[:30] + "..." if len(question) > 30 else question
-                # Sử dụng callback_data có định dạng: faq_{faq_id}
-                keyboard.append([InlineKeyboardButton(short_question, callback_data=f"faq_{faq_id}")])
+                keyboard.append(
+                    [InlineKeyboardButton(question, callback_data=f"faq_{faq_id}")]
+                )
         
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        # Hiển thị menu lựa chọn với nút inline
+        # Show the menu with inline buttons
         await update.effective_message.reply_text(
             "Frequently Asked Questions:",
-            reply_markup=reply_markup,
-            parse_mode=ParseMode.HTML
+            reply_markup=reply_markup
         )
 
         await log_complete_session(update, action, message, "FAQ questions shown as inline buttons")
 
     except Exception as e:
         logger.error(f"Error in get_faq: {e}")
-        # Hiển thị menu chính trong trường hợp lỗi
+        # Fallback to main menu if error
         reply_markup = ReplyKeyboardMarkup(MAIN_MENU, resize_keyboard=True)
         await update.effective_message.reply_text(
-            f"Error loading FAQ questions: {str(e)}",
+            f"Error loading FAQ questions: {e}",
             reply_markup=reply_markup
         )
+
 
 
 async def get_rag_response(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str, query_text: str):
