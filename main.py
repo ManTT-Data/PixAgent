@@ -306,13 +306,21 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer()  # Acknowledge the button press to stop the loading indicator
         
         if data.startswith("emergency_item_"):
-            # callback_data = "emergency_item_{section_id}_{idx}"
-            _, section_id, idx = data.split("_")
-            await show_emergency_item(update, context, section_id, idx)
+            # data = "emergency_item_{section_id}_{idx}"
+            try:
+                _, _, section_id, idx = data.split("_")
+                await show_emergency_item(update, context, section_id, idx)
+            except Exception as e:
+                logger.error(f"Callback parsing error: {e}")
+                await query.message.reply_text("Invalid selection.", reply_markup=ReplyKeyboardMarkup(MAIN_MENU, resize_keyboard=True))
         elif data.startswith("emergency_"):
-            # callback_data = "emergency_{section_id}"
-            section_id = data.split("_")[1]
-            await show_emergency_details(update, context, section_id)
+            # data = "emergency_{section_id}"
+            try:
+                _, section_id = data.split("_")
+                await show_emergency_details(update, context, section_id)
+            except Exception as e:
+                logger.error(f"Callback parsing error: {e}")
+                await query.message.reply_text("Invalid category.", reply_markup=ReplyKeyboardMarkup(MAIN_MENU, resize_keyboard=True))
         elif data.startswith("faq_"):
             faq_id = data.split("_")[1]
             await show_faq_answer(update, context, faq_id)
@@ -420,35 +428,18 @@ async def get_events(update: Update, context: ContextTypes.DEFAULT_TYPE, action:
 
 
 async def get_emergency(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str, message: str):
-    """
-    Phase 1: Hiển thị danh sách category làm inline buttons.
-    Khi user bấm button, handle_callback sẽ gọi show_emergency_details.
-    """
     try:
-        if not API_DATABASE_URL:
-            logger.error("Database API not configured.")
-            return
-
         url = fix_url(API_DATABASE_URL, "/postgres/emergency/sections")
         resp = requests.get(url)
-        if resp.status_code != 200:
-            logger.error(f"Failed to fetch sections: {resp.status_code}")
-            return
-
+        resp.raise_for_status()
         sections = resp.json() or []
         if not sections:
-            text = "No emergency categories available."
-            await update.effective_message.reply_text(text,
-                reply_markup=ReplyKeyboardMarkup(MAIN_MENU, resize_keyboard=True))
-            await log_complete_session(update, action, message, text)
-            return
+            raise ValueError("Empty categories")
 
-        keyboard = []
-        for sec in sections:
-            sid = sec.get("id")
-            name = sec.get("name", "Unknown")
-            keyboard.append([InlineKeyboardButton(name, callback_data=f"emergency_{sid}")])
-
+        keyboard = [
+            [InlineKeyboardButton(sec["name"], callback_data=f"emergency_{sec['id']}")]
+            for sec in sections
+        ]
         await update.effective_message.reply_text(
             "Please select an emergency category:",
             reply_markup=InlineKeyboardMarkup(keyboard)
@@ -456,13 +447,12 @@ async def get_emergency(update: Update, context: ContextTypes.DEFAULT_TYPE, acti
         await log_complete_session(update, action, message, "Showed emergency categories")
 
     except Exception as e:
-        logger.error(f"Error in get_emergency: {e}")
+        logger.error(f"get_emergency error: {e}")
         await update.effective_message.reply_text(
-            f"Error loading emergency categories.",
+            "Cannot load emergency categories.",
             reply_markup=ReplyKeyboardMarkup(MAIN_MENU, resize_keyboard=True)
         )
 
-        
 
 async def get_faq(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str, message: str):
     """
@@ -880,36 +870,23 @@ if __name__ == "__main__":
         loop.close()
 
 
-
-
-
 async def show_emergency_details(update: Update, context: ContextTypes.DEFAULT_TYPE, section_id: str):
-    """
-    Phase 2: Kiểm tra xem có cần submenu không.
-    - Nếu section_id in need_submenu: show list items làm inline buttons.
-    - Else: fetch toàn bộ và show luôn details, kèm MAIN_MENU.
-    """
     query = update.callback_query
-    await query.answer()
     try:
         url = fix_url(API_DATABASE_URL, f"/postgres/emergency/section/{section_id}")
         resp = requests.get(url, params={"active_only": True, "use_cache": True})
-        if resp.status_code != 200:
-            raise RuntimeError(f"Status {resp.status_code}")
-
+        resp.raise_for_status()
         items = resp.json() or []
         if not items:
-            raise RuntimeError("Empty list")
+            raise ValueError("No entries")
 
         # nếu cần submenu
         if section_id in need_submenu:
             title = need_submenu[section_id]
-            keyboard = []
-            for idx, itm in enumerate(items, start=1):
-                keyboard.append([
-                    InlineKeyboardButton(itm.get("name", f"Item {idx}"),
-                                         callback_data=f"emergency_item_{section_id}_{idx}")
-                ])
+            keyboard = [
+                [InlineKeyboardButton(itm["name"], callback_data=f"emergency_item_{section_id}_{i+1}")]
+                for i, itm in enumerate(items)
+            ]
             await query.message.reply_text(
                 f"Select one under '{title}':",
                 reply_markup=InlineKeyboardMarkup(keyboard)
@@ -917,63 +894,52 @@ async def show_emergency_details(update: Update, context: ContextTypes.DEFAULT_T
             await log_complete_session(update, "emergency_submenu", section_id, title)
             return
 
-        # else: show luôn tất cả details
-        text_lines = [items[0].get("section", "Emergency Information")]
+        # else: show thẳng details
+        lines = [items[0].get("section","Emergency Information")]
         for e in items:
-            text_lines.append(f"• {e.get('name','')} – {e.get('phone_number','N/A')}")
-            if d := e.get("description"):
-                text_lines.append(f"  {d}")
-            if a := e.get("address"):
-                text_lines.append(f"  📍 {a}")
-            text_lines.append("")
-
+            lines.append(f"• {e.get('name','')} – {e.get('phone_number','N/A')}")
+            if d:=e.get("description"): lines.append(f"  {d}")
+            if a:=e.get("address"): lines.append(f"  📍 {a}")
+            lines.append("")
         await query.message.reply_text(
-            "\n".join(text_lines).strip(),
+            "\n".join(lines).strip(),
             reply_markup=ReplyKeyboardMarkup(MAIN_MENU, resize_keyboard=True)
         )
-        await log_complete_session(update, "emergency_details", section_id, "\n".join(text_lines))
+        await log_complete_session(update, "emergency_details", section_id, "\n".join(lines))
 
     except Exception as e:
-        logger.error(f"Error in show_emergency_details: {e}")
+        logger.error(f"show_emergency_details error: {e}")
         await query.message.reply_text(
             "Failed to load details. Please try again.",
             reply_markup=ReplyKeyboardMarkup(MAIN_MENU, resize_keyboard=True)
         )
 
-
 async def show_emergency_item(update: Update, context: ContextTypes.DEFAULT_TYPE,
                              section_id: str, item_idx: str):
-    """
-    Phase 3: Khi user chọn một item trong submenu, show chi tiết của item đó.
-    """
     query = update.callback_query
-    await query.answer()
     try:
         idx = int(item_idx) - 1
         url = fix_url(API_DATABASE_URL, f"/postgres/emergency/section/{section_id}")
         resp = requests.get(url, params={"active_only": True, "use_cache": True})
-        if resp.status_code != 200:
-            raise RuntimeError(f"Status {resp.status_code}")
+        resp.raise_for_status()
         items = resp.json() or []
-        if idx < 0 or idx >= len(items):
-            raise IndexError("Invalid index")
-
         e = items[idx]
-        lines = [e.get("name", ""), f"📞 {e.get('phone_number','N/A')}"]
-        if d := e.get("description"):
-            lines.append(d)
-        if a := e.get("address"):
-            lines.append(f"📍 {a}")
+
+        lines = [
+            e.get("name",""),
+            f"📞 {e.get('phone_number','N/A')}"
+        ]
+        if d:=e.get("description"): lines.append(d)
+        if a:=e.get("address"): lines.append(f"📍 {a}")
 
         await query.message.reply_text(
             "\n".join(lines).strip(),
             reply_markup=ReplyKeyboardMarkup(MAIN_MENU, resize_keyboard=True)
         )
-        await log_complete_session(update, "emergency_item_detail",
-                                   f"{section_id}_{item_idx}", "\n".join(lines))
+        await log_complete_session(update, "emergency_item_detail", f"{section_id}_{item_idx}", "\n".join(lines))
 
     except Exception as e:
-        logger.error(f"Error in show_emergency_item: {e}")
+        logger.error(f"show_emergency_item error: {e}")
         await query.message.reply_text(
             "Failed to load item details. Please try again.",
             reply_markup=ReplyKeyboardMarkup(MAIN_MENU, resize_keyboard=True)
