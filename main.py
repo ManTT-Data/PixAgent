@@ -410,62 +410,27 @@ async def get_events(update: Update, context: ContextTypes.DEFAULT_TYPE, action:
         logger.error(f"Error fetching events: {e}")
 
 
-async def get_emergency(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str, message: str):
+async def get_emergency(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Show emergency categories as inline buttons and then display details for selected category.
+    Phase 1: list emergency categories as inline buttons.
     """
-    try:
-        if not API_DATABASE_URL:
-            logger.error("Database API not configured. Cannot fetch emergency data.")
-            return
+    url = fix_url(API_DATABASE_URL, "/postgres/emergency/sections")
+    resp = requests.get(url)
+    sections = resp.json() or []
 
-        # Phase 1: list categories as inline buttons
-        url = fix_url(API_DATABASE_URL, "/postgres/emergency/sections")
-        logger.info(f"Fetching emergency sections from: {url}")
-        
-        resp = requests.get(url)
-        if resp.status_code != 200:
-            logger.error(f"Failed to fetch emergency sections: {resp.status_code}")
-            return
+    # build inline keyboard
+    keyboard = []
+    for sec in sections:
+        sid = sec.get("id")
+        name = sec.get("name")
+        if sid and name:
+            keyboard.append([InlineKeyboardButton(name, callback_data=f"emergency_section_{sid}")])
+    reply_markup = InlineKeyboardMarkup(keyboard)
 
-        sections = resp.json() or []
-        if not sections:
-            text = "No emergency categories available."
-            await update.effective_message.reply_text(
-                text,
-                reply_markup=ReplyKeyboardMarkup(MAIN_MENU, resize_keyboard=True)
-            )
-            await log_complete_session(update, action, message, text)
-            return
-
-        # Create inline keyboard with emergency categories
-        keyboard = []
-        for sec in sections:
-            section_id = sec.get("id")
-            section_name = sec.get("name", "Unknown")
-            if section_id and section_name:
-                # Sử dụng callback_data có định dạng: emergency_{section_id}
-                keyboard.append([InlineKeyboardButton(section_name, callback_data=f"emergency_{section_id}")])
-        
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        # Hiển thị menu lựa chọn với nút inline
-        await update.effective_message.reply_text(
-            "Please select an emergency category:",
-            reply_markup=reply_markup,
-            parse_mode=ParseMode.HTML
-        )
-
-        await log_complete_session(update, action, message, "Emergency categories shown as inline buttons")
-
-    except Exception as e:
-        logger.error(f"Error in get_emergency: {e}")
-        # Hiển thị menu chính trong trường hợp lỗi
-        reply_markup = ReplyKeyboardMarkup(MAIN_MENU, resize_keyboard=True)
-        await update.effective_message.reply_text(
-            f"Error loading emergency categories: {str(e)}",
-            reply_markup=reply_markup
-        )
+    await update.message.reply_text(
+        "Please select an emergency category:",
+        reply_markup=reply_markup
+    )
 
 
 async def get_faq(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str, message: str):
@@ -884,85 +849,95 @@ if __name__ == "__main__":
         loop.run_until_complete(application.stop())
         loop.close()
 
-async def show_emergency_details(update: Update, context: ContextTypes.DEFAULT_TYPE, section_id):
-    """Show details for selected emergency category."""
+async def show_emergency_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Phase 2: after user selects a section, either
+    - for "Embassy contacts" / "Police Station Address and Contact":
+      show sub-buttons for each entry
+    - otherwise: show full list of entries
+    """
     query = update.callback_query
-    
-    try:
-        if not API_DATABASE_URL:
-            await query.message.reply_text("Database API not configured.")
-            return
+    await query.answer()
+    _, _, section_id = query.data.split("_")
 
-        url = fix_url(API_DATABASE_URL, f"/postgres/emergency/section/{section_id}")
-        # Thêm các tham số vào URL để đảm bảo lấy dữ liệu đúng
-        params = {
-            "active_only": True,
-            "use_cache": True
-        }
-        logger.info(f"Fetching emergency details from: {url} with params: {params}")
-        
-        resp = requests.get(url, params=params)
-        if resp.status_code != 200:
-            logger.error(f"Failed to fetch emergency details: {resp.status_code} - {resp.text}")
-            await query.message.reply_text(
-                f"Failed to get emergency details. Status code: {resp.status_code}",
-                reply_markup=ReplyKeyboardMarkup(MAIN_MENU, resize_keyboard=True)
-            )
-            return
-        
-        # Log full response for debugging
-        logger.info(f"Emergency response data: {resp.text[:500]}...")
-        
-        items = resp.json() or []
-        if not items:
-            await query.message.reply_text(
-                "No entries found for this category.",
-                reply_markup=ReplyKeyboardMarkup(MAIN_MENU, resize_keyboard=True)
-            )
-            return
+    # fetch section details
+    url = fix_url(API_DATABASE_URL, f"/postgres/emergency/section/{section_id}")
+    resp = requests.get(url, params={"active_only":True})
+    items = resp.json() or []
+    if not items:
+        await query.message.reply_text("No entries found.", reply_markup=ReplyKeyboardMarkup(MAIN_MENU, resize_keyboard=True))
+        return
 
-        # Get section name from first item
-        section_name = items[0].get("section", "Emergency Information")
-        
-        # Build detail text
-        lines = [f"<b>{clean_html(section_name)}</b>"]
+    section_name = items[0].get("section", "Emergency Information")
+
+    # types that need drill-down
+    if section_name in ("Embassy contacts", "Police Station Address and Contact"):
+        # show sub-buttons for each item
+        kb = []
         for e in items:
-            name = e.get("name", "Unknown")
-            phone = e.get("phone_number") if e.get("phone_number") else "N/A"
-            lines.append(f"• <b>{clean_html(name)}</b>: {clean_html(phone)}")
-            if desc := e.get("description"):
-                # Split long descriptions into multiple lines
-                desc_lines = desc.split("\n")
-                for dl in desc_lines:
-                    if dl.strip():
-                        lines.append(f"  {clean_html(dl.strip())}")
-            if addr := e.get("address"):
-                lines.append(f"  📍 {clean_html(addr)}")
-            lines.append("")
-        
-        detail_text = "\n".join(lines).strip()
-        
-        # Send details
+            eid = e.get("id")
+            name = e.get("name")
+            if eid and name:
+                kb.append([InlineKeyboardButton(name, callback_data=f"emergency_item_{section_id}_{eid}")])
+        reply_markup = InlineKeyboardMarkup(kb)
         await query.message.reply_text(
-            detail_text,
+            f"Select a {section_name} entry:",
+            reply_markup=reply_markup
+        )
+    else:
+        # show full details immediately
+        lines = [f"<b>{html.escape(section_name)}</b>"]
+        for e in items:
+            name = html.escape(e.get("name",""))
+            phone = html.escape(e.get("phone_number","N/A"))
+            lines.append(f"• <b>{name}</b>: {phone}")
+            desc = e.get("description")
+            if desc:
+                lines.extend([f"  {html.escape(p)}" for p in desc.split("\n")])
+            addr = e.get("address")
+            if addr:
+                lines.append(f"  📍 {html.escape(addr)}")
+            lines.append("")
+        await query.message.reply_text(
+            "\n".join(lines),
             parse_mode=ParseMode.HTML,
             reply_markup=ReplyKeyboardMarkup(MAIN_MENU, resize_keyboard=True)
         )
-        
-        # Log session
-        await log_complete_session(
-            update,
-            "emergency_details",
-            f"Emergency details for section {section_id}",
-            detail_text
-        )
-        
-    except Exception as e:
-        logger.error(f"Error showing emergency details: {e}")
-        await query.message.reply_text(
-            f"Error showing emergency details: {str(e)}",
-            reply_markup=ReplyKeyboardMarkup(MAIN_MENU, resize_keyboard=True)
-        )
+
+
+async def show_emergency_item_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Phase 3: show details for one selected item entry.
+    """
+    query = update.callback_query
+    await query.answer()
+    _, _, section_id, item_id = query.data.split("_")
+
+    # fetch all items and filter one
+    url = fix_url(API_DATABASE_URL, f"/postgres/emergency/section/{section_id}")
+    items = requests.get(url, params={"active_only":True}).json() or []
+    item = next((e for e in items if str(e.get("id"))==item_id), None)
+    if not item:
+        await query.message.reply_text("Entry not found.", reply_markup=ReplyKeyboardMarkup(MAIN_MENU, resize_keyboard=True))
+        return
+
+    # build detail text
+    name = item.get("name")
+    phone = item.get("phone_number") or "N/A"
+    desc = item.get("description","")
+    addr = item.get("address","")
+    lines = [f"<b>{html.escape(name)}</b>", f"Phone: {html.escape(phone)}"]
+    if desc:
+        lines.extend([html.escape(p) for p in desc.split("\n")])
+    if addr:
+        lines.append(f"📍 {html.escape(addr)}")
+
+    await query.message.reply_text(
+        "\n".join(lines),
+        parse_mode=ParseMode.HTML,
+        reply_markup=ReplyKeyboardMarkup(MAIN_MENU, resize_keyboard=True)
+    )
+
 
 
 async def show_faq_answer(update: Update, context: ContextTypes.DEFAULT_TYPE, faq_id):
