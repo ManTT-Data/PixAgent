@@ -30,7 +30,7 @@ DEFAULT_SIMILARITY_THRESHOLD = float(os.getenv("PINECONE_DEFAULT_SIMILARITY_THRE
 ALLOWED_METRICS = os.getenv("PINECONE_ALLOWED_METRICS", "cosine,dotproduct,euclidean").split(",")
 
 # Export constants for importing elsewhere
-__all__ = [
+_all_ = [
     'get_pinecone_index', 
     'check_db_connection', 
     'search_vectors', 
@@ -199,7 +199,7 @@ async def search_vectors(
     limit_k: int = DEFAULT_LIMIT_K,
     similarity_metric: str = DEFAULT_SIMILARITY_METRIC,
     similarity_threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
-    namespace: str = "", 
+    namespace: str = "Default", 
     filter: Optional[Dict] = None
 ) -> Dict:
     """
@@ -255,7 +255,7 @@ async def search_vectors(
         
         # Log search result metrics
         match_count = len(filtered_matches)
-        logger.info(f"Pinecone search returned {match_count} matches after threshold filtering (metric: {similarity_metric}, threshold: {similarity_threshold})")
+        logger.info(f"Pinecone search returned {match_count} matches after threshold filtering (metric: {similarity_metric}, threshold: {similarity_threshold}, namespace: {namespace})")
         
         return results
     except Exception as e:
@@ -263,7 +263,7 @@ async def search_vectors(
         return None
 
 # Upsert vectors to Pinecone
-async def upsert_vectors(vectors, namespace=""):
+async def upsert_vectors(vectors, namespace="Default"):
     """Upsert vectors to Pinecone index"""
     try:
         pinecone_index = get_pinecone_index()
@@ -286,7 +286,7 @@ async def upsert_vectors(vectors, namespace=""):
         return None
 
 # Delete vectors from Pinecone
-async def delete_vectors(ids, namespace=""):
+async def delete_vectors(ids, namespace="Default"):
     """Delete vectors from Pinecone index"""
     try:
         pinecone_index = get_pinecone_index()
@@ -306,7 +306,7 @@ async def delete_vectors(ids, namespace=""):
         return False
 
 # Fetch vector metadata from Pinecone
-async def fetch_metadata(ids, namespace=""):
+async def fetch_metadata(ids, namespace="Default"):
     """Fetch metadata for specific vector IDs"""
     try:
         pinecone_index = get_pinecone_index()
@@ -338,7 +338,8 @@ class ThresholdRetriever(BaseRetriever):
     limit_k: int = Field(default=DEFAULT_LIMIT_K, description="Maximum number of results to retrieve from Pinecone")
     similarity_metric: str = Field(default=DEFAULT_SIMILARITY_METRIC, description="Similarity metric to use")
     similarity_threshold: float = Field(default=DEFAULT_SIMILARITY_THRESHOLD, description="Threshold for similarity")
-    
+    namespace: str = "Default"
+
     class Config:
         """Configuration for this pydantic object."""
         arbitrary_types_allowed = True
@@ -349,7 +350,7 @@ class ThresholdRetriever(BaseRetriever):
         limit_k: int = DEFAULT_LIMIT_K,
         similarity_metric: str = DEFAULT_SIMILARITY_METRIC,
         similarity_threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
-        namespace: str = "", 
+        namespace: str = "Default", 
         filter: Optional[Dict] = None
     ) -> Dict:
         """Synchronous wrapper for search_vectors"""
@@ -442,7 +443,7 @@ class ThresholdRetriever(BaseRetriever):
                     limit_k=self.limit_k,
                     similarity_metric=self.similarity_metric,
                     similarity_threshold=self.similarity_threshold,
-                    namespace=getattr(self.vectorstore, "namespace", ""),
+                    namespace=self.namespace,
                     # filter=self.search_kwargs.get("filter", None)
                 ))
             
@@ -457,7 +458,7 @@ class ThresholdRetriever(BaseRetriever):
                 limit_k=self.limit_k,
                 similarity_metric=self.similarity_metric,
                 similarity_threshold=self.similarity_threshold,
-                namespace=getattr(self.vectorstore, "namespace", ""),
+                namespace=self.namespace,
                 # filter=self.search_kwargs.get("filter", None)
             ))
         
