@@ -30,11 +30,11 @@ if not DATABASE_URL:
 try:
     engine = create_engine(
         DATABASE_URL,
-        pool_pre_ping=True,         # Enable connection health checks
-        pool_recycle=300,           # Recycle connections every 5 minutes
-        pool_size=20,               # Increase pool size for more concurrent connections
-        max_overflow=30,            # Allow more overflow connections
-        pool_timeout=30,            # Timeout for getting connection from pool
+        pool_size=10,  # Limit max connections
+        max_overflow=5,  # Allow temporary overflow of connections
+        pool_timeout=30,  # Timeout waiting for connection from pool
+        pool_recycle=300,  # Recycle connections every 5 minutes
+        pool_pre_ping=True,  # Verify connection is still valid before using it
         connect_args={
             "connect_timeout": 5,   # Connection timeout in seconds
             "keepalives": 1,        # Enable TCP keepalives
@@ -89,18 +89,17 @@ def check_db_connection():
 
 # Dependency to get DB session with improved error handling
 def get_db():
-    """Get database session dependency for FastAPI endpoints"""
+    """Get PostgreSQL database session"""
     db = SessionLocal()
     try:
-        # Test connection is valid before returning
+        # Test connection
         db.execute(text("SELECT 1")).fetchone()
         yield db
-    except SQLAlchemyError as e:
-        logger.error(f"Database session error: {e}")
-        db.rollback()
+    except Exception as e:
+        logger.error(f"DB connection error: {e}")
         raise
     finally:
-        db.close()
+        db.close()  # Ensure connection is closed and returned to pool
 
 # Create tables in database if they don't exist
 def create_tables():

@@ -93,12 +93,10 @@ class Document(Base):
     
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, nullable=False)
-    file_content = Column(LargeBinary, nullable=True)
     file_type = Column(String, nullable=True)
-    size = Column(Integer, nullable=True)
     content_type = Column(String, nullable=True)
+    size = Column(Integer, nullable=True)
     is_embedded = Column(Boolean, default=False)
-    file_metadata = Column(JSON, nullable=True)
     vector_database_id = Column(Integer, ForeignKey("vector_database.id"), nullable=False)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
@@ -106,6 +104,18 @@ class Document(Base):
     # Relationships
     vector_database = relationship("VectorDatabase", back_populates="documents")
     vector_statuses = relationship("VectorStatus", back_populates="document")
+    file_content_ref = relationship("DocumentContent", back_populates="document", uselist=False, cascade="all, delete-orphan")
+
+class DocumentContent(Base):
+    __tablename__ = "document_content"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    document_id = Column(Integer, ForeignKey("document.id"), nullable=False, unique=True)
+    file_content = Column(LargeBinary, nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+    
+    # Relationships
+    document = relationship("Document", back_populates="file_content_ref")
 
 class VectorStatus(Base):
     __tablename__ = "vector_status"

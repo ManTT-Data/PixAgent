@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 import time
 from functools import lru_cache
 
-from fastapi import APIRouter, HTTPException, Depends, Query, Path, Body
+from fastapi import APIRouter, HTTPException, Depends, Query, Path, Body, Response
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
 from typing import List, Optional, Dict, Any
@@ -18,7 +18,7 @@ from sqlalchemy import desc, func
 from cachetools import TTLCache
 
 from app.database.postgresql import get_db
-from app.database.models import FAQItem, EmergencyItem, EventItem, AboutPixity, SolanaSummit, DaNangBucketList, ApiKey, VectorDatabase, Document, VectorStatus, TelegramBot, ChatEngine, BotEngine, EngineVectorDb
+from app.database.models import FAQItem, EmergencyItem, EventItem, AboutPixity, SolanaSummit, DaNangBucketList, ApiKey, VectorDatabase, Document, VectorStatus, TelegramBot, ChatEngine, BotEngine, EngineVectorDb, DocumentContent
 from pydantic import BaseModel, Field, ConfigDict
 
 # Configure logging
@@ -2198,29 +2198,26 @@ async def get_vector_database_info(
 # --- Document models and endpoints ---
 class DocumentBase(BaseModel):
     name: str
-    content_type: str
     vector_database_id: int
-    file_metadata: Optional[Dict[str, Any]] = None
 
-class DocumentCreate(DocumentBase):
-    pass
+class DocumentCreate(BaseModel):
+    name: str
+    vector_database_id: int
 
 class DocumentUpdate(BaseModel):
     name: Optional[str] = None
-    file_metadata: Optional[Dict[str, Any]] = None
 
 class DocumentResponse(BaseModel):
     id: int
     name: str
     file_type: str
+    content_type: Optional[str] = None
     size: int
-    content_type: str
     created_at: datetime
     updated_at: datetime
     vector_database_id: int
     vector_database_name: Optional[str] = None
     is_embedded: bool
-    file_metadata: Optional[Dict[str, Any]] = None
     
     model_config = ConfigDict(from_attributes=True)
 
@@ -2309,141 +2306,41 @@ async def get_document(
         logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Error retrieving document: {str(e)}")
 
-@router.put("/documents/{document_id}", response_model=DocumentResponse)
-async def update_document(
-    document_id: int = Path(..., gt=0),
-    document_update: DocumentUpdate = Body(...),
-    db: Session = Depends(get_db)
-):
-    """
-    Update document details.
-    """
-    try:
-        document = db.query(Document).filter(Document.id == document_id).first()
-        if not document:
-            raise HTTPException(status_code=404, detail=f"Document with ID {document_id} not found")
-        
-        # Update fields if provided
-        if document_update.name is not None:
-            document.name = document_update.name
-            
-        if document_update.file_metadata is not None:
-            # Merge with existing metadata if it exists
-            if document.file_metadata:
-                document.file_metadata.update(document_update.file_metadata)
-            else:
-                document.file_metadata = document_update.file_metadata
-        
-        db.commit()
-        db.refresh(document)
-        
-        # Get vector database name
-        vector_db = db.query(VectorDatabase).filter(VectorDatabase.id == document.vector_database_id).first()
-        vector_db_name = vector_db.name if vector_db else f"db_{document.vector_database_id}"
-        
-        # Create response with vector database name
-        result = DocumentResponse.model_validate(document, from_attributes=True)
-        result.vector_database_name = vector_db_name
-        
-        return result
-    except HTTPException:
-        raise
-    except SQLAlchemyError as e:
-        db.rollback()
-        logger.error(f"Database error updating document: {e}")
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Error updating document: {e}")
-        logger.error(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=f"Error updating document: {str(e)}")
-
-@router.delete("/documents/{document_id}", response_model=dict)
-async def delete_document(
+@router.get("/documents/{document_id}/content", response_class=Response)
+async def get_document_content(
     document_id: int = Path(..., gt=0),
     db: Session = Depends(get_db)
 ):
     """
-    Delete document.
+    Get document content (file) by document ID.
+    Returns the binary content with the appropriate Content-Type header.
     """
     try:
+        # Get document to check if it exists and get metadata
         document = db.query(Document).filter(Document.id == document_id).first()
         if not document:
             raise HTTPException(status_code=404, detail=f"Document with ID {document_id} not found")
         
-        # Delete associated vector statuses
-        db.query(VectorStatus).filter(VectorStatus.document_id == document_id).delete()
+        # Get document content from document_content table
+        document_content = db.query(DocumentContent).filter(DocumentContent.document_id == document_id).first()
+        if not document_content or not document_content.file_content:
+            raise HTTPException(status_code=404, detail=f"Content for document with ID {document_id} not found")
         
-        # Delete document
-        db.delete(document)
-        db.commit()
+        # Determine content type
+        content_type = document.content_type if hasattr(document, 'content_type') and document.content_type else "application/octet-stream"
         
-        return {"message": f"Document with ID {document_id} deleted successfully"}
+        # Return binary content with correct content type
+        return Response(
+            content=document_content.file_content,
+            media_type=content_type,
+            headers={"Content-Disposition": f"attachment; filename=\"{document.name}\""}
+        )
     except HTTPException:
         raise
-    except SQLAlchemyError as e:
-        db.rollback()
-        logger.error(f"Database error deleting document: {e}")
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
     except Exception as e:
-        db.rollback()
-        logger.error(f"Error deleting document: {e}")
+        logger.error(f"Error retrieving document content: {e}")
         logger.error(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=f"Error deleting document: {str(e)}")
-
-@router.get("/vector-databases/{vector_db_id}/documents", response_model=List[DocumentResponse])
-async def get_documents_by_vector_db(
-    vector_db_id: int = Path(..., gt=0),
-    skip: int = 0,
-    limit: int = 100,
-    is_embedded: Optional[bool] = None,
-    file_type: Optional[str] = None,
-    db: Session = Depends(get_db)
-):
-    """
-    Get all documents for a specific vector database.
-    
-    - **skip**: Number of items to skip
-    - **limit**: Maximum number of items to return
-    - **is_embedded**: Filter by embedding status
-    - **file_type**: Filter by file type
-    """
-    try:
-        # Verify vector database exists
-        vector_db = db.query(VectorDatabase).filter(VectorDatabase.id == vector_db_id).first()
-        if not vector_db:
-            raise HTTPException(status_code=404, detail=f"Vector database with ID {vector_db_id} not found")
-        
-        # Build query
-        query = db.query(Document).filter(Document.vector_database_id == vector_db_id)
-        
-        # Apply additional filters
-        if is_embedded is not None:
-            query = query.filter(Document.is_embedded == is_embedded)
-            
-        if file_type is not None:
-            query = query.filter(Document.file_type == file_type)
-        
-        # Execute query with pagination
-        documents = query.offset(skip).limit(limit).all()
-        
-        # Prepare results with vector database name
-        result = []
-        for doc in documents:
-            doc_response = DocumentResponse.model_validate(doc, from_attributes=True)
-            doc_response.vector_database_name = vector_db.name
-            result.append(doc_response)
-        
-        return result
-    except HTTPException:
-        raise
-    except SQLAlchemyError as e:
-        logger.error(f"Database error retrieving documents: {e}")
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
-    except Exception as e:
-        logger.error(f"Error retrieving documents: {e}")
-        logger.error(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=f"Error retrieving documents: {str(e)}") 
+        raise HTTPException(status_code=500, detail=f"Error retrieving document content: {str(e)}")
 
 # --- Telegram Bot models and endpoints ---
 class TelegramBotBase(BaseModel):
@@ -2467,73 +2364,6 @@ class TelegramBotResponse(TelegramBotBase):
     updated_at: datetime
     
     model_config = ConfigDict(from_attributes=True)
-
-@router.get("/telegram-bots", response_model=List[TelegramBotResponse])
-async def get_telegram_bots(
-    skip: int = 0,
-    limit: int = 100,
-    status: Optional[str] = None,
-    db: Session = Depends(get_db)
-):
-    """
-    Get all Telegram bots.
-    
-    - **skip**: Number of items to skip
-    - **limit**: Maximum number of items to return
-    - **status**: Filter by status (e.g., 'active', 'inactive')
-    """
-    try:
-        query = db.query(TelegramBot)
-        
-        if status:
-            query = query.filter(TelegramBot.status == status)
-        
-        bots = query.offset(skip).limit(limit).all()
-        return [TelegramBotResponse.model_validate(bot, from_attributes=True) for bot in bots]
-    except SQLAlchemyError as e:
-        logger.error(f"Database error retrieving Telegram bots: {e}")
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
-    except Exception as e:
-        logger.error(f"Error retrieving Telegram bots: {e}")
-        logger.error(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=f"Error retrieving Telegram bots: {str(e)}")
-
-@router.post("/telegram-bots", response_model=TelegramBotResponse)
-async def create_telegram_bot(
-    bot: TelegramBotCreate,
-    db: Session = Depends(get_db)
-):
-    """
-    Create a new Telegram bot.
-    """
-    try:
-        # Check if bot with this username already exists
-        existing_bot = db.query(TelegramBot).filter(TelegramBot.username == bot.username).first()
-        if existing_bot:
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Telegram bot with username '{bot.username}' already exists"
-            )
-        
-        # Create new bot
-        db_bot = TelegramBot(**bot.model_dump())
-        
-        db.add(db_bot)
-        db.commit()
-        db.refresh(db_bot)
-        
-        return TelegramBotResponse.model_validate(db_bot, from_attributes=True)
-    except HTTPException:
-        raise
-    except SQLAlchemyError as e:
-        db.rollback()
-        logger.error(f"Database error creating Telegram bot: {e}")
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Error creating Telegram bot: {e}")
-        logger.error(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=f"Error creating Telegram bot: {str(e)}")
 
 @router.get("/telegram-bots/{bot_id}", response_model=TelegramBotResponse)
 async def get_telegram_bot(

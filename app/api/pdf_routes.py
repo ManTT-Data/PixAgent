@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.utils.pdf_processor import PDFProcessor
 from app.models.pdf_models import PDFResponse, DeleteDocumentRequest, DocumentsListResponse
 from app.database.postgresql import get_db
-from app.database.models import VectorDatabase, Document, VectorStatus
+from app.database.models import VectorDatabase, Document, VectorStatus, DocumentContent
 from datetime import datetime
 from app.api.pdf_websocket import (
     send_pdf_upload_started, 
@@ -117,19 +117,26 @@ async def upload_pdf(
         
         # Lưu thông tin tài liệu vào PostgreSQL nếu có vector_database_id
         if vector_database_id and vector_db:
+            # Create document record without file content
             document = Document(
                 name=title or file.filename,
-                file_content=file_content,
                 file_type="pdf",
-                size=len(file_content),
                 content_type=file.content_type,
+                size=len(file_content),
                 is_embedded=False,
-                vector_database_id=vector_database_id,
-                file_metadata=metadata
+                vector_database_id=vector_database_id
             )
             db.add(document)
             db.commit()
             db.refresh(document)
+            
+            # Create document content record to store binary data separately
+            document_content = DocumentContent(
+                document_id=document.id,
+                file_content=file_content
+            )
+            db.add(document_content)
+            db.commit()
             
             # Tạo vector status record
             vector_status = VectorStatus(

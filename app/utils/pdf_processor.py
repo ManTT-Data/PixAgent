@@ -5,7 +5,7 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 import logging
-import pinecone
+from pinecone import Pinecone
 
 from app.database.pinecone import get_pinecone_index, init_pinecone
 
@@ -18,34 +18,56 @@ embeddings_model = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
 class PDFProcessor:
     """Lớp xử lý file PDF và tạo embeddings"""
     
-    def __init__(self, index_name="testbot768", namespace="Default", api_key=None):
+    def __init__(self, index_name="testbot768", namespace="Default", api_key=None, mock_mode=False):
         """Khởi tạo với tên index, namespace Pinecone và API key"""
         self.index_name = index_name
         self.namespace = namespace
         self.pinecone_index = None
         self.api_key = api_key
+        self.pinecone_client = None
+        self.mock_mode = mock_mode  # Add mock mode for testing
         
     def _init_pinecone_connection(self):
-        """Khởi tạo kết nối đến Pinecone"""
+        """Khởi tạo kết nối đến Pinecone với API mới"""
         try:
-            # Nếu có API key riêng, sử dụng nó thay vì dùng singleton
-            if self.api_key:
-                # Khởi tạo Pinecone với API key được cung cấp
-                pinecone.init(api_key=self.api_key)
-                # Kết nối đến index
-                self.pinecone_index = pinecone.Index(self.index_name)
-                logger.info(f"Đã kết nối đến Pinecone index {self.index_name} với API key riêng")
-            else:
-                # Sử dụng singleton pattern từ module database.pinecone nếu không có API key
-                self.pinecone_index = get_pinecone_index()
+            # If in mock mode, return a mock index
+            if self.mock_mode:
+                logger.info("Running in mock mode - simulating Pinecone connection")
+                class MockPineconeIndex:
+                    def upsert(self, vectors, namespace=None):
+                        logger.info(f"Mock upsert: {len(vectors)} vectors to namespace '{namespace}'")
+                        return {"upserted_count": len(vectors)}
+                        
+                    def delete(self, ids=None, delete_all=False, namespace=None):
+                        logger.info(f"Mock delete: {'all vectors' if delete_all else f'{len(ids)} vectors'} from namespace '{namespace}'")
+                        return {"deleted_count": 10 if delete_all else len(ids or [])}
+                        
+                    def describe_index_stats(self):
+                        logger.info(f"Mock describe_index_stats")
+                        return {"total_vector_count": 100, "namespaces": {self.namespace: {"vector_count": 50}}}
                 
-            if not self.pinecone_index:
-                logger.error("Không thể kết nối đến Pinecone")
-                return False
-            return True
+                return MockPineconeIndex()
+                
+            if not self.api_key or not self.index_name:
+                logger.error("Pinecone API key or index name not set in environment variables")
+                return None
+            
+            # Initialize Pinecone client using the new API
+            self.pinecone_client = Pinecone(api_key=self.api_key)
+            
+            # Get the index
+            index_list = self.pinecone_client.list_indexes()
+            if not hasattr(index_list, 'names') or self.index_name not in index_list.names():
+                logger.error(f"Index {self.index_name} does not exist in Pinecone")
+                return None
+            
+            # Connect to the index
+            index = self.pinecone_client.Index(self.index_name)
+            logger.info(f"Connected to Pinecone index: {self.index_name}")
+            return index
         except Exception as e:
-            logger.error(f"Lỗi khi kết nối Pinecone: {str(e)}")
-            return False
+            logger.error(f"Error connecting to Pinecone: {e}")
+            return None
             
     async def process_pdf(self, file_path, document_id=None, metadata=None, progress_callback=None):
         """
@@ -62,9 +84,9 @@ class PDFProcessor:
         """
         try:
             # Khởi tạo kết nối Pinecone nếu chưa có
+            self.pinecone_index = self._init_pinecone_connection()
             if not self.pinecone_index:
-                if not self._init_pinecone_connection():
-                    return {"success": False, "error": "Không thể kết nối đến Pinecone"}
+                return {"success": False, "error": "Không thể kết nối đến Pinecone"}
             
             # Tạo document_id nếu không có
             if not document_id:
@@ -162,6 +184,12 @@ class PDFProcessor:
             if not vectors:
                 return
                 
+            # Ensure we have a valid pinecone_index
+            if not self.pinecone_index:
+                self.pinecone_index = self._init_pinecone_connection()
+                if not self.pinecone_index:
+                    raise Exception("Cannot connect to Pinecone")
+            
             result = self.pinecone_index.upsert(
                 vectors=vectors,
                 namespace=self.namespace
@@ -178,7 +206,8 @@ class PDFProcessor:
         Xóa toàn bộ vectors trong namespace hiện tại (tương đương xoá namespace).
         """
         # Khởi tạo kết nối nếu cần
-        if not self.pinecone_index and not self._init_pinecone_connection():
+        self.pinecone_index = self._init_pinecone_connection()
+        if not self.pinecone_index:
             return {"success": False, "error": "Không thể kết nối đến Pinecone"}
 
         try:
@@ -197,9 +226,9 @@ class PDFProcessor:
         """Lấy danh sách tất cả document_id từ Pinecone"""
         try:
             # Khởi tạo kết nối Pinecone nếu chưa có
+            self.pinecone_index = self._init_pinecone_connection()
             if not self.pinecone_index:
-                if not self._init_pinecone_connection():
-                    return {"success": False, "error": "Không thể kết nối đến Pinecone"}
+                return {"success": False, "error": "Không thể kết nối đến Pinecone"}
             
             # Lấy thông tin index
             stats = self.pinecone_index.describe_index_stats()
