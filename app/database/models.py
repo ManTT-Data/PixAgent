@@ -78,7 +78,7 @@ class VectorDatabase(Base):
     name = Column(String, nullable=False, unique=True)
     description = Column(String, nullable=True)
     pinecone_index = Column(String, nullable=False)
-    api_key = Column(String, nullable=False)
+    api_key_id = Column(Integer, ForeignKey("api_key.id"), nullable=True)
     status = Column(String, default="active")
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
@@ -87,6 +87,7 @@ class VectorDatabase(Base):
     documents = relationship("Document", back_populates="vector_database")
     vector_statuses = relationship("VectorStatus", back_populates="vector_database")
     engine_associations = relationship("EngineVectorDb", back_populates="vector_database")
+    api_key_ref = relationship("ApiKey", foreign_keys=[api_key_id])
 
 class Document(Base):
     __tablename__ = "document"
@@ -194,9 +195,10 @@ class ApiKey(Base):
     __tablename__ = "api_key"
     
     id = Column(Integer, primary_key=True, index=True)
-    key = Column(String, nullable=False, unique=True)
-    name = Column(String, nullable=False)
-    description = Column(String, nullable=True)
-    is_active = Column(Boolean, default=True)
+    key_type = Column(String, nullable=False)
+    key_value = Column(Text, nullable=False)
+    description = Column(Text, nullable=True)
     created_at = Column(DateTime, server_default=func.now())
-    last_used = Column(DateTime, nullable=True) 
+    last_used = Column(DateTime, nullable=True)
+    expires_at = Column(DateTime, nullable=True)
+    is_active = Column(Boolean, default=True) 

@@ -1929,7 +1929,7 @@ class VectorDatabaseBase(BaseModel):
     name: str
     description: Optional[str] = None
     pinecone_index: str
-    api_key: str
+    api_key_id: int  # Use API key ID instead of direct API key
     status: str = "active"
 
 class VectorDatabaseCreate(VectorDatabaseBase):
@@ -1939,7 +1939,7 @@ class VectorDatabaseUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
     pinecone_index: Optional[str] = None
-    api_key: Optional[str] = None
+    api_key_id: Optional[int] = None  # Updated to use API key ID
     status: Optional[str] = None
 
 class VectorDatabaseResponse(VectorDatabaseBase):
@@ -2007,6 +2007,11 @@ async def create_vector_database(
         if existing_db:
             raise HTTPException(status_code=400, detail=f"Vector database with name '{vector_db.name}' already exists")
         
+        # Check if the API key exists
+        api_key = db.query(ApiKey).filter(ApiKey.id == vector_db.api_key_id).first()
+        if not api_key:
+            raise HTTPException(status_code=400, detail=f"API key with ID {vector_db.api_key_id} not found")
+        
         # Create new vector database
         db_vector_db = VectorDatabase(**vector_db.model_dump())
         
@@ -2067,6 +2072,12 @@ async def update_vector_database(
             existing_db = db.query(VectorDatabase).filter(VectorDatabase.name == vector_db_update.name).first()
             if existing_db:
                 raise HTTPException(status_code=400, detail=f"Vector database with name '{vector_db_update.name}' already exists")
+        
+        # Check if API key exists if updating API key ID
+        if vector_db_update.api_key_id:
+            api_key = db.query(ApiKey).filter(ApiKey.id == vector_db_update.api_key_id).first()
+            if not api_key:
+                raise HTTPException(status_code=400, detail=f"API key with ID {vector_db_update.api_key_id} not found")
         
         # Update fields if provided
         update_data = vector_db_update.model_dump(exclude_unset=True)
