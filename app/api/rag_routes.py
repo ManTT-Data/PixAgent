@@ -126,7 +126,7 @@ async def create_embedding(request: EmbeddingRequest):
     """
     Generate embedding for text.
     
-    - **text**: Text to generate embedding for
+    - *text*: Text to generate embedding for
     """
     try:
         # Get embedding
@@ -144,18 +144,18 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
     """
     Get answer for a question using RAG.
     
-    - **user_id**: User's ID from Telegram
-    - **question**: User's question
-    - **include_history**: Whether to include user history in prompt (default: True)
-    - **use_rag**: Whether to use RAG (default: True)
-    - **similarity_top_k**: Number of top similar documents to return after filtering (default: 6)
-    - **limit_k**: Maximum number of documents to retrieve from vector store (default: 10)
-    - **similarity_metric**: Similarity metric to use - cosine, dotproduct, euclidean (default: cosine)
-    - **similarity_threshold**: Threshold for vector similarity (default: 0.75)
-    - **session_id**: Optional session ID for tracking conversations
-    - **first_name**: User's first name
-    - **last_name**: User's last name
-    - **username**: User's username
+    - *user_id*: User's ID from Telegram
+    - *question*: User's question
+    - *include_history*: Whether to include user history in prompt (default: True)
+    - *use_rag*: Whether to use RAG (default: True)
+    - *similarity_top_k*: Number of top similar documents to return after filtering (default: 6)
+    - *limit_k*: Maximum number of documents to retrieve from vector store (default: 10)
+    - *similarity_metric*: Similarity metric to use - cosine, dotproduct, euclidean (default: cosine)
+    - *similarity_threshold*: Threshold for vector similarity (default: 0.75)
+    - *session_id*: Optional session ID for tracking conversations
+    - *first_name*: User's first name
+    - *last_name*: User's last name
+    - *username*: User's username
     """
     start_time = time.time()
     try:
@@ -218,11 +218,12 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
         final_request_start_time = time.time()
         final_request = model.generate_content(prompt_request)
         # Log thời gian hoàn thành final_request
-        logger.info("Fixed Request: ", final_request.text)
+        logger.info(f"Fixed Request: {final_request.text}")
         logger.info(f"Final request generation time: {time.time() - final_request_start_time:.2f} seconds")
         # print(final_request.text)
 
         retrieved_docs = retriever.invoke(final_request.text)
+        logger.info(f"Retrieve: {retrieved_docs}")
         context = "\n".join([doc.page_content for doc in retrieved_docs])
 
         sources = []
@@ -253,7 +254,7 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
             question=final_request.text,
             chat_history=chat_history
         )
-        # logger.info(f"Full prompt with history and context: {prompt_text}")
+        logger.info(f"Full prompt with history and context: {prompt_text}")
         
         # Generate response
         response = model.generate_content(prompt_text)
