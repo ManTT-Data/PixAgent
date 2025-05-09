@@ -1713,7 +1713,8 @@ async def update_solana_summit(
 
 # --- API Key models and endpoints ---
 class ApiKeyBase(BaseModel):
-    name: str
+    key_type: str
+    key_value: str
     description: Optional[str] = None
     is_active: bool = True
 
@@ -1721,13 +1722,13 @@ class ApiKeyCreate(ApiKeyBase):
     pass
 
 class ApiKeyUpdate(BaseModel):
-    name: Optional[str] = None
+    key_type: Optional[str] = None
+    key_value: Optional[str] = None
     description: Optional[str] = None
     is_active: Optional[bool] = None
 
 class ApiKeyResponse(ApiKeyBase):
     id: int
-    key: str
     created_at: datetime
     last_used: Optional[datetime] = None
     
@@ -1772,23 +1773,10 @@ async def create_api_key(
     Create a new API key.
     """
     try:
-        # Generate a secure API key
-        import secrets
-        import string
-        import time
-        
-        # Create a random key with a prefix for easier identification
-        prefix = "px_"
-        random_key = ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(32))
-        timestamp = hex(int(time.time()))[2:]
-        
-        # Combine parts for the final key
-        key_value = f"{prefix}{timestamp}_{random_key}"
-        
         # Create API key object
         db_api_key = ApiKey(
-            name=api_key.name,
-            key=key_value,
+            key_type=api_key.key_type,
+            key_value=api_key.key_value,
             description=api_key.description,
             is_active=api_key.is_active
         )
@@ -1844,8 +1832,10 @@ async def update_api_key(
             raise HTTPException(status_code=404, detail=f"API key with ID {api_key_id} not found")
         
         # Update fields if provided
-        if api_key_update.name is not None:
-            db_api_key.name = api_key_update.name
+        if api_key_update.key_type is not None:
+            db_api_key.key_type = api_key_update.key_type
+        if api_key_update.key_value is not None:
+            db_api_key.key_value = api_key_update.key_value
         if api_key_update.description is not None:
             db_api_key.description = api_key_update.description
         if api_key_update.is_active is not None:
@@ -1905,17 +1895,17 @@ async def validate_api_key(
     Validate an API key and update its last_used timestamp.
     """
     try:
-        db_api_key = db.query(ApiKey).filter(ApiKey.key == key, ApiKey.is_active == True).first()
+        db_api_key = db.query(ApiKey).filter(ApiKey.key_value == key, ApiKey.is_active == True).first()
         if not db_api_key:
             return {"valid": False, "message": "Invalid or inactive API key"}
-        
-        # Update last_used timestamp
-        db_api_key.last_used = datetime.utcnow()
+            
+        # Update last used timestamp
+        db_api_key.last_used = datetime.now()
         db.commit()
         
         return {
             "valid": True,
-            "name": db_api_key.name,
+            "key_type": db_api_key.key_type,
             "id": db_api_key.id,
             "message": "API key is valid"
         }
@@ -2269,15 +2259,32 @@ async def get_documents(
         # Add vector database name
         result = []
         for doc in documents:
-            doc_dict = DocumentResponse.model_validate(doc, from_attributes=True)
+            # Create a dictionary from the document for easier manipulation
+            doc_dict = {
+                "id": doc.id,
+                "name": doc.name,
+                "file_type": doc.file_type,
+                "content_type": doc.content_type,
+                "size": doc.size,
+                "created_at": doc.created_at,
+                "updated_at": doc.updated_at,
+                "vector_database_id": doc.vector_database_id or 0,  # Handle NULL values
+                "is_embedded": doc.is_embedded
+            }
             
             # Get vector database name if not already populated
-            if not hasattr(doc, 'vector_database_name') or doc.vector_database_name is None:
+            vector_db_name = None
+            if doc.vector_database_id is not None:
                 vector_db = db.query(VectorDatabase).filter(VectorDatabase.id == doc.vector_database_id).first()
                 vector_db_name = vector_db.name if vector_db else f"db_{doc.vector_database_id}"
-                doc_dict.vector_database_name = vector_db_name
+            else:
+                vector_db_name = "No Database"
                 
-            result.append(doc_dict)
+            doc_dict["vector_database_name"] = vector_db_name
+                
+            # Create Pydantic model from dictionary
+            doc_response = DocumentResponse(**doc_dict)
+            result.append(doc_response)
         
         return result
     except SQLAlchemyError as e:
