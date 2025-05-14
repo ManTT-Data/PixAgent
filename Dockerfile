@@ -10,6 +10,13 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy all source files
 COPY . .
 
+# Set environment variables with default values
+ENV PORT=7860
+ENV ADMIN_ID=admin-bot-123
+ENV WEBSOCKET_SERVER=localhost
+ENV WEBSOCKET_PORT=7860
+ENV WEBSOCKET_PATH=/admin/ws/monitor/
+
 # Expose port (metadata, not important with $PORT)
 EXPOSE 7860
 

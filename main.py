@@ -87,30 +87,30 @@ async def send_status_message(chat_id=None, custom_message=None, alert=False):
     if custom_message:
         status_message = custom_message
     else:
-        api_status = "❌ Not Connected"
-        db_status = "❌ Not Connected"
-        rag_status = "❌ Not Connected"
+        api_status = "❌ Không kết nối"
+        db_status = "❌ Không kết nối"
+        rag_status = "❌ Không kết nối"
         if API_DATABASE_URL:
             try:
                 url = fix_url(API_DATABASE_URL, "/health")
                 logger.info(f"Checking API health at: {url}")
                 response = requests.get(url, timeout=10)
                 if response.status_code == 200:
-                    api_status = "✅ Connected"
-                    db_status = "✅ Connected"
-                    rag_status = "✅ Connected"
+                    api_status = "✅ Đã kết nối"
+                    db_status = "✅ Đã kết nối"
+                    rag_status = "✅ Đã kết nối"
                     try:
                         mongo_url = fix_url(API_DATABASE_URL, "/mongodb/health")
                         mongo_resp = requests.get(mongo_url, timeout=5)
                         if mongo_resp.status_code != 200:
-                            db_status = "⚠️ Partial Connection"
+                            db_status = "⚠️ Kết nối một phần"
                         rag_url = fix_url(API_DATABASE_URL, "/rag/health")
                         rag_resp = requests.get(rag_url, timeout=5)
                         if rag_resp.status_code == 200:
                             rag_data = rag_resp.json()
-                            rag_status = "✅ Connected" if rag_data.get("status")=="healthy" else "⚠️ Issues Detected"
+                            rag_status = "✅ Đã kết nối" if rag_data.get("status")=="healthy" else "⚠️ Phát hiện vấn đề"
                         else:
-                            rag_status = "❌ Not Connected"
+                            rag_status = "❌ Không kết nối"
                     except Exception as e:
                         logger.error(f"Error checking specific health endpoints: {e}")
                 else:
@@ -118,20 +118,33 @@ async def send_status_message(chat_id=None, custom_message=None, alert=False):
             except Exception as e:
                 logger.error(f"Error checking backend connection: {e}")
 
-        ws_status = "✅ Connected" if websocket_connection else "❌ Not Connected"
+        # Check admin websocket status
+        admin_id = os.getenv("ADMIN_ID", "admin-bot-123")
+        admin_status = "✅ Đã kết nối" if websocket_connection else "❌ Không kết nối"
+        
+        # Try to get detailed admin websocket status
+        try:
+            admin_ws_url = fix_url(API_DATABASE_URL, f"/admin/ws/status/{admin_id}")
+            admin_ws_resp = requests.get(admin_ws_url, timeout=5)
+            if admin_ws_resp.status_code == 200:
+                admin_ws_data = admin_ws_resp.json()
+                admin_status = "✅ Đã kết nối" if admin_ws_data.get("active") else "❌ Không kết nối"
+        except Exception as e:
+            logger.error(f"Error checking admin websocket status: {e}")
+        
         status_message = (
-            "🤖 *Admin Bot Status Report*\n\n"
-            f"🕒 Time: {get_current_time()}\n"
+            "🤖 *Báo cáo trạng thái Admin Bot*\n\n"
+            f"🕒 Thời gian: {get_current_time()}\n"
             f"🔌 API: {api_status}\n"
-            f"📊 Databases: {db_status}\n"
-            f"🧠 RAG System: {rag_status}\n"
-            f"📡 WebSocket: {ws_status}\n\n"
-            "The bot is monitoring for user activities."
+            f"📊 Cơ sở dữ liệu: {db_status}\n"
+            f"🧠 Hệ thống RAG: {rag_status}\n"
+            f"📡 Admin WebSocket: {admin_status}\n\n"
+            "Bot đang giám sát hoạt động người dùng."
         )
         status_message = escape_markdown(status_message)
 
     if alert:
-        status_message = f"⚠️ *ALERT* ⚠️\n\n{status_message}"
+        status_message = f"⚠️ *CẢNH BÁO* ⚠️\n\n{status_message}"
 
     try:
         bot = Bot(token=ADMIN_TELEGRAM_BOT_TOKEN)
@@ -234,8 +247,11 @@ async def websocket_listener():
     # Hugging Face Space uses port 443 by default
     websocket_port = parsed_url.port if parsed_url.port else (443 if use_wss else 80)
     
-    # WebSocket path
-    websocket_path = "/notify"
+    # Create admin_id (can be any unique string for this admin)
+    admin_id = os.getenv("ADMIN_ID", "admin-bot-123")
+    
+    # WebSocket path for admin monitoring based on admin_websocket_guide.md
+    websocket_path = f"/admin/ws/monitor/{admin_id}"
     
     # Create full URL
     if use_wss:
@@ -251,7 +267,7 @@ async def websocket_listener():
         else:
             ws_url = f"ws://{websocket_server}:{websocket_port}{websocket_path}"
     
-    logger.info(f"Connecting to WebSocket: {ws_url}")
+    logger.info(f"Connecting to Admin WebSocket: {ws_url}")
     
     # Create an event loop for the thread
     thread_loop = asyncio.new_event_loop()
@@ -262,7 +278,7 @@ async def websocket_listener():
         global websocket_connection
         try:
             # Check if this is a keepalive response
-            if isinstance(message, str) and message.lower() == "keepalive" or "echo" in message:
+            if isinstance(message, str) and message.lower() == "keepalive" or "echo" in message or "ping" in message:
                 logger.debug("Received keepalive response")
                 websocket_connection = True
                 return
@@ -275,28 +291,36 @@ async def websocket_listener():
             websocket_connection = True
             
             # Process notification by type
-            if data.get("type") == "new_session":
-                session_data = data.get("data", {})
-                user_question = session_data.get("message", "")
-                user_response = session_data.get("response", "")
-                user_name = session_data.get("first_name", "Unknown User")
+            if data.get("type") == "sorry_response":
+                # Extract data according to the admin websocket guide format
+                user_id = data.get("user_id", "")
+                user_message = data.get("message", "")
+                bot_response = data.get("response", "")
+                session_id = data.get("session_id", "")
+                timestamp = data.get("timestamp", "")
+                user_info = data.get("user_info", {})
+                
+                # Extract user info
+                first_name = user_info.get("first_name", "")
+                last_name = user_info.get("last_name", "")
+                username = user_info.get("username", "")
                 
                 # Log question information
-                logger.info(f"User {user_name} asked: {user_question}")
-                logger.info(f"System response: {user_response}")
+                logger.info(f"User {first_name} {last_name} asked: {user_message}")
+                logger.info(f"System response (I'm sorry): {bot_response}")
                 
                 # Add to queue for processing in main thread
                 if ADMIN_GROUP_CHAT_ID:
                     notification = {
-                        "type": "question",
-                        "first_name": session_data.get('first_name', ''),
-                        "last_name": session_data.get('last_name', ''),
-                        "user_id": session_data.get('user_id', ''),
-                        "username": session_data.get('username', ''),
-                        "created_at": session_data.get('created_at', ''),
-                        "question": user_question,
-                        "response": user_response,
-                        "session_id": session_data.get('session_id', '')
+                        "type": "sorry_response",
+                        "first_name": first_name,
+                        "last_name": last_name,
+                        "user_id": user_id,
+                        "username": username,
+                        "created_at": timestamp,
+                        "question": user_message,
+                        "response": bot_response,
+                        "session_id": session_id
                     }
                     notification_queue.put(notification)
         except json.JSONDecodeError:
@@ -335,7 +359,7 @@ async def websocket_listener():
         if ADMIN_GROUP_CHAT_ID:
             notification_queue.put({
                 "type": "success",
-                "message": "WebSocket connected successfully! Now monitoring user questions."
+                "message": "Admin WebSocket connected successfully! Now monitoring for 'I'm sorry' responses."
             })
         
         # Start keepalive thread
@@ -343,7 +367,8 @@ async def websocket_listener():
             while True:
                 try:
                     if ws.sock and ws.sock.connected:
-                        ws.send("keepalive")
+                        # Send ping action as per admin_websocket_guide.md
+                        ws.send(json.dumps({"action": "ping"}))
                         logger.info("Sent keepalive message")
                     time.sleep(300)  # 5 minutes as per API docs
                 except Exception as e:
@@ -434,7 +459,7 @@ async def websocket_listener():
                 if ADMIN_GROUP_CHAT_ID:
                     message_text = ""
                     
-                    if notification["type"] == "question":
+                    if notification["type"] == "sorry_response":
                         # Format full name
                         user_full_name = f"{notification['first_name']} {notification['last_name']}".strip()
                         # Format username with @ if available
@@ -446,15 +471,15 @@ async def websocket_listener():
                         escaped_session_id = escape_markdown(notification['session_id'])
                         
                         message_text = (
-                            f"🚨 *New announcement!*\n"
-                            f"👤 User: {escape_markdown(user_full_name)}{escape_markdown(username_display)}\n"
-                            f"💬 Question: {escaped_question}\n"
-                            f"🤖 System response: {escaped_response}\n"
-                            f"🕒 Time: {notification['created_at']}\n"
+                            f"🚨 *Phát hiện phản hồi \"I'm sorry\"*\n"
+                            f"👤 Người dùng: {escape_markdown(user_full_name)}{escape_markdown(username_display)}\n"
+                            f"💬 Câu hỏi: {escaped_question}\n"
+                            f"🤖 Phản hồi: {escaped_response}\n"
+                            f"🕒 Thời gian: {notification['created_at']}\n"
                             f"🆔 Session ID: `{escaped_session_id}`"
                         )
                     elif notification["type"] == "error":
-                        message_text = f"❌ {escape_markdown(notification['message'])}\nTrying to reconnect in 5 seconds..."
+                        message_text = f"❌ {escape_markdown(notification['message'])}\nĐang thử kết nối lại sau 5 giây..."
                     elif notification["type"] == "success":
                         message_text = f"✅ {escape_markdown(notification['message'])}"
                     
@@ -477,7 +502,7 @@ async def websocket_listener():
                                 await bot.send_message(
                                     chat_id=ADMIN_GROUP_CHAT_ID,
                                     text=plain_text,
-                                    parse_mode=ParseMode.MARKDOWN_V2
+                                    parse_mode=None
                                 )
                                 logger.info("Notification sent without formatting")
                             except Exception as fallback_error:
@@ -502,34 +527,49 @@ async def check_websocket_connection():
         global websocket_connection, last_alert_time
         http_endpoint = API_DATABASE_URL.replace('ws://', 'http://').replace('wss://', 'https://')
         
-        if not http_endpoint.endswith('/'):
-            health_endpoint = f"{http_endpoint}/health"
-        else:
-            health_endpoint = f"{http_endpoint}health"
+        # Format the endpoint for the admin WebSocket status check
+        admin_id = os.getenv("ADMIN_ID", "admin-bot-123")
+        admin_ws_status_endpoint = f"{http_endpoint}/admin/ws/status/{admin_id}"
         
-        logger.debug(f"Checking health at: {health_endpoint}")
+        logger.debug(f"Checking admin WebSocket status at: {admin_ws_status_endpoint}")
         
-        # First check the API health
+        # Check the API health and admin WebSocket status
         try:
             async with aiohttp.ClientSession() as session:
+                # First check general API health
+                health_endpoint = f"{http_endpoint}/health"
                 async with session.get(health_endpoint, timeout=10) as response:
                     if response.status == 200:
                         health_data = await response.json()
                         logger.debug(f"Health data: {health_data}")
                         
-                        # Check MongoDB and RAG status
+                        # Check MongoDB and RAG status from health data
                         mongo_status = health_data.get('mongodb', False)
                         rag_status = health_data.get('rag_system', False)
                         
-                        # Create plain text status message (no Markdown formatting)
-                        status_message = "📊 Backend Status:\n"
-                        status_message += "🔄 API: Online ✅\n"
-                        status_message += f"🗄️ MongoDB: {'Online ✅' if mongo_status else 'Offline ❌'}\n"
-                        status_message += f"🧠 RAG System: {'Online ✅' if rag_status else 'Offline ❌'}\n"
-                        status_message += f"🔌 WebSocket: {'Connected ✅' if websocket_connection else 'Disconnected ❌'}"
+                        # Now check admin WebSocket status
+                        admin_ws_active = False
+                        try:
+                            async with session.get(admin_ws_status_endpoint, timeout=5) as ws_response:
+                                if ws_response.status == 200:
+                                    ws_status_data = await ws_response.json()
+                                    admin_ws_active = ws_status_data.get('active', False)
+                                    logger.debug(f"Admin WebSocket status: {ws_status_data}")
+                                else:
+                                    logger.warning(f"Admin WebSocket status check failed: {ws_response.status}")
+                        except Exception as ws_err:
+                            logger.error(f"Error checking admin WebSocket status: {ws_err}")
                         
-                        if not (mongo_status and rag_status and websocket_connection):
-                            logger.warning(f"Some services are down: MongoDB={mongo_status}, RAG={rag_status}, WebSocket={websocket_connection}")
+                        # Create status message in Vietnamese
+                        status_message = "📊 Trạng thái hệ thống:\n"
+                        status_message += "🔄 API: Trực tuyến ✅\n"
+                        status_message += f"🗄️ MongoDB: {'Trực tuyến ✅' if mongo_status else 'Ngoại tuyến ❌'}\n"
+                        status_message += f"🧠 RAG System: {'Trực tuyến ✅' if rag_status else 'Ngoại tuyến ❌'}\n"
+                        status_message += f"🔌 Admin WebSocket: {'Đã kết nối ✅' if websocket_connection and admin_ws_active else 'Mất kết nối ❌'}"
+                        
+                        # Check overall system status and alert if needed
+                        if not (mongo_status and rag_status and websocket_connection and admin_ws_active):
+                            logger.warning(f"Some services are down: MongoDB={mongo_status}, RAG={rag_status}, WebSocket={websocket_connection}, AdminWS={admin_ws_active}")
                             # Alert admin if we haven't sent an alert recently
                             current_time = time.time()
                             if current_time - last_alert_time > ALERT_INTERVAL_SECONDS:
@@ -543,15 +583,15 @@ async def check_websocket_connection():
                         # Alert about API being down
                         current_time = time.time()
                         if current_time - last_alert_time > ALERT_INTERVAL_SECONDS:
-                            status_message = "📊 Backend Status:\n🔄 API: Offline ❌ (Status code: " + str(response.status) + ")"
+                            status_message = "📊 Trạng thái hệ thống:\n🔄 API: Ngoại tuyến ❌ (Mã trạng thái: " + str(response.status) + ")"
                             await send_status_message(custom_message=status_message, alert=True)
                             last_alert_time = current_time
         except aiohttp.ClientError as e:
             logger.error(f"Health check request failed: {e}")
-            # Alert about connection error - avoid using the error message directly as it might contain special chars
+            # Alert about connection error
             current_time = time.time()
             if current_time - last_alert_time > ALERT_INTERVAL_SECONDS:
-                status_message = "📊 Backend Status:\n🔄 API: Offline ❌ (Connection error)"
+                status_message = "📊 Trạng thái hệ thống:\n🔄 API: Ngoại tuyến ❌ (Lỗi kết nối)"
                 await send_status_message(custom_message=status_message, alert=True)
                 last_alert_time = current_time
     except Exception as e:

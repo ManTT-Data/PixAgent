@@ -22,6 +22,7 @@ This bot allows administrators to manage information for Solana SuperTeam member
 - Emergency Information: Update emergency contacts and procedures
 - User Stats: View usage statistics for the User Bot
 - Admin Dashboard: Web interface for content management
+- WebSocket Monitoring: Receive real-time notifications when the system responds with "I'm sorry" messages
 
 ## Commands
 
@@ -30,6 +31,7 @@ This bot allows administrators to manage information for Solana SuperTeam member
 - `/addfaq` - Add a new FAQ entry
 - `/updateemergency` - Update emergency information
 - `/stats` - View user statistics
+- `/status` - Check connection status of services
 - `/help` - Display admin help information
 
 ## Interface
@@ -42,6 +44,33 @@ When you start the bot, you'll be presented with an admin menu offering the foll
 - Settings
 - Help
 
+## WebSocket Monitoring
+
+The Admin Bot connects to the backend via WebSocket to receive real-time notifications when the system responds to users with messages beginning with "I'm sorry". This allows administrators to:
+
+1. Monitor situations where the system cannot answer user questions
+2. Identify common issues and knowledge gaps
+3. Improve the system's capabilities based on real user interactions
+
+When a user receives an "I'm sorry" response, the Admin Bot will immediately notify administrators with:
+- User information
+- The original user question
+- The system's response
+- Session ID for reference
+
+### WebSocket Configuration
+
+The WebSocket connection is automatically established when the bot starts. It uses the following environment variables:
+
+```
+ADMIN_ID=admin-bot-123            # Unique identifier for this admin
+WEBSOCKET_SERVER=backend.example.com  # WebSocket server hostname
+WEBSOCKET_PORT=443                # WebSocket server port
+WEBSOCKET_PATH=/admin/ws/monitor/  # WebSocket endpoint path
+```
+
+The bot automatically reconnects if the connection is lost and sends regular ping messages to keep the connection alive.
+
 ## Setup
 
 ### Local Development
@@ -52,6 +81,7 @@ When you start the bot, you'll be presented with an admin menu offering the foll
    TELEGRAM_BOT_TOKEN=your_admin_bot_token
    API_DATABASE_URL=your_database_api_url
    USER_BOT_TOKEN=your_user_bot_token
+   ADMIN_ID=admin-bot-123
    ```
 3. Install dependencies:
    ```
@@ -92,6 +122,8 @@ This bot is designed to be deployed on Hugging Face Spaces. Follow these steps:
      - `API_DATABASE_URL` - URL for the database API
      - `USER_BOT_TOKEN` - Token for the User bot (required for pushing notifications)
      - `WEBHOOK_URL` - Your Hugging Face Space URL (e.g., https://username-repo-name.hf.space)
+     - `ADMIN_ID` - Unique identifier for this admin instance (e.g., admin-bot-123)
+     - `ADMIN_GROUP_CHAT_ID` - Telegram chat ID for the admin group to receive notifications
 
 4. Configure hardware in Space settings:
    - CPU: Basic (recommended)
@@ -128,6 +160,9 @@ This bot interacts with the following API endpoints:
 - `/admin/dashboard` - Web interface for content management
 - `/admin/webhook` - Configure webhook settings
 - `/admin/notifications` - Send notifications to users
+- `/admin/ws/monitor/{admin_id}` - WebSocket endpoint for monitoring "I'm sorry" responses
+- `/admin/ws/status/{admin_id}` - Check status of admin WebSocket connection
+- `/admin/ws/status` - View all admin connections
 
 ### Health Check
 - `/health` - Check overall API health
@@ -151,6 +186,7 @@ https://your-space-url/admin/dashboard
 ├── requirements.txt     # Python dependencies
 ├── Dockerfile           # Docker configuration
 ├── .gitignore           # Git ignore configuration
+├── websocket_admin_bot_guide.md  # Documentation for the Admin WebSocket
 └── README.md            # Documentation
 ```
 
@@ -172,11 +208,17 @@ If you encounter issues with the bot:
    - Check that the URL format is correct (https://{username}-{repo-name}.hf.space/telegram-webhook)
    - Verify with getWebhookInfo API that webhook is correctly set
 
-4. **Space Errors**:
+4. **WebSocket Issues**:
+   - Use the `/status` command to check if the WebSocket connection is active
+   - Verify that the backend server supports the WebSocket protocol
+   - Check that the ADMIN_ID is configured correctly
+   - Look for WebSocket-related errors in the logs
+
+5. **Space Errors**:
    - Check the logs tab in your Space for error messages
    - Restart the Space if needed using the "Factory reboot" option
 
-5. **Content Management**:
+6. **Content Management**:
    - If you cannot add or edit content, check the database connection
    - Verify the User Bot has access to the updated content
 
