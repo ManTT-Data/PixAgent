@@ -6,6 +6,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 import telegram
 from telegram.ext import Application, CommandHandler
 import nest_asyncio
+import requests
 
 # Apply nest_asyncio to allow nested event loops
 nest_asyncio.apply()
@@ -48,6 +49,41 @@ async def startup():
     logger.info(f"🔑 Admin Bot starting (token prefix {ADMIN_TELEGRAM_BOT_TOKEN[:5]}…)")  
     if API_DATABASE_URL:
         logger.info(f"🔗 Database API URL: {API_DATABASE_URL}")
+        
+        # Kiểm tra ngay kết nối tới backend
+        try:
+            backend_url = API_DATABASE_URL
+            if backend_url.startswith("ws://"):
+                backend_url = backend_url.replace("ws://", "http://")
+            elif backend_url.startswith("wss://"):
+                backend_url = backend_url.replace("wss://", "https://")
+                
+            # Kiểm tra health endpoint
+            health_url = f"{backend_url}/health"
+            logger.info(f"Checking backend connection: {health_url}")
+            response = requests.get(health_url, timeout=10)
+            
+            if response.status_code == 200:
+                logger.info("✅ Backend connection successful!")
+                
+                # Kiểm tra admin websocket endpoint
+                admin_id = os.getenv("ADMIN_ID", "admin-bot-123")
+                ws_status_url = f"{backend_url}/admin/ws/status/{admin_id}"
+                logger.info(f"Checking WebSocket endpoint: {ws_status_url}")
+                
+                try:
+                    ws_response = requests.get(ws_status_url, timeout=5)
+                    if ws_response.status_code == 200:
+                        logger.info("✅ Admin WebSocket endpoint is available")
+                    else:
+                        logger.warning(f"⚠️ Admin WebSocket endpoint returned status {ws_response.status_code}")
+                except Exception as ws_e:
+                    logger.warning(f"⚠️ Could not check WebSocket endpoint: {ws_e}")
+            else:
+                logger.warning(f"⚠️ Backend health check failed with status {response.status_code}")
+        except Exception as e:
+            logger.warning(f"⚠️ Backend connection check failed: {e}")
+    
     logger.info(f"👥 Admin Group Chat ID: {ADMIN_GROUP_CHAT_ID}")
 
     # Initialize Telegram bot

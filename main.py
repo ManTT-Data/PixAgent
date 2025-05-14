@@ -270,23 +270,24 @@ async def websocket_listener():
     admin_id = os.getenv("ADMIN_ID", "admin-bot-123")
     
     # WebSocket path for admin monitoring
-    # Since /admin/ws/monitor/{admin_id} returns 404, try the /notify path instead
-    websocket_path = "/notify"
+    # Sử dụng đúng endpoint của backend theo tài liệu API
+    websocket_path = f"/admin/ws/monitor/{admin_id}"
     
     # Create full URL
     if use_wss:
-        # For Hugging Face Space and other HTTPS services,
-        # no need to specify port if it's 443
+        # Sử dụng HTTPS/WSS
         if websocket_port == 443:
             ws_url = f"wss://{websocket_server}{websocket_path}"
         else:
             ws_url = f"wss://{websocket_server}:{websocket_port}{websocket_path}"
     else:
+        # Sử dụng HTTP/WS
         if websocket_port == 80:
             ws_url = f"ws://{websocket_server}{websocket_path}"
         else:
             ws_url = f"ws://{websocket_server}:{websocket_port}{websocket_path}"
-    
+
+    # Ghi log URL cuối cùng để debug
     logger.info(f"Connecting to Admin WebSocket: {ws_url}")
     
     # Create an event loop for the thread
@@ -310,8 +311,42 @@ async def websocket_listener():
             # Update connection status
             websocket_connection = True
             
-            # Check if this is a notification about a new session
-            if data.get("type") == "new_session":
+            # Xử lý tin nhắn theo định dạng của backend (/admin/ws/monitor/{admin_id})
+            if data.get("type") == "sorry_response":
+                # Extract data according to the admin websocket guide format
+                user_id = data.get("user_id", "")
+                user_message = data.get("message", "")
+                bot_response = data.get("response", "")
+                session_id = data.get("session_id", "")
+                timestamp = data.get("timestamp", "")
+                user_info = data.get("user_info", {})
+                
+                # Extract user info
+                first_name = user_info.get("first_name", "")
+                last_name = user_info.get("last_name", "")
+                username = user_info.get("username", "")
+                
+                # Log question information
+                logger.info(f"User {first_name} {last_name} asked: {user_message}")
+                logger.info(f"System response (I'm sorry): {bot_response}")
+                
+                # Add to queue for processing in main thread
+                if ADMIN_GROUP_CHAT_ID:
+                    notification = {
+                        "type": "sorry_response",
+                        "first_name": first_name,
+                        "last_name": last_name,
+                        "user_id": user_id,
+                        "username": username,
+                        "created_at": timestamp,
+                        "question": user_message,
+                        "response": bot_response,
+                        "session_id": session_id
+                    }
+                    notification_queue.put(notification)
+            
+            # For backward compatibility with new_session type
+            elif data.get("type") == "new_session":
                 # Extract data from the notification
                 session_data = data.get("data", {})
                 user_message = session_data.get("message", "")
@@ -334,40 +369,6 @@ async def websocket_listener():
                 logger.info(f"User {first_name} {last_name} received an 'I'm sorry' response")
                 logger.info(f"Question: {user_message}")
                 logger.info(f"Response: {bot_response}")
-                
-                # Add to queue for processing in main thread
-                if ADMIN_GROUP_CHAT_ID:
-                    notification = {
-                        "type": "sorry_response",
-                        "first_name": first_name,
-                        "last_name": last_name,
-                        "user_id": user_id,
-                        "username": username,
-                        "created_at": timestamp,
-                        "question": user_message,
-                        "response": bot_response,
-                        "session_id": session_id
-                    }
-                    notification_queue.put(notification)
-            
-            # Direct handling of sorry_response (if server implements it in the future)
-            elif data.get("type") == "sorry_response":
-                # Extract data according to the admin websocket guide format
-                user_id = data.get("user_id", "")
-                user_message = data.get("message", "")
-                bot_response = data.get("response", "")
-                session_id = data.get("session_id", "")
-                timestamp = data.get("timestamp", "")
-                user_info = data.get("user_info", {})
-                
-                # Extract user info
-                first_name = user_info.get("first_name", "")
-                last_name = user_info.get("last_name", "")
-                username = user_info.get("username", "")
-                
-                # Log question information
-                logger.info(f"User {first_name} {last_name} asked: {user_message}")
-                logger.info(f"System response (I'm sorry): {bot_response}")
                 
                 # Add to queue for processing in main thread
                 if ADMIN_GROUP_CHAT_ID:
@@ -428,7 +429,6 @@ async def websocket_listener():
             while True:
                 try:
                     if ws.sock and ws.sock.connected:
-                        # Try different keepalive formats that the server might expect
                         try:
                             # Format 1: JSON with action ping (per admin guide)
                             ws.send(json.dumps({"action": "ping"}))
@@ -442,7 +442,7 @@ async def websocket_listener():
                                 logger.info("Sent keepalive message (string format)")
                             except Exception as e2:
                                 logger.error(f"Error sending string keepalive: {e2}")
-                                
+                    
                     time.sleep(300)  # 5 minutes as per API docs
                 except Exception as e:
                     logger.error(f"Error in keepalive thread: {e}")
@@ -604,7 +604,14 @@ async def check_websocket_connection():
     """Check the health of the API and its services, log and alert if problems are found."""
     try:
         global websocket_connection, last_alert_time
-        http_endpoint = API_DATABASE_URL.replace('ws://', 'http://').replace('wss://', 'https://')
+        # Chuyển đổi URL WebSocket sang HTTP để check API
+        http_endpoint = API_DATABASE_URL
+        
+        # Đảm bảo endpoint là HTTP/HTTPS, không phải WS/WSS
+        if http_endpoint.startswith('ws://'):
+            http_endpoint = http_endpoint.replace('ws://', 'http://')
+        elif http_endpoint.startswith('wss://'):
+            http_endpoint = http_endpoint.replace('wss://', 'https://')
         
         # Format the endpoint for the admin WebSocket status check
         admin_id = os.getenv("ADMIN_ID", "admin-bot-123")
