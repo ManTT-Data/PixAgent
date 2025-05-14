@@ -38,6 +38,13 @@ ADMIN_TELEGRAM_BOT_TOKEN = os.getenv("ADMIN_TELEGRAM_BOT_TOKEN")
 API_DATABASE_URL = os.getenv("API_DATABASE_URL")
 ADMIN_GROUP_CHAT_ID = os.getenv("ADMIN_GROUP_CHAT_ID")
 
+# Display warning if ADMIN_GROUP_CHAT_ID is not set
+if not ADMIN_GROUP_CHAT_ID:
+    logging.warning("⚠️ ADMIN_GROUP_CHAT_ID is not set. Notifications cannot be sent to admin group!")
+    logging.warning("Please set ADMIN_GROUP_CHAT_ID environment variable to receive notifications")
+else:
+    logging.info(f"Admin notifications will be sent to chat ID: {ADMIN_GROUP_CHAT_ID}")
+
 # Global state
 websocket_connection = False
 last_alert_time = 0
@@ -63,11 +70,23 @@ def escape_markdown(text):
     """Escape special characters for Markdown formatting."""
     if text is None:
         return ""
+    
+    # Return empty string for None or empty text
+    if not text:
+        return ""
+        
     # Characters that need to be escaped in Markdown v2
     escape_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
-    for char in escape_chars:
-        text = text.replace(char, f"\\{char}")
-    return text
+    
+    # Create a new string with escaped characters
+    result = ""
+    for char in text:
+        if char in escape_chars:
+            result += f"\\{char}"
+        else:
+            result += char
+            
+    return result
 
 def get_current_time():
     """Get current time in standard format."""
@@ -250,8 +269,9 @@ async def websocket_listener():
     # Create admin_id (can be any unique string for this admin)
     admin_id = os.getenv("ADMIN_ID", "admin-bot-123")
     
-    # WebSocket path for admin monitoring based on admin_websocket_guide.md
-    websocket_path = f"/admin/ws/monitor/{admin_id}"
+    # WebSocket path for admin monitoring
+    # Since /admin/ws/monitor/{admin_id} returns 404, try the /notify path instead
+    websocket_path = "/notify"
     
     # Create full URL
     if use_wss:
@@ -278,7 +298,7 @@ async def websocket_listener():
         global websocket_connection
         try:
             # Check if this is a keepalive response
-            if isinstance(message, str) and message.lower() == "keepalive" or "echo" in message or "ping" in message:
+            if isinstance(message, str) and (message.lower() == "keepalive" or "echo" in message or "ping" in message):
                 logger.debug("Received keepalive response")
                 websocket_connection = True
                 return
@@ -290,8 +310,48 @@ async def websocket_listener():
             # Update connection status
             websocket_connection = True
             
-            # Process notification by type
-            if data.get("type") == "sorry_response":
+            # Check if this is a notification about a new session
+            if data.get("type") == "new_session":
+                # Extract data from the notification
+                session_data = data.get("data", {})
+                user_message = session_data.get("message", "")
+                bot_response = session_data.get("response", "")
+                
+                # Skip if the response doesn't start with "I'm sorry"
+                if not (bot_response and bot_response.lower().startswith("i'm sorry")):
+                    logger.debug("Response doesn't start with 'I'm sorry', ignoring")
+                    return
+                
+                # Extract user info
+                user_id = session_data.get("user_id", "")
+                first_name = session_data.get("first_name", "")
+                last_name = session_data.get("last_name", "")
+                username = session_data.get("username", "")
+                timestamp = session_data.get("created_at", "")
+                session_id = session_data.get("session_id", "")
+                
+                # Log question information
+                logger.info(f"User {first_name} {last_name} received an 'I'm sorry' response")
+                logger.info(f"Question: {user_message}")
+                logger.info(f"Response: {bot_response}")
+                
+                # Add to queue for processing in main thread
+                if ADMIN_GROUP_CHAT_ID:
+                    notification = {
+                        "type": "sorry_response",
+                        "first_name": first_name,
+                        "last_name": last_name,
+                        "user_id": user_id,
+                        "username": username,
+                        "created_at": timestamp,
+                        "question": user_message,
+                        "response": bot_response,
+                        "session_id": session_id
+                    }
+                    notification_queue.put(notification)
+            
+            # Direct handling of sorry_response (if server implements it in the future)
+            elif data.get("type") == "sorry_response":
                 # Extract data according to the admin websocket guide format
                 user_id = data.get("user_id", "")
                 user_message = data.get("message", "")
@@ -332,6 +392,7 @@ async def websocket_listener():
             websocket_connection = True
         except Exception as e:
             logger.error(f"Error processing message: {e}")
+            logger.error(f"Message content: {message}")
     
     def on_error(ws, error):
         global websocket_connection
@@ -367,12 +428,24 @@ async def websocket_listener():
             while True:
                 try:
                     if ws.sock and ws.sock.connected:
-                        # Send ping action as per admin_websocket_guide.md
-                        ws.send(json.dumps({"action": "ping"}))
-                        logger.info("Sent keepalive message")
+                        # Try different keepalive formats that the server might expect
+                        try:
+                            # Format 1: JSON with action ping (per admin guide)
+                            ws.send(json.dumps({"action": "ping"}))
+                            logger.info("Sent keepalive message (JSON format)")
+                        except Exception as e1:
+                            logger.error(f"Error sending JSON keepalive: {e1}")
+                            
+                            try:
+                                # Format 2: Simple string "keepalive"
+                                ws.send("keepalive")
+                                logger.info("Sent keepalive message (string format)")
+                            except Exception as e2:
+                                logger.error(f"Error sending string keepalive: {e2}")
+                                
                     time.sleep(300)  # 5 minutes as per API docs
                 except Exception as e:
-                    logger.error(f"Error sending keepalive: {e}")
+                    logger.error(f"Error in keepalive thread: {e}")
                     time.sleep(60)  # Retry after 1 minute if error
                     
         keepalive_thread = threading.Thread(target=send_keepalive_thread, daemon=True)
@@ -485,6 +558,7 @@ async def websocket_listener():
                     
                     if message_text:
                         try:
+                            logger.debug(f"Sending notification to chat ID: {ADMIN_GROUP_CHAT_ID}")
                             await bot.send_message(
                                 chat_id=ADMIN_GROUP_CHAT_ID,
                                 text=message_text,
@@ -494,11 +568,15 @@ async def websocket_listener():
                         except Exception as e:
                             logger.error(f"Error sending notification: {e}")
                             
-                            # If sending with Markdown failed, try again without formatting
+                            # Try without Markdown formatting
                             try:
                                 logger.info("Trying to send notification without Markdown formatting")
-                                # Replace backticks, asterisks and other special characters
+                                # Create plain text by removing all special characters
                                 plain_text = message_text.replace('*', '').replace('`', '').replace('_', '')
+                                
+                                # Log the message for debugging
+                                logger.debug(f"Sending plain text notification: {plain_text[:100]}...")
+                                
                                 await bot.send_message(
                                     chat_id=ADMIN_GROUP_CHAT_ID,
                                     text=plain_text,
@@ -507,6 +585,7 @@ async def websocket_listener():
                                 logger.info("Notification sent without formatting")
                             except Exception as fallback_error:
                                 logger.error(f"Failed to send notification even without formatting: {fallback_error}")
+                                logger.error(f"Make sure ADMIN_GROUP_CHAT_ID is correctly set: {ADMIN_GROUP_CHAT_ID}")
                 
             except queue.Empty:
                 # Timeout is just for thread checking, not an error
