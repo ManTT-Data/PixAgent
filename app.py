@@ -57,28 +57,25 @@ async def startup():
                 backend_url = backend_url.replace("ws://", "http://")
             elif backend_url.startswith("wss://"):
                 backend_url = backend_url.replace("wss://", "https://")
+
+            # Loại bỏ dấu / ở cuối URL nếu có
+            if backend_url.endswith('/'):
+                backend_url = backend_url[:-1]
                 
             # Kiểm tra health endpoint
-            health_url = f"{backend_url}/health"
+            if not backend_url.endswith('/health'):
+                health_url = f"{backend_url}/health"
+            else:
+                health_url = backend_url
+                
             logger.info(f"Checking backend connection: {health_url}")
             response = requests.get(health_url, timeout=10)
             
             if response.status_code == 200:
                 logger.info("✅ Backend connection successful!")
                 
-                # Kiểm tra admin websocket endpoint
-                admin_id = os.getenv("ADMIN_ID", "admin-bot-123")
-                ws_status_url = f"{backend_url}/admin/ws/status/{admin_id}"
-                logger.info(f"Checking WebSocket endpoint: {ws_status_url}")
-                
-                try:
-                    ws_response = requests.get(ws_status_url, timeout=5)
-                    if ws_response.status_code == 200:
-                        logger.info("✅ Admin WebSocket endpoint is available")
-                    else:
-                        logger.warning(f"⚠️ Admin WebSocket endpoint returned status {ws_response.status_code}")
-                except Exception as ws_e:
-                    logger.warning(f"⚠️ Could not check WebSocket endpoint: {ws_e}")
+                # Không kiểm tra admin ws status vì endpoint không tồn tại
+                logger.info("WebSocket sẽ được kết nối tự động đến /notify endpoint")
             else:
                 logger.warning(f"⚠️ Backend health check failed with status {response.status_code}")
         except Exception as e:

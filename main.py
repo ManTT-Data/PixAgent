@@ -60,9 +60,13 @@ def fix_url(base_url, path):
     if base_url.endswith('/'):
         base_url = base_url[:-1]
         
-    # Remove leading slash from path
+    # Remove leading slash from path if base_url is not empty
     if path.startswith('/'):
         path = path[1:]
+        
+    # Ensure there's no empty path that would create double slash
+    if not path:
+        return base_url
         
     return f"{base_url}/{path}"
 
@@ -140,16 +144,6 @@ async def send_status_message(chat_id=None, custom_message=None, alert=False):
         # Check admin websocket status
         admin_id = os.getenv("ADMIN_ID", "admin-bot-123")
         admin_status = "✅ Đã kết nối" if websocket_connection else "❌ Không kết nối"
-        
-        # Try to get detailed admin websocket status
-        try:
-            admin_ws_url = fix_url(API_DATABASE_URL, f"/admin/ws/status/{admin_id}")
-            admin_ws_resp = requests.get(admin_ws_url, timeout=5)
-            if admin_ws_resp.status_code == 200:
-                admin_ws_data = admin_ws_resp.json()
-                admin_status = "✅ Đã kết nối" if admin_ws_data.get("active") else "❌ Không kết nối"
-        except Exception as e:
-            logger.error(f"Error checking admin websocket status: {e}")
         
         status_message = (
             "🤖 *Báo cáo trạng thái Admin Bot*\n\n"
@@ -269,9 +263,8 @@ async def websocket_listener():
     # Create admin_id (can be any unique string for this admin)
     admin_id = os.getenv("ADMIN_ID", "admin-bot-123")
     
-    # WebSocket path for admin monitoring
-    # Sử dụng đúng endpoint của backend theo tài liệu API
-    websocket_path = f"/admin/ws/monitor/{admin_id}"
+    # WebSocket path for admin monitoring (tương thích với backend mới)
+    websocket_path = "/notify"
     
     # Create full URL
     if use_wss:
@@ -311,9 +304,8 @@ async def websocket_listener():
             # Update connection status
             websocket_connection = True
             
-            # Xử lý tin nhắn theo định dạng của backend (/admin/ws/monitor/{admin_id})
             if data.get("type") == "sorry_response":
-                # Extract data according to the admin websocket guide format
+                # Extract data according to the websocket_routes.py format
                 user_id = data.get("user_id", "")
                 user_message = data.get("message", "")
                 bot_response = data.get("response", "")
@@ -400,56 +392,13 @@ async def websocket_listener():
         logger.error(f"WebSocket error: {error}")
         websocket_connection = False
         
-        # Add error notification to queue
-        if ADMIN_GROUP_CHAT_ID:
-            notification_queue.put({
-                "type": "error",
-                "message": f"WebSocket error: {error}"
-            })
+        # Chỉ ghi log lỗi, không gửi thông báo qua Telegram
+        logger.warning(f"WebSocket connection error: {error}")
     
     def on_close(ws, close_status_code, close_msg):
         global websocket_connection
         logger.warning(f"WebSocket connection closed: code={close_status_code}, message={close_msg}")
         websocket_connection = False
-    
-    def on_open(ws):
-        global websocket_connection
-        logger.info(f"WebSocket connection opened to {ws_url}")
-        websocket_connection = True
-        
-        # Add success notification to queue
-        if ADMIN_GROUP_CHAT_ID:
-            notification_queue.put({
-                "type": "success",
-                "message": "Admin WebSocket connected successfully! Now monitoring for 'I'm sorry' responses."
-            })
-        
-        # Start keepalive thread
-        def send_keepalive_thread():
-            while True:
-                try:
-                    if ws.sock and ws.sock.connected:
-                        try:
-                            # Format 1: JSON with action ping (per admin guide)
-                            ws.send(json.dumps({"action": "ping"}))
-                            logger.info("Sent keepalive message (JSON format)")
-                        except Exception as e1:
-                            logger.error(f"Error sending JSON keepalive: {e1}")
-                            
-                            try:
-                                # Format 2: Simple string "keepalive"
-                                ws.send("keepalive")
-                                logger.info("Sent keepalive message (string format)")
-                            except Exception as e2:
-                                logger.error(f"Error sending string keepalive: {e2}")
-                    
-                    time.sleep(300)  # 5 minutes as per API docs
-                except Exception as e:
-                    logger.error(f"Error in keepalive thread: {e}")
-                    time.sleep(60)  # Retry after 1 minute if error
-                    
-        keepalive_thread = threading.Thread(target=send_keepalive_thread, daemon=True)
-        keepalive_thread.start()
     
     # Initialize and run WebSocket client in a loop for automatic reconnection
     def run_websocket_client():
@@ -459,6 +408,12 @@ async def websocket_listener():
         # Add backoff feature to prevent reconnecting too quickly
         retry_count = 0
         max_retry_count = 10
+        last_successful_connection = time.time()
+        
+        # Update last connection time in a thread-safe way
+        def update_connection_time():
+            nonlocal last_successful_connection
+            last_successful_connection = time.time()
         
         while True:
             try:
@@ -468,13 +423,55 @@ async def websocket_listener():
                     retry_count = 0
                     time.sleep(30)  # Wait longer before retrying
                 
+                # Check if we've been connected for a while, if so reset retry count
+                if time.time() - last_successful_connection > 300:  # 5 minutes
+                    retry_count = 0
+                
                 # Create websocket object with SSL options if needed
                 websocket.enableTrace(True if retry_count > 5 else False)  # Enable trace if many connection attempts failed
+                
+                # Create custom on_open handler that updates connection time
+                def on_open_with_time_update(ws):
+                    global websocket_connection
+                    update_connection_time()  # Update connection time
+                    
+                    logger.info(f"WebSocket connection opened to {ws_url}")
+                    websocket_connection = True
+                    
+                    # Ghi log kết nối thành công nhưng không gửi thông báo
+                    logger.info("Admin WebSocket connected successfully! Now monitoring for 'I'm sorry' responses.")
+                    
+                    # Start keepalive thread
+                    def send_keepalive_thread():
+                        while True:
+                            try:
+                                if ws.sock and ws.sock.connected:
+                                    try:
+                                        # Format 1: JSON with action ping (per admin guide)
+                                        ws.send(json.dumps({"action": "ping"}))
+                                        logger.info("Sent keepalive message (JSON format)")
+                                    except Exception as e1:
+                                        logger.error(f"Error sending JSON keepalive: {e1}")
+                                        
+                                        try:
+                                            # Format 2: Simple string "keepalive"
+                                            ws.send("keepalive")
+                                            logger.info("Sent keepalive message (string format)")
+                                        except Exception as e2:
+                                            logger.error(f"Error sending string keepalive: {e2}")
+                                
+                                time.sleep(120)  # 2 minutes instead of 5 minutes
+                            except Exception as e:
+                                logger.error(f"Error in keepalive thread: {e}")
+                                time.sleep(60)  # Retry after 1 minute if error
+                                
+                    keepalive_thread = threading.Thread(target=send_keepalive_thread, daemon=True)
+                    keepalive_thread.start()
                 
                 # Create WebSocket app with event handlers
                 ws = websocket.WebSocketApp(
                     ws_url,
-                    on_open=on_open,
+                    on_open=on_open_with_time_update,
                     on_message=on_message,
                     on_error=on_error,
                     on_close=on_close
@@ -486,13 +483,13 @@ async def websocket_listener():
                     
                     # Customize ping parameters for long-term connection
                     ws.run_forever(
-                        ping_interval=60,   # Send ping every 60 seconds
-                        ping_timeout=30,    # Timeout for pong
+                        ping_interval=30,   # Send ping every 30 seconds (instead of 60)
+                        ping_timeout=20,    # Timeout for pong (lower than default)
                         sslopt={"cert_reqs": 0}  # Skip SSL certificate validation
                     )
                 else:
                     # Run with normal ping/pong
-                    ws.run_forever(ping_interval=60, ping_timeout=30)
+                    ws.run_forever(ping_interval=30, ping_timeout=20)
                 
                 # If code reaches here, connection has been closed
                 logger.warning("WebSocket connection lost, reconnecting...")
@@ -548,7 +545,7 @@ async def websocket_listener():
                             f"👤 Người dùng: {escape_markdown(user_full_name)}{escape_markdown(username_display)}\n"
                             f"💬 Câu hỏi: {escaped_question}\n"
                             f"🤖 Phản hồi: {escaped_response}\n"
-                            f"🕒 Thời gian: {notification['created_at']}\n"
+                            f"🕒 Thời gian: {escape_markdown(notification['created_at'])}\n"
                             f"🆔 Session ID: `{escaped_session_id}`"
                         )
                     elif notification["type"] == "error":
@@ -557,35 +554,23 @@ async def websocket_listener():
                         message_text = f"✅ {escape_markdown(notification['message'])}"
                     
                     if message_text:
-                        try:
-                            logger.debug(f"Sending notification to chat ID: {ADMIN_GROUP_CHAT_ID}")
-                            await bot.send_message(
-                                chat_id=ADMIN_GROUP_CHAT_ID,
-                                text=message_text,
-                                parse_mode=ParseMode.MARKDOWN_V2
-                            )
-                            logger.info(f"Notification sent to admin group: {notification['type']}")
-                        except Exception as e:
-                            logger.error(f"Error sending notification: {e}")
-                            
-                            # Try without Markdown formatting
+                        # Chỉ gửi thông báo cho các phản hồi "I'm sorry" từ session chat
+                        if notification["type"] == "sorry_response":
                             try:
-                                logger.info("Trying to send notification without Markdown formatting")
-                                # Create plain text by removing all special characters
-                                plain_text = message_text.replace('*', '').replace('`', '').replace('_', '')
-                                
-                                # Log the message for debugging
-                                logger.debug(f"Sending plain text notification: {plain_text[:100]}...")
-                                
+                                # First try without markdown formatting to avoid escaping issues
+                                plain_text = message_text.replace('\\', '').replace('*', '').replace('`', '').replace('_', '')
                                 await bot.send_message(
                                     chat_id=ADMIN_GROUP_CHAT_ID,
                                     text=plain_text,
                                     parse_mode=None
                                 )
-                                logger.info("Notification sent without formatting")
-                            except Exception as fallback_error:
-                                logger.error(f"Failed to send notification even without formatting: {fallback_error}")
+                                logger.info(f"Plain text notification sent to admin group: {notification['type']}")
+                            except Exception as e:
+                                logger.error(f"Error sending notification: {e}")
                                 logger.error(f"Make sure ADMIN_GROUP_CHAT_ID is correctly set: {ADMIN_GROUP_CHAT_ID}")
+                        else:
+                            # Ghi log các thông báo khác mà không gửi đến người dùng
+                            logger.info(f"Status notification skipped (not sent to user): {notification['type']}")
                 
             except queue.Empty:
                 # Timeout is just for thread checking, not an error
@@ -613,13 +598,11 @@ async def check_websocket_connection():
         elif http_endpoint.startswith('wss://'):
             http_endpoint = http_endpoint.replace('wss://', 'https://')
         
-        # Format the endpoint for the admin WebSocket status check
-        admin_id = os.getenv("ADMIN_ID", "admin-bot-123")
-        admin_ws_status_endpoint = f"{http_endpoint}/admin/ws/status/{admin_id}"
+        # Loại bỏ dấu / ở cuối URL nếu có
+        if http_endpoint.endswith('/'):
+            http_endpoint = http_endpoint[:-1]
         
-        logger.debug(f"Checking admin WebSocket status at: {admin_ws_status_endpoint}")
-        
-        # Check the API health and admin WebSocket status
+        # Check the API health status
         try:
             async with aiohttp.ClientSession() as session:
                 # First check general API health
@@ -633,53 +616,27 @@ async def check_websocket_connection():
                         mongo_status = health_data.get('mongodb', False)
                         rag_status = health_data.get('rag_system', False)
                         
-                        # Now check admin WebSocket status
-                        admin_ws_active = False
-                        try:
-                            async with session.get(admin_ws_status_endpoint, timeout=5) as ws_response:
-                                if ws_response.status == 200:
-                                    ws_status_data = await ws_response.json()
-                                    admin_ws_active = ws_status_data.get('active', False)
-                                    logger.debug(f"Admin WebSocket status: {ws_status_data}")
-                                else:
-                                    logger.warning(f"Admin WebSocket status check failed: {ws_response.status}")
-                        except Exception as ws_err:
-                            logger.error(f"Error checking admin WebSocket status: {ws_err}")
+                        # Ghi log trạng thái hệ thống nhưng không gửi thông báo
+                        status_message = "📊 Trạng thái hệ thống:"
+                        status_message += f"\n🔄 API: {'Trực tuyến ✅' if True else 'Ngoại tuyến ❌'}"
+                        status_message += f"\n🗄️ MongoDB: {'Trực tuyến ✅' if mongo_status else 'Ngoại tuyến ❌'}"
+                        status_message += f"\n🧠 RAG System: {'Trực tuyến ✅' if rag_status else 'Ngoại tuyến ❌'}"
+                        status_message += f"\n🔌 Admin WebSocket: {'Đã kết nối ✅' if websocket_connection else 'Mất kết nối ❌'}"
                         
-                        # Create status message in Vietnamese
-                        status_message = "📊 Trạng thái hệ thống:\n"
-                        status_message += "🔄 API: Trực tuyến ✅\n"
-                        status_message += f"🗄️ MongoDB: {'Trực tuyến ✅' if mongo_status else 'Ngoại tuyến ❌'}\n"
-                        status_message += f"🧠 RAG System: {'Trực tuyến ✅' if rag_status else 'Ngoại tuyến ❌'}\n"
-                        status_message += f"🔌 Admin WebSocket: {'Đã kết nối ✅' if websocket_connection and admin_ws_active else 'Mất kết nối ❌'}"
-                        
-                        # Check overall system status and alert if needed
-                        if not (mongo_status and rag_status and websocket_connection and admin_ws_active):
-                            logger.warning(f"Some services are down: MongoDB={mongo_status}, RAG={rag_status}, WebSocket={websocket_connection}, AdminWS={admin_ws_active}")
-                            # Alert admin if we haven't sent an alert recently
-                            current_time = time.time()
-                            if current_time - last_alert_time > ALERT_INTERVAL_SECONDS:
-                                await send_status_message(custom_message=status_message, alert=True)
-                                last_alert_time = current_time
+                        # Check overall system status
+                        if not (mongo_status and rag_status and websocket_connection):
+                            logger.warning(f"Some services are down: MongoDB={mongo_status}, RAG={rag_status}, WebSocket={websocket_connection}")
+                            logger.warning(status_message)
                         else:
-                            websocket_connection = True
                             logger.debug("All services are operational")
                     else:
                         logger.error(f"Health check failed with status code: {response.status}")
-                        # Alert about API being down
-                        current_time = time.time()
-                        if current_time - last_alert_time > ALERT_INTERVAL_SECONDS:
-                            status_message = "📊 Trạng thái hệ thống:\n🔄 API: Ngoại tuyến ❌ (Mã trạng thái: " + str(response.status) + ")"
-                            await send_status_message(custom_message=status_message, alert=True)
-                            last_alert_time = current_time
+                        # Ghi log lỗi API
+                        logger.error(f"📊 Trạng thái hệ thống:\n🔄 API: Ngoại tuyến ❌ (Mã trạng thái: {response.status})")
         except aiohttp.ClientError as e:
             logger.error(f"Health check request failed: {e}")
-            # Alert about connection error
-            current_time = time.time()
-            if current_time - last_alert_time > ALERT_INTERVAL_SECONDS:
-                status_message = "📊 Trạng thái hệ thống:\n🔄 API: Ngoại tuyến ❌ (Lỗi kết nối)"
-                await send_status_message(custom_message=status_message, alert=True)
-                last_alert_time = current_time
+            # Ghi log lỗi kết nối
+            logger.error(f"📊 Trạng thái hệ thống:\n🔄 API: Ngoại tuyến ❌ (Lỗi kết nối: {e})")
     except Exception as e:
         logger.error(f"Error in check_websocket_connection: {e}")
         websocket_connection = False 
