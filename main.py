@@ -221,6 +221,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/events - Show upcoming events\n"
         "/faq - Show frequently asked questions\n"
         "/emergency - List of emergency\n"
+        "/clear - Clear chat history\n"
         "/help - Display this help"
     )
     
@@ -271,6 +272,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/events - Show upcoming events\n"
         "/faq - Show frequently asked questions\n"
         "/emergency - List of emergency\n"
+        "/clear - Clear chat history\n"
         "/help - Display this help\n\n"
         "Bot Features:\n"
         "• Ask questions about Da Nang\n"
@@ -295,6 +297,29 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Log complete session including both command and response
     await log_complete_session(update, "help", "/help", help_text)
+
+async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Clear chat history when the command /clear is issued."""
+    session_id = await log_session(update, "clear")
+    context.user_data["last_session_id"] = session_id
+    
+    # Log the clear action to the database
+    response_text = "Chat history has been cleared. Let's start fresh!"
+    await log_complete_session(update, "clear", "/clear", response_text)
+    
+    # Show main menu again
+    keyboard = [
+        [KeyboardButton("Da Nang's bucket list"), KeyboardButton("Solana Summit Event")],
+        [KeyboardButton("Events"), KeyboardButton("About Pixity")],
+        [KeyboardButton("Emergency"), KeyboardButton("FAQ")]
+    ]
+    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    
+    await update.message.reply_text(
+        response_text,
+        parse_mode=ParseMode.HTML,
+        disable_web_page_preview=True,
+        reply_markup=reply_markup)
 
 # Button handlers
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -819,6 +844,7 @@ async def set_commands(application):
         ("events", "Show upcoming events"),
         ("faq", "Show frequently asked questions"),
         ("emergency", "List of emergency contacts"),
+        ("clear", "Clear chat history"),
         ("help", "Display help information")
     ]
     
@@ -841,6 +867,7 @@ if __name__ == "__main__":
     application.add_handler(CommandHandler("faq", faq_command))
     application.add_handler(CommandHandler("emergency", emergency_command))
     application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("clear", clear_command))
     
     # Add callback query handler
     application.add_handler(CallbackQueryHandler(handle_callback))
