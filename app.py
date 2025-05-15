@@ -16,6 +16,7 @@ from main import (
     start_command,
     help_command,
     status_command,
+    clear_history_command,
     websocket_listener,
     ADMIN_TELEGRAM_BOT_TOKEN,
     ADMIN_GROUP_CHAT_ID,
@@ -37,6 +38,7 @@ bot_app = Application.builder().token(ADMIN_TELEGRAM_BOT_TOKEN).build()
 bot_app.add_handler(CommandHandler("start", start_command))
 bot_app.add_handler(CommandHandler("help", help_command))
 bot_app.add_handler(CommandHandler("status", status_command))
+bot_app.add_handler(CommandHandler("clear_history", clear_history_command))
 
 # WebSocket task variables
 websocket_task = None

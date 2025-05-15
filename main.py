@@ -206,6 +206,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Here are the available commands:\n\n"
         "/start - Start the bot\n"
         "/status - Check backend connection status\n"
+        "/clear_history - Clear chat history for session tracking\n"
         "/help - Show this help message\n\n"
         "The Admin Bot helps manage content for the User Bot by monitoring "
         "the backend system and allowing direct management of events, FAQs, "
@@ -220,6 +221,61 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text("Checking backend connections...")
     await send_status_message(chat_id=update.effective_chat.id)
+
+async def clear_history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Clear chat history by creating a marker session in the database."""
+    logger.info(f"Received /clear_history command from {update.effective_user.id}")
+    
+    if not API_DATABASE_URL:
+        await update.message.reply_text("⚠️ Database URL not configured. Cannot clear history.")
+        return
+    
+    # Tạo một session_id với định dạng giống như các session thường
+    user_id = str(update.effective_user.id)
+    current_time = datetime.now().strftime("%Y-%m-%d_%H:%M:%S")
+    session_id = f"{user_id}_{current_time}"
+    
+    try:
+        # Gửi HTTP request đến backend API để lưu session
+        # Chuyển đổi URL từ websocket sang http(s)
+        api_url = API_DATABASE_URL
+        if api_url.startswith("ws://"):
+            api_url = api_url.replace("ws://", "http://")
+        elif api_url.startswith("wss://"):
+            api_url = api_url.replace("wss://", "https://")
+            
+        # Loại bỏ slash ở cuối nếu có
+        if api_url.endswith('/'):
+            api_url = api_url[:-1]
+            
+        # Endpoint để lưu session
+        endpoint = f"{api_url}/mongodb/session"
+        
+        # Tạo dữ liệu session
+        payload = {
+            "session_id": session_id,
+            "factor": "user",
+            "action": "clear",  # Đặt action là "clear" để đánh dấu này là lệnh xóa lịch sử
+            "message": "clear history",
+            "user_id": user_id,
+            "first_name": update.effective_user.first_name or "",
+            "last_name": update.effective_user.last_name or "",
+            "username": update.effective_user.username or "",
+        }
+        
+        # Gửi yêu cầu POST để lưu session
+        response = requests.post(endpoint, json=payload)
+        
+        if response.status_code == 200:
+            logger.info(f"Clear history session saved with ID: {session_id}")
+            await update.message.reply_text("✅ History cleared successfully. Future conversations will start fresh!")
+        else:
+            logger.error(f"Failed to save clear history session: {response.status_code} - {response.text}")
+            await update.message.reply_text("❌ Failed to clear history. Please try again later.")
+            
+    except Exception as e:
+        logger.error(f"Error saving clear history session: {e}")
+        await update.message.reply_text(f"❌ Error clearing history: {str(e)}")
 
 # WebSocket monitoring
 async def websocket_listener():
