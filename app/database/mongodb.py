@@ -175,7 +175,7 @@ def get_request_history(user_id, n=3):
     """Get the most recent user requests to use as context for retrieval"""
     try:
         # Lấy lịch sử trực tiếp từ MongoDB (thông qua get_user_history đã sửa đổi)
-        history = get_user_history(user_id, n)
+        history = get_chat_history(user_id, n)
         
         # Just extract the questions for context
         requests = []

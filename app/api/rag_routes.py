@@ -48,17 +48,17 @@ router = APIRouter(
 
 fix_request = PromptTemplate(
     template = """Goal:
-Your task is fixing user'srequest to get all information of history chat.
-You will received a conversation history and current request of user.
-Generate a new request that make sense if current request related to history conversation.
+Your task is to extract important keywords from the user's current request, optionally using chat history if relevant.
+You will receive a conversation history and the user's current message.
+Generate a **list of concise keywords** that best represent the user's intent.
 
 Return Format:
-Only return the fully users' request with all the important keywords.
-If the current message is NOT related to the conversation history or there is no chat history: Return user's current request.
-If the current message IS related to the conversation history: Return new request based on information from the conversation history and the current request.
+Only return keywords (comma-separated, no extra explanation).
+If the current message is NOT related to the chat history or if there is no chat history: Return keywords from the current message only.
+If the current message IS related to the chat history: Return a refined set of keywords based on both history and current message.
 
 Warning:
-Only use history chat if current request is truly relevant to the previous conversation.
+Only use chat history if the current message is clearly related to the prior context.
 
 Conversation History:
 {chat_history}
@@ -66,7 +66,7 @@ Conversation History:
 User current message:
 {question}
 """,
-    input_variables = ["chat_history", "question"],
+    input_variables=["chat_history", "question"],
 )
 
 # Create a prompt template with conversation history
@@ -126,7 +126,7 @@ async def create_embedding(request: EmbeddingRequest):
     """
     Generate embedding for text.
     
-    - *text*: Text to generate embedding for
+    - **text**: Text to generate embedding for
     """
     try:
         # Get embedding
@@ -144,18 +144,18 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
     """
     Get answer for a question using RAG.
     
-    - *user_id*: User's ID from Telegram
-    - *question*: User's question
-    - *include_history*: Whether to include user history in prompt (default: True)
-    - *use_rag*: Whether to use RAG (default: True)
-    - *similarity_top_k*: Number of top similar documents to return after filtering (default: 6)
-    - *limit_k*: Maximum number of documents to retrieve from vector store (default: 10)
-    - *similarity_metric*: Similarity metric to use - cosine, dotproduct, euclidean (default: cosine)
-    - *similarity_threshold*: Threshold for vector similarity (default: 0.75)
-    - *session_id*: Optional session ID for tracking conversations
-    - *first_name*: User's first name
-    - *last_name*: User's last name
-    - *username*: User's username
+    - **user_id**: User's ID from Telegram
+    - **question**: User's question
+    - **include_history**: Whether to include user history in prompt (default: True)
+    - **use_rag**: Whether to use RAG (default: True)
+    - **similarity_top_k**: Number of top similar documents to return after filtering (default: 6)
+    - **limit_k**: Maximum number of documents to retrieve from vector store (default: 10)
+    - **similarity_metric**: Similarity metric to use - cosine, dotproduct, euclidean (default: cosine)
+    - **similarity_threshold**: Threshold for vector similarity (default: 0.75)
+    - **session_id**: Optional session ID for tracking conversations
+    - **first_name**: User's first name
+    - **last_name**: User's last name
+    - **username**: User's username
     """
     start_time = time.time()
     try:

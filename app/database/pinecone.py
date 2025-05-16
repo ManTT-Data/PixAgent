@@ -30,7 +30,7 @@ DEFAULT_SIMILARITY_THRESHOLD = float(os.getenv("PINECONE_DEFAULT_SIMILARITY_THRE
 ALLOWED_METRICS = os.getenv("PINECONE_ALLOWED_METRICS", "cosine,dotproduct,euclidean").split(",")
 
 # Export constants for importing elsewhere
-_all_ = [
+__all__ = [
     'get_pinecone_index', 
     'check_db_connection', 
     'search_vectors', 
