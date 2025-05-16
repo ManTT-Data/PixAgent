@@ -142,13 +142,40 @@ def get_chat_history(user_id, n = 5) -> str:
     Bot: ...
     User: ...
     Bot: ...
+    
+    Chỉ lấy history sau lệnh /start hoặc /clear mới nhất
     """
     try:
-        # Truy vấn các document có user_id, sắp xếp theo created_at tăng dần
-        # Get the 4 most recent documents first, then sort them in ascending order
-        docs = list(session_collection.find({"user_id": str(user_id)}).sort("created_at", -1).limit(n))
-        # Reverse the list to get chronological order (oldest to newest)
-        docs.reverse()
+        # Tìm session /start hoặc /clear mới nhất
+        reset_session = session_collection.find_one(
+            {
+                "user_id": str(user_id), 
+                "$or": [
+                    {"action": "start"},
+                    {"action": "clear"}
+                ]
+            },
+            sort=[("created_at_datetime", -1)]
+        )
+        
+        # Nếu không tìm thấy session reset nào, lấy n session gần nhất
+        if reset_session:
+            reset_time = reset_session["created_at_datetime"]
+            # Lấy các session sau reset_time
+            docs = list(
+                session_collection.find({
+                    "user_id": str(user_id),
+                    "created_at_datetime": {"$gt": reset_time}
+                }).sort("created_at_datetime", 1)
+            )
+            logger.info(f"Lấy {len(docs)} session sau lệnh {reset_session['action']} lúc {reset_time}")
+        else:
+            # Không tìm thấy reset session, lấy n session gần nhất
+            docs = list(session_collection.find({"user_id": str(user_id)}).sort("created_at", -1).limit(n))
+            # Đảo ngược để có thứ tự từ cũ đến mới
+            docs.reverse()
+            logger.info(f"Không tìm thấy session reset, lấy {len(docs)} session gần nhất")
+            
         if not docs:
             logger.info(f"Không tìm thấy dữ liệu cho user_id: {user_id}")
             return ""
@@ -161,6 +188,10 @@ def get_chat_history(user_id, n = 5) -> str:
             message = doc.get("message", "")
             response = doc.get("response", "")
             
+            # Bỏ qua lệnh start và clear
+            if action in ["start", "clear"]:
+                continue
+                
             if factor == "user" and action == "asking_freely":
                 conversation_lines.append(f"User: {message}")
                 conversation_lines.append(f"Bot: {response}")
@@ -174,13 +205,14 @@ def get_chat_history(user_id, n = 5) -> str:
 def get_request_history(user_id, n=3):
     """Get the most recent user requests to use as context for retrieval"""
     try:
-        # Lấy lịch sử trực tiếp từ MongoDB (thông qua get_user_history đã sửa đổi)
+        # Truy vấn trực tiếp từ MongoDB
         history = get_chat_history(user_id, n)
         
         # Just extract the questions for context
         requests = []
-        for item in history:
-            requests.append(item['question'])
+        for line in history.split('\n'):
+            if line.startswith("User: "):
+                requests.append(line[6:])  # Lấy nội dung sau "User: "
             
         # Join all recent requests into a single string for context
         return " ".join(requests)

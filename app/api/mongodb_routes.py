@@ -74,8 +74,8 @@ async def create_session(session: SessionCreate, response: Response):
             created_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         )
         
-        # Kiểm tra nếu session cần gửi thông báo (response bắt đầu bằng "I don't know")
-        if session.response and session.response.strip().lower().startswith("i don't know"):
+        # Kiểm tra nếu session cần gửi thông báo (response bắt đầu bằng "I'm sorry")
+        if session.response and session.response.strip().lower().startswith("i'm sorry"):
             # Gửi thông báo qua WebSocket
             try:
                 notification_data = {
@@ -93,7 +93,7 @@ async def create_session(session: SessionCreate, response: Response):
                 
                 # Khởi tạo task để gửi thông báo - sử dụng asyncio.create_task để đảm bảo không block quá trình chính
                 asyncio.create_task(send_notification(notification_data))
-                logger.info(f"Notification queued for session {session.session_id} - response starts with 'I don't know'")
+                logger.info(f"Notification queued for session {session.session_id} - response starts with 'I'm sorry'")
             except Exception as e:
                 logger.error(f"Error queueing notification: {e}")
                 # Không dừng xử lý chính khi gửi thông báo thất bại

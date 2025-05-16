@@ -26,7 +26,7 @@ class AllConnectionsStatus(BaseModel):
 
 # Khởi tạo router
 router = APIRouter(
-    prefix="",
+    prefix="/ws",
     tags=["WebSockets"],
 )
 

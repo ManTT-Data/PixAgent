@@ -17,8 +17,6 @@ load_dotenv()
 DEFAULT_CACHE_TTL = int(os.getenv("CACHE_TTL_SECONDS", "300"))  # Mặc định 5 phút
 DEFAULT_CACHE_CLEANUP_INTERVAL = int(os.getenv("CACHE_CLEANUP_INTERVAL", "60"))  # Mặc định 1 phút
 DEFAULT_CACHE_MAX_SIZE = int(os.getenv("CACHE_MAX_SIZE", "1000"))  # Mặc định 1000 phần tử
-DEFAULT_HISTORY_QUEUE_SIZE = int(os.getenv("HISTORY_QUEUE_SIZE", "10"))  # Mặc định queue size là 10
-DEFAULT_HISTORY_CACHE_TTL = int(os.getenv("HISTORY_CACHE_TTL", "3600"))  # Mặc định 1 giờ
 
 # Generic type để có thể sử dụng cho nhiều loại giá trị khác nhau
 T = TypeVar('T')
@@ -42,36 +40,6 @@ class CacheItem(Generic[T]):
         """Gia hạn thời gian sống của item"""
         self.expire_at = time.time() + ttl
 
-
-# Lớp HistoryQueue để lưu trữ lịch sử người dùng
-class HistoryQueue:
-    def __init__(self, max_size: int = DEFAULT_HISTORY_QUEUE_SIZE, ttl: int = DEFAULT_HISTORY_CACHE_TTL):
-        self.items: List[Dict[str, Any]] = []
-        self.max_size = max_size
-        self.ttl = ttl
-        self.expire_at = time.time() + ttl
-    
-    def add(self, item: Dict[str, Any]) -> None:
-        """Thêm một item vào queue, nếu đã đầy thì loại bỏ item cũ nhất"""
-        if len(self.items) >= self.max_size:
-            self.items.pop(0)
-        self.items.append(item)
-        # Mỗi khi thêm item mới, cập nhật thời gian hết hạn
-        self.refresh_expiry()
-    
-    def get_all(self) -> List[Dict[str, Any]]:
-        """Lấy tất cả items trong queue"""
-        return self.items
-    
-    def is_expired(self) -> bool:
-        """Kiểm tra xem queue có hết hạn chưa"""
-        return time.time() > self.expire_at
-    
-    def refresh_expiry(self) -> None:
-        """Làm mới thời gian hết hạn"""
-        self.expire_at = time.time() + self.ttl
-
-
 # Lớp cache chính
 class InMemoryCache:
     def __init__(
@@ -84,7 +52,6 @@ class InMemoryCache:
         self.ttl = ttl
         self.cleanup_interval = cleanup_interval
         self.max_size = max_size
-        self.user_history_queues: Dict[str, HistoryQueue] = {}
         self.lock = threading.RLock()  # Sử dụng RLock để tránh deadlock
         
         # Khởi động thread dọn dẹp cache định kỳ (active expiration)
@@ -170,13 +137,8 @@ class InMemoryCache:
             for key in expired_keys:
                 del self.cache[key]
             
-            # Xóa các user history queue đã hết hạn
-            expired_user_ids = [uid for uid, queue in self.user_history_queues.items() if queue.is_expired()]
-            for user_id in expired_user_ids:
-                del self.user_history_queues[user_id]
-                
-            if expired_keys or expired_user_ids:
-                logger.debug(f"Cleaned up {len(expired_keys)} expired cache items and {len(expired_user_ids)} expired history queues")
+            if expired_keys:
+                logger.debug(f"Cleaned up {len(expired_keys)} expired cache items")
     
     def _evict_lru_items(self, count: int = 1) -> None:
         """Xóa bỏ các item ít được truy cập nhất khi cache đầy"""
@@ -198,8 +160,7 @@ class InMemoryCache:
                 "active_items": total_items - expired_items,
                 "memory_usage_bytes": memory_usage,
                 "memory_usage_mb": memory_usage / (1024 * 1024),
-                "max_size": self.max_size,
-                "history_queues": len(self.user_history_queues)
+                "max_size": self.max_size
             }
     
     def _estimate_memory_usage(self) -> int:
@@ -219,46 +180,7 @@ class InMemoryCache:
             except:
                 cache_size += 100
         
-        # Ước tính kích thước của user history queues
-        for queue in self.user_history_queues.values():
-            try:
-                cache_size += len(json.dumps(queue.items)) + 100  # 100 bytes cho metadata
-            except:
-                cache_size += 100
-        
         return cache_size
-    
-    # Các phương thức chuyên biệt cho việc quản lý lịch sử người dùng
-    def add_user_history(self, user_id: str, item: Dict[str, Any], queue_size: Optional[int] = None, ttl: Optional[int] = None) -> None:
-        """Thêm một item vào history queue của người dùng"""
-        with self.lock:
-            # Tạo queue nếu chưa tồn tại
-            if user_id not in self.user_history_queues:
-                queue_size_value = queue_size if queue_size is not None else DEFAULT_HISTORY_QUEUE_SIZE
-                ttl_value = ttl if ttl is not None else DEFAULT_HISTORY_CACHE_TTL
-                self.user_history_queues[user_id] = HistoryQueue(max_size=queue_size_value, ttl=ttl_value)
-            
-            # Thêm item vào queue
-            self.user_history_queues[user_id].add(item)
-            logger.debug(f"Added history item for user {user_id}")
-    
-    def get_user_history(self, user_id: str, default: Any = None) -> List[Dict[str, Any]]:
-        """Lấy lịch sử của người dùng từ cache"""
-        with self.lock:
-            queue = self.user_history_queues.get(user_id)
-            
-            # Nếu không tìm thấy queue hoặc queue đã hết hạn
-            if queue is None or queue.is_expired():
-                if queue is not None and queue.is_expired():
-                    del self.user_history_queues[user_id]
-                    logger.debug(f"User history queue expired: {user_id}")
-                return default if default is not None else []
-            
-            # Làm mới thời gian hết hạn
-            queue.refresh_expiry()
-            logger.debug(f"Retrieved history for user {user_id}: {len(queue.items)} items")
-            return queue.get_all()
-
 
 # Singleton instance
 _cache_instance = None

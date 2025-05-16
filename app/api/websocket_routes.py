@@ -1,5 +1,5 @@
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, status, Query
-from typing import List, Dict, Optional
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, status
+from typing import List, Dict
 import logging
 from datetime import datetime
 import asyncio
@@ -8,7 +8,6 @@ import os
 from dotenv import load_dotenv
 from app.database.mongodb import session_collection
 from app.utils.utils import get_local_time
-from starlette.websockets import WebSocketState
 
 # Load environment variables
 load_dotenv()
@@ -26,8 +25,43 @@ router = APIRouter(
     tags=["WebSocket"],
 )
 
-# Store active WebSocket connections by user_id
-active_connections: Dict[str, List[WebSocket]] = {}
+# Store active WebSocket connections
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: List[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+        client_info = f"{websocket.client.host}:{websocket.client.port}" if hasattr(websocket, 'client') else "Unknown"
+        logger.info(f"New WebSocket connection from {client_info}. Total connections: {len(self.active_connections)}")
+
+    def disconnect(self, websocket: WebSocket):
+        self.active_connections.remove(websocket)
+        logger.info(f"WebSocket connection removed. Total connections: {len(self.active_connections)}")
+
+    async def broadcast(self, message: Dict):
+        if not self.active_connections:
+            logger.warning("No active WebSocket connections to broadcast to")
+            return
+            
+        disconnected = []
+        for connection in self.active_connections:
+            try:
+                await connection.send_json(message)
+                logger.info(f"Message sent to WebSocket connection")
+            except Exception as e:
+                logger.error(f"Error sending message to WebSocket: {e}")
+                disconnected.append(connection)
+                
+        # Remove disconnected connections
+        for conn in disconnected:
+            if conn in self.active_connections:
+                self.active_connections.remove(conn)
+                logger.info(f"Removed disconnected WebSocket. Remaining: {len(self.active_connections)}")
+
+# Initialize connection manager
+manager = ConnectionManager()
 
 # Create full URL of WebSocket server from environment variables
 def get_full_websocket_url(server_side=False):
@@ -58,7 +92,7 @@ def get_full_websocket_url(server_side=False):
     3. When there are new sessions requiring attention, you will receive notifications through this connection
     
     Notifications are sent when:
-    - Session response starts with "I don't know"
+    - Session response starts with "I'm sorry"
     - The system cannot answer the user's question
     
     Make sure to send a "keepalive" message every 5 minutes to maintain the connection.
@@ -80,14 +114,14 @@ async def websocket_documentation():
         "full_url": ws_url,
         "description": "Endpoint to receive notifications about new sessions requiring attention",
         "notification_format": {
-            "type": "new_session",
+            "type": "sorry_response",
             "timestamp": "YYYY-MM-DD HH:MM:SS",
             "data": {
                 "session_id": "session id",
                 "factor": "user",
                 "action": "action type",
                 "message": "User question",
-                "response": "I don't know...",
+                "response": "I'm sorry...",
                 "user_id": "user id",
                 "first_name": "user's first name",
                 "last_name": "user's last name",
@@ -134,7 +168,7 @@ async def websocket_documentation():
                 data = json.loads(message)
                 print(f"Received notification: {data}")
                 # Process notification, e.g.: send to Telegram Admin
-                if data.get("type") == "new_session":
+                if data.get("type") == "sorry_response":
                     session_data = data.get("data", {})
                     user_question = session_data.get("message", "")
                     user_name = session_data.get("first_name", "Unknown User")
@@ -194,16 +228,62 @@ async def websocket_endpoint(websocket: WebSocket):
     WebSocket endpoint to receive notifications about new sessions.
     Admin Bot will connect to this endpoint to receive notifications when there are new sessions requiring attention.
     """
-    await websocket.accept()
+    await manager.connect(websocket)
     try:
+        # Keep track of last activity time to prevent connection timeouts
+        last_activity = datetime.now()
+        
+        # Set up a background ping task
+        async def send_periodic_ping():
+            try:
+                while True:
+                    # Send ping every 20 seconds if no other activity
+                    await asyncio.sleep(20)
+                    current_time = datetime.now()
+                    time_since_activity = (current_time - last_activity).total_seconds()
+                    
+                    # Only send ping if there's been no activity for 15+ seconds
+                    if time_since_activity > 15:
+                        logger.debug("Sending ping to client to keep connection alive")
+                        await websocket.send_json({"type": "ping", "timestamp": current_time.isoformat()})
+            except asyncio.CancelledError:
+                # Task was cancelled, just exit quietly
+                pass
+            except Exception as e:
+                logger.error(f"Error in ping task: {e}")
+        
+        # Start ping task
+        ping_task = asyncio.create_task(send_periodic_ping())
+        
+        # Main message loop
         while True:
+            # Update last activity time
+            last_activity = datetime.now()
+            
             # Maintain WebSocket connection
             data = await websocket.receive_text()
+            
             # Echo back to keep connection active
-            await websocket.send_json({"status": "connected", "echo": data, "timestamp": datetime.now().isoformat()})
+            await websocket.send_json({
+                "status": "connected", 
+                "echo": data, 
+                "timestamp": last_activity.isoformat()
+            })
             logger.info(f"Received message from WebSocket: {data}")
     except WebSocketDisconnect:
         logger.info("WebSocket client disconnected")
+    except Exception as e:
+        logger.error(f"WebSocket error: {e}")
+    finally:
+        # Always clean up properly
+        manager.disconnect(websocket)
+        # Cancel ping task if it's still running
+        try:
+            ping_task.cancel()
+            await ping_task
+        except (UnboundLocalError, asyncio.CancelledError):
+            # ping_task wasn't created or already cancelled
+            pass
 
 # Function to send notifications over WebSocket
 async def send_notification(data: dict):
@@ -211,224 +291,55 @@ async def send_notification(data: dict):
     Send notification to all active WebSocket connections.
     
     This function is used to notify admin bots about new issues or questions that need attention.
-    It's triggered when the system cannot answer a user's question (response starts with "I don't know").
+    It's triggered when the system cannot answer a user's question (response starts with "I'm sorry").
     
     Args:
         data: The data to send as notification
     """
     try:
         # Log number of active connections and notification attempt
-        logger.info(f"Attempting to send notification. Active connections: {len(active_connections)}")
+        logger.info(f"Attempting to send notification. Active connections: {len(manager.active_connections)}")
         logger.info(f"Notification data: session_id={data.get('session_id')}, user_id={data.get('user_id')}")
         logger.info(f"Response: {data.get('response', '')[:50]}...")
         
-        # Check if the response starts with "I don't know"
+        # Check if the response starts with "I'm sorry"
         response = data.get('response', '')
         if not response or not isinstance(response, str):
             logger.warning(f"Invalid response format in notification data: {response}")
             return
             
-        if not response.strip().lower().startswith("i don't know"):
-            logger.info(f"Response doesn't start with 'I don't know', notification not needed: {response[:50]}...")
+        if not response.strip().lower().startswith("i'm sorry"):
+            logger.info(f"Response doesn't start with 'I'm sorry', notification not needed: {response[:50]}...")
             return
             
-        logger.info(f"Response starts with 'I don't know', sending notification")
+        logger.info(f"Response starts with 'I'm sorry', sending notification")
         
-        # Format the notification data for admin
+        # Format the notification data for admin - format theo chuẩn Admin_bot
         notification_data = {
-            "type": "new_session",
+            "type": "sorry_response",  # Đổi type thành sorry_response để phù hợp với Admin_bot
             "timestamp": get_local_time(),
-            "data": {
-                "session_id": data.get('session_id', 'unknown'),
-                "user_id": data.get('user_id', 'unknown'),
-                "message": data.get('message', ''),
-                "response": response,
+            "user_id": data.get('user_id', 'unknown'),
+            "message": data.get('message', ''),
+            "response": response,
+            "session_id": data.get('session_id', 'unknown'),
+            "user_info": {
                 "first_name": data.get('first_name', 'User'),
                 "last_name": data.get('last_name', ''),
-                "username": data.get('username', ''),
-                "created_at": data.get('created_at', get_local_time()),
-                "action": data.get('action', 'unknown'),
-                "factor": "user"  # Always show as user for better readability
+                "username": data.get('username', '')
             }
         }
         
         # Check if there are active connections
-        if not active_connections:
+        if not manager.active_connections:
             logger.warning("No active WebSocket connections for notification broadcast")
             return
         
         # Broadcast notification to all active connections
-        logger.info(f"Broadcasting notification to {len(active_connections)} connections")
-        for user_id, connections in active_connections.items():
-            for connection in connections:
-                try:
-                    await connection.send_json(notification_data)
-                    logger.info(f"Message sent to WebSocket connection for user {user_id}")
-                except Exception as e:
-                    logger.error(f"Error sending notification to user {user_id}: {e}")
+        logger.info(f"Broadcasting notification to {len(manager.active_connections)} connections")
+        await manager.broadcast(notification_data)
         logger.info("Notification broadcast completed successfully")
         
     except Exception as e:
         logger.error(f"Error sending notification: {e}")
         import traceback
         logger.error(traceback.format_exc())
-
-@router.websocket("/status")
-async def websocket_endpoint(websocket: WebSocket):
-    """General WebSocket endpoint for notifications"""
-    await websocket.accept()
-    try:
-        while True:
-            # Wait for messages
-            data = await websocket.receive_text()
-            await websocket.send_text(f"Message received: {data}")
-    except WebSocketDisconnect:
-        logger.info("WebSocket client disconnected")
-
-@router.websocket("/status/{user_id}")
-async def websocket_user_status(websocket: WebSocket, user_id: str):
-    """User-specific WebSocket for status updates and notifications"""
-    await websocket.accept()
-    
-    # Add connection to active connections for this user
-    if user_id not in active_connections:
-        active_connections[user_id] = []
-    active_connections[user_id].append(websocket)
-    
-    logger.info(f"WebSocket connection established for user {user_id}")
-    
-    try:
-        # Send initial connection message
-        await websocket.send_json({
-            "event": "connected",
-            "message": "WebSocket connection established"
-        })
-        
-        # Main loop to handle incoming messages
-        while True:
-            # Wait for messages
-            data = await websocket.receive_text()
-            # Process message and send response
-            await websocket.send_json({
-                "event": "message_received",
-                "data": data
-            })
-    except WebSocketDisconnect:
-        logger.info(f"WebSocket disconnected for user {user_id}")
-    except Exception as e:
-        logger.error(f"WebSocket error for user {user_id}: {str(e)}")
-    finally:
-        # Remove connection from active connections
-        if user_id in active_connections:
-            active_connections[user_id].remove(websocket)
-            if not active_connections[user_id]:
-                del active_connections[user_id]
-        logger.info(f"WebSocket connection removed for user {user_id}")
-
-async def send_notification_to_user(user_id: str, event: str, data: dict):
-    """
-    Send notification to a specific user via WebSocket
-    
-    Args:
-        user_id: User ID
-        event: Event type
-        data: Notification data
-    """
-    if user_id not in active_connections:
-        logger.warning(f"No active WebSocket connection for user {user_id}")
-        return
-    
-    message = {
-        "event": event,
-        "data": data
-    }
-    
-    # Send to all connections for this user
-    disconnected = []
-    for i, connection in enumerate(active_connections[user_id]):
-        try:
-            if connection.client_state == WebSocketState.CONNECTED:
-                await connection.send_json(message)
-            else:
-                disconnected.append(i)
-        except Exception as e:
-            logger.error(f"Error sending notification to user {user_id}: {str(e)}")
-            disconnected.append(i)
-    
-    # Remove disconnected connections
-    for i in sorted(disconnected, reverse=True):
-        try:
-            del active_connections[user_id][i]
-        except:
-            pass
-    
-    # Clean up empty user entries
-    if user_id in active_connections and not active_connections[user_id]:
-        del active_connections[user_id]
-
-async def send_pdf_upload_progress(user_id: str, file_id: str, step: str, progress: float, message: str):
-    """
-    Send PDF upload progress via WebSocket
-    
-    Args:
-        user_id: User ID
-        file_id: File ID
-        step: Current processing step
-        progress: Progress value (0.0 to 1.0)
-        message: Status message
-    """
-    await send_notification_to_user(user_id, "pdf_upload_progress", {
-        "file_id": file_id,
-        "step": step,
-        "progress": progress,
-        "message": message
-    })
-
-async def send_pdf_upload_started(user_id: str, filename: str, file_id: str):
-    """
-    Notify user that PDF upload has started
-    
-    Args:
-        user_id: User ID
-        filename: Original filename
-        file_id: File ID for tracking
-    """
-    await send_notification_to_user(user_id, "pdf_upload_started", {
-        "file_id": file_id,
-        "filename": filename,
-        "message": f"Started uploading {filename}"
-    })
-
-async def send_pdf_upload_completed(user_id: str, file_id: str, filename: str, chunks_processed: int):
-    """
-    Notify user that PDF upload has completed
-    
-    Args:
-        user_id: User ID
-        file_id: File ID
-        filename: Original filename
-        chunks_processed: Number of chunks processed
-    """
-    await send_notification_to_user(user_id, "pdf_upload_completed", {
-        "file_id": file_id,
-        "filename": filename,
-        "chunks_processed": chunks_processed,
-        "message": f"Completed processing {filename} with {chunks_processed} chunks"
-    })
-
-async def send_pdf_upload_failed(user_id: str, file_id: str, filename: str, error: str):
-    """
-    Notify user that PDF upload has failed
-    
-    Args:
-        user_id: User ID
-        file_id: File ID
-        filename: Original filename
-        error: Error message
-    """
-    await send_notification_to_user(user_id, "pdf_upload_failed", {
-        "file_id": file_id,
-        "filename": filename,
-        "error": error,
-        "message": f"Failed to process {filename}: {error}"
-    })
