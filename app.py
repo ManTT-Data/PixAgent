@@ -6,6 +6,11 @@ import os
 import sys
 import logging
 from dotenv import load_dotenv
+from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.staticfiles import StaticFiles
+import time
+import uuid
+import traceback
 
 # Cấu hình logging
 logging.basicConfig(
@@ -83,6 +88,7 @@ try:
     from app.api.rag_routes import router as rag_router
     from app.api.websocket_routes import router as websocket_router
     from app.api.pdf_routes import router as pdf_router
+    from app.api.pdf_websocket import router as pdf_websocket_router
     
     # Import middlewares
     from app.utils.middleware import RequestLoggingMiddleware, ErrorHandlingMiddleware, DatabaseCheckMiddleware
@@ -92,6 +98,8 @@ try:
     
     # Import cache
     from app.utils.cache import get_cache
+    
+    logger.info("Successfully imported all routers and modules")
     
 except ImportError as e:
     logger.error(f"Error importing routes or middlewares: {e}")
@@ -129,6 +137,14 @@ app.include_router(postgresql_router)
 app.include_router(rag_router)
 app.include_router(websocket_router)
 app.include_router(pdf_router)
+app.include_router(pdf_websocket_router)
+
+# Log all registered routes
+logger.info("Registered API routes:")
+for route in app.routes:
+    if hasattr(route, "path") and hasattr(route, "methods"):
+        methods = ",".join(route.methods)
+        logger.info(f"  {methods:<10} {route.path}")
 
 # Root endpoint
 @app.get("/")
@@ -234,6 +250,136 @@ if DEBUG:
                 "history_queue_size": os.getenv("HISTORY_QUEUE_SIZE", "10"),
                 "history_cache_ttl": os.getenv("HISTORY_CACHE_TTL", "3600"),
             }
+        }
+    
+    @app.get("/debug/websocket-routes")
+    def debug_websocket_routes():
+        """Hiển thị thông tin về các WebSocket route (chỉ trong chế độ debug)"""
+        ws_routes = []
+        for route in app.routes:
+            if "websocket" in str(route.__class__).lower():
+                ws_routes.append({
+                    "path": route.path,
+                    "name": route.name,
+                    "endpoint": str(route.endpoint)
+                })
+        return {
+            "websocket_routes": ws_routes,
+            "total_count": len(ws_routes)
+        }
+        
+    @app.get("/debug/mock-status")
+    def debug_mock_status():
+        """Display current mock mode settings"""
+        # Import was: from app.api.pdf_routes import USE_MOCK_MODE
+        # We've disabled mock mode
+        
+        return {
+            "mock_mode": False,  # Disabled - using real database
+            "mock_env_variable": os.getenv("USE_MOCK_MODE", "false"),
+            "debug_mode": DEBUG
+        }
+
+# Add new debug endpoint for Pinecone connection
+@app.get("/debug/pinecone-check")
+async def debug_pinecone_connection():
+    """Check Pinecone connection and API key status"""
+    try:
+        # Import settings and pinecone client
+        from app.utils.pdf_processor import PDFProcessor
+        from app.database.pinecone import get_pinecone_index
+        
+        # Get settings
+        pinecone_settings = get_pinecone_settings()
+        
+        # Try to get an API key from the database
+        api_key = None
+        vector_db_id = None
+        
+        try:
+            from app.database.postgresql import get_db
+            from app.database.models import VectorDatabase
+            
+            # Get first active vector database
+            db = next(get_db())
+            vector_db = db.query(VectorDatabase).filter(
+                VectorDatabase.status == "active"
+            ).first()
+            
+            if vector_db:
+                vector_db_id = vector_db.id
+                
+                # Get API key from relationship if available
+                if hasattr(vector_db, 'api_key_ref') and vector_db.api_key_ref:
+                    api_key = vector_db.api_key_ref.key_value
+                    api_key_source = "from relationship"
+                else:
+                    api_key_source = "not found in relationship"
+            else:
+                api_key_source = "no active vector database found"
+        except Exception as db_error:
+            logger.error(f"Error accessing database: {db_error}")
+            api_key_source = f"error: {str(db_error)}"
+        
+        # Direct environment check
+        env_api_key = os.environ.get("PINECONE_API_KEY", "Not set")
+        api_key_prefix = env_api_key[:4] + "..." if env_api_key != "Not set" else "Not set"
+        
+        # Test connection using PDFProcessor
+        connection_test = None
+        try:
+            if vector_db_id:
+                processor = PDFProcessor(
+                    api_key=None,
+                    vector_db_id=vector_db_id, 
+                    mock_mode=False
+                )
+                index = processor._init_pinecone_connection()
+                
+                if index:
+                    connection_test = "Success with vector_db_id"
+                    
+                    # Try to get stats
+                    try:
+                        stats = index.describe_index_stats()
+                        index_stats = {
+                            "total_vectors": stats.get("total_vector_count", 0),
+                            "namespaces": list(stats.get("namespaces", {}).keys())
+                        }
+                    except Exception as stats_error:
+                        index_stats = {"error": str(stats_error)}
+                else:
+                    connection_test = "Failed with vector_db_id"
+                    index_stats = None
+            else:
+                connection_test = "No vector_db_id available"
+                index_stats = None
+        except Exception as conn_error:
+            connection_test = f"Error: {str(conn_error)}"
+            index_stats = None
+        
+        # Return all relevant information
+        return {
+            "pinecone_settings": {
+                "environment": pinecone_settings.environment,
+                "index_name": pinecone_settings.index_name,
+            },
+            "api_key_status": {
+                "environment_key_prefix": api_key_prefix,
+                "db_key_available": api_key is not None,
+                "api_key_source": api_key_source
+            },
+            "connection_test": connection_test,
+            "index_stats": index_stats,
+            "vector_db_id": vector_db_id
+        }
+    except Exception as e:
+        logger.error(f"Error in pinecone-check endpoint: {e}")
+        logger.error(traceback.format_exc())
+        return {
+            "status": "error",
+            "message": str(e),
+            "traceback": traceback.format_exc()
         }
 
 # Run the app with uvicorn when executed directly

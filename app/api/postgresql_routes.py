@@ -4,8 +4,10 @@ import traceback
 from datetime import datetime, timedelta, timezone
 import time
 from functools import lru_cache
+from pathlib import Path as pathlib_Path  # Import Path from pathlib with a different name
 
-from fastapi import APIRouter, HTTPException, Depends, Query, Path, Body, Response
+from fastapi import APIRouter, HTTPException, Depends, Query, Body, Response, File, UploadFile, Form, BackgroundTasks
+from fastapi.params import Path  # Import Path explicitly from fastapi.params instead
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
 from typing import List, Optional, Dict, Any
@@ -16,6 +18,7 @@ from sqlalchemy import text, inspect, func
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy import desc, func
 from cachetools import TTLCache
+import uuid
 
 from app.database.postgresql import get_db
 from app.database.models import FAQItem, EmergencyItem, EventItem, AboutPixity, SolanaSummit, DaNangBucketList, ApiKey, VectorDatabase, Document, VectorStatus, TelegramBot, ChatEngine, BotEngine, EngineVectorDb, DocumentContent
@@ -1919,23 +1922,30 @@ class VectorDatabaseBase(BaseModel):
     name: str
     description: Optional[str] = None
     pinecone_index: str
-    api_key_id: int  # Use API key ID instead of direct API key
+    api_key_id: Optional[int] = None  # Make api_key_id optional to handle NULL values
     status: str = "active"
 
 class VectorDatabaseCreate(VectorDatabaseBase):
+    api_key_id: int  # Keep this required for new databases
     pass
 
 class VectorDatabaseUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
     pinecone_index: Optional[str] = None
-    api_key_id: Optional[int] = None  # Updated to use API key ID
+    api_key_id: Optional[int] = None
     status: Optional[str] = None
 
-class VectorDatabaseResponse(VectorDatabaseBase):
+class VectorDatabaseResponse(BaseModel):
+    name: str
+    description: Optional[str] = None
+    pinecone_index: str
+    api_key_id: Optional[int] = None  # Make api_key_id optional to handle NULL values
+    status: str
     id: int
     created_at: datetime
     updated_at: datetime
+    message: Optional[str] = None  # Add message field for notifications
     
     model_config = ConfigDict(from_attributes=True)
 
@@ -1950,6 +1960,7 @@ class VectorDatabaseDetailResponse(BaseModel):
     document_count: int
     embedded_count: int
     pending_count: int
+    message: Optional[str] = None  # Add message field for notifications
     
     model_config = ConfigDict(from_attributes=True)
 
@@ -1989,7 +2000,7 @@ async def create_vector_database(
     db: Session = Depends(get_db)
 ):
     """
-    Create a new vector database.
+    Create a new vector database. If the specified Pinecone index doesn't exist, it will be created automatically.
     """
     try:
         # Check if a database with the same name already exists
@@ -2002,6 +2013,66 @@ async def create_vector_database(
         if not api_key:
             raise HTTPException(status_code=400, detail=f"API key with ID {vector_db.api_key_id} not found")
         
+        # Initialize Pinecone client with the API key
+        from pinecone import Pinecone, ServerlessSpec
+        pc_client = Pinecone(api_key=api_key.key_value)
+        
+        # Check if the index exists
+        index_list = pc_client.list_indexes()
+        index_names = index_list.names() if hasattr(index_list, 'names') else []
+        
+        index_exists = vector_db.pinecone_index in index_names
+        index_created = False
+        
+        if not index_exists:
+            # Index doesn't exist - try to create it
+            try:
+                logger.info(f"Pinecone index '{vector_db.pinecone_index}' does not exist. Attempting to create it automatically.")
+                
+                # Create the index with standard parameters
+                pc_client.create_index(
+                    name=vector_db.pinecone_index,
+                    dimension=1536,  # Standard OpenAI embedding dimension
+                    metric="cosine",  # Most common similarity metric
+                    spec=ServerlessSpec(
+                        cloud="aws",
+                        region="us-east-1"  # Use a standard region that works with the free tier
+                    )
+                )
+                
+                logger.info(f"Successfully created Pinecone index '{vector_db.pinecone_index}'")
+                index_created = True
+                
+                # Allow some time for the index to initialize
+                import time
+                time.sleep(5)
+                
+            except Exception as create_error:
+                logger.error(f"Failed to create Pinecone index '{vector_db.pinecone_index}': {create_error}")
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Failed to create Pinecone index '{vector_db.pinecone_index}': {str(create_error)}"
+                )
+        
+        # Verify we can connect to the index (whether existing or newly created)
+        try:
+            index = pc_client.Index(vector_db.pinecone_index)
+            # Try to get stats to verify connection
+            stats = index.describe_index_stats()
+            
+            # Create success message based on whether we created the index or used an existing one
+            if index_created:
+                success_message = f"Successfully created and connected to new Pinecone index '{vector_db.pinecone_index}'"
+            else:
+                success_message = f"Successfully connected to existing Pinecone index '{vector_db.pinecone_index}'"
+                
+            logger.info(f"{success_message}: {stats}")
+            
+        except Exception as e:
+            error_message = f"Error connecting to Pinecone index '{vector_db.pinecone_index}': {str(e)}"
+            logger.error(error_message)
+            raise HTTPException(status_code=400, detail=error_message)
+        
         # Create new vector database
         db_vector_db = VectorDatabase(**vector_db.model_dump())
         
@@ -2009,7 +2080,16 @@ async def create_vector_database(
         db.commit()
         db.refresh(db_vector_db)
         
-        return VectorDatabaseResponse.model_validate(db_vector_db, from_attributes=True)
+        # Return response with additional info about index creation
+        response_data = VectorDatabaseResponse.model_validate(db_vector_db, from_attributes=True).model_dump()
+        
+        # Add a message to the response indicating whether the index was created or existed
+        if index_created:
+            response_data["message"] = f"Created new Pinecone index '{vector_db.pinecone_index}' automatically"
+        else:
+            response_data["message"] = f"Using existing Pinecone index '{vector_db.pinecone_index}'"
+            
+        return VectorDatabaseResponse.model_validate(response_data)
     except HTTPException:
         raise
     except SQLAlchemyError as e:
@@ -2150,6 +2230,7 @@ async def get_vector_database_info(
 ):
     """
     Get detailed information about a vector database including document counts.
+    Also verifies connectivity to the Pinecone index.
     """
     try:
         # Get the vector database
@@ -2174,6 +2255,40 @@ async def get_vector_database_info(
             Document.is_embedded == False
         ).scalar()
         
+        # Verify Pinecone index connectivity if API key is available
+        message = None
+        if vector_db.api_key_id:
+            try:
+                # Get the API key
+                api_key = db.query(ApiKey).filter(ApiKey.id == vector_db.api_key_id).first()
+                if api_key:
+                    # Initialize Pinecone client with the API key
+                    from pinecone import Pinecone
+                    pc_client = Pinecone(api_key=api_key.key_value)
+                    
+                    # Check if the index exists
+                    index_list = pc_client.list_indexes()
+                    index_names = index_list.names() if hasattr(index_list, 'names') else []
+                    
+                    if vector_db.pinecone_index in index_names:
+                        # Try to connect to the index
+                        index = pc_client.Index(vector_db.pinecone_index)
+                        stats = index.describe_index_stats()
+                        message = f"Pinecone index '{vector_db.pinecone_index}' is operational with {stats.get('total_vector_count', 0)} vectors"
+                        logger.info(f"Successfully connected to Pinecone index '{vector_db.pinecone_index}': {stats}")
+                    else:
+                        message = f"Pinecone index '{vector_db.pinecone_index}' does not exist. Available indexes: {', '.join(index_names)}"
+                        logger.warning(message)
+                else:
+                    message = f"API key with ID {vector_db.api_key_id} not found"
+                    logger.warning(message)
+            except Exception as e:
+                message = f"Error connecting to Pinecone: {str(e)}"
+                logger.error(message)
+        else:
+            message = "No API key associated with this vector database"
+            logger.warning(message)
+        
         # Create response with added counts
         result = VectorDatabaseDetailResponse(
             id=vector_db.id,
@@ -2185,7 +2300,8 @@ async def get_vector_database_info(
             updated_at=vector_db.updated_at,
             document_count=total_docs or 0,
             embedded_count=embedded_docs or 0,
-            pending_count=pending_docs or 0
+            pending_count=pending_docs or 0,
+            message=message
         )
         
         return result
@@ -3392,3 +3508,300 @@ async def batch_delete_emergency_contacts(
         logger.error(f"Database error in batch_delete_emergency_contacts: {e}")
         logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+@router.post("/documents", response_model=DocumentResponse)
+async def upload_document(
+    name: str = Form(...),
+    vector_database_id: int = Form(...),
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db)
+):
+    """
+    Upload a new document and associate it with a vector database.
+    
+    - **name**: Document name
+    - **vector_database_id**: ID of the vector database to associate with
+    - **file**: The file to upload
+    """
+    try:
+        # Check if vector database exists
+        vector_db = db.query(VectorDatabase).filter(VectorDatabase.id == vector_database_id).first()
+        if not vector_db:
+            raise HTTPException(status_code=404, detail=f"Vector database with ID {vector_database_id} not found")
+        
+        # Read file content
+        file_content = await file.read()
+        file_size = len(file_content)
+        
+        # Determine file type from extension
+        filename = file.filename
+        file_extension = pathlib_Path(filename).suffix.lower()[1:] if filename else ""
+        
+        # Create document record
+        document = Document(
+            name=name,
+            vector_database_id=vector_database_id,
+            file_type=file_extension,
+            content_type=file.content_type,
+            size=file_size,
+            is_embedded=False
+        )
+        
+        db.add(document)
+        db.flush()  # Get ID without committing
+        
+        # Create document content record
+        document_content = DocumentContent(
+            document_id=document.id,
+            file_content=file_content
+        )
+        
+        db.add(document_content)
+        db.commit()
+        db.refresh(document)
+        
+        # Create vector status record for tracking embedding
+        vector_status = VectorStatus(
+            document_id=document.id,
+            vector_database_id=vector_database_id,
+            status="pending"
+        )
+        
+        db.add(vector_status)
+        db.commit()
+        
+        # Get vector database name for response
+        vector_db_name = vector_db.name if vector_db else f"db_{vector_database_id}"
+        
+        # Create response
+        result = DocumentResponse(
+            id=document.id,
+            name=document.name,
+            file_type=document.file_type,
+            content_type=document.content_type,
+            size=document.size,
+            created_at=document.created_at,
+            updated_at=document.updated_at,
+            vector_database_id=document.vector_database_id,
+            vector_database_name=vector_db_name,
+            is_embedded=document.is_embedded
+        )
+        
+        return result
+    except HTTPException:
+        raise
+    except SQLAlchemyError as e:
+        db.rollback()
+        logger.error(f"Database error uploading document: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error uploading document: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Error uploading document: {str(e)}")
+
+@router.put("/documents/{document_id}", response_model=DocumentResponse)
+async def update_document(
+    document_id: int,
+    name: Optional[str] = Form(None),
+    file: Optional[UploadFile] = File(None),
+    background_tasks: BackgroundTasks = None,
+    db: Session = Depends(get_db)
+):
+    """
+    Update an existing document. Can update name, file content, or both.
+    
+    - **document_id**: ID of the document to update
+    - **name**: New document name (optional)
+    - **file**: New file content (optional)
+    """
+    try:
+        # Validate document_id
+        if document_id <= 0:
+            raise HTTPException(status_code=400, detail="document_id must be greater than 0")
+            
+        # Check if document exists
+        document = db.query(Document).filter(Document.id == document_id).first()
+        if not document:
+            raise HTTPException(status_code=404, detail=f"Document with ID {document_id} not found")
+        
+        # Get vector database information for later use
+        vector_db = None
+        if document.vector_database_id:
+            vector_db = db.query(VectorDatabase).filter(VectorDatabase.id == document.vector_database_id).first()
+        
+        # Update name if provided
+        if name:
+            document.name = name
+        
+        # Update file if provided
+        if file:
+            # Read new file content
+            file_content = await file.read()
+            file_size = len(file_content)
+            
+            # Determine file type from extension
+            filename = file.filename
+            file_extension = pathlib_Path(filename).suffix.lower()[1:] if filename else ""
+            
+            # Update document record
+            document.file_type = file_extension
+            document.content_type = file.content_type
+            document.size = file_size
+            document.is_embedded = False  # Reset embedding status
+            document.updated_at = datetime.now()
+            
+            # Update document content
+            document_content = db.query(DocumentContent).filter(DocumentContent.document_id == document_id).first()
+            if document_content:
+                document_content.file_content = file_content
+            else:
+                # Create new document content if it doesn't exist
+                document_content = DocumentContent(
+                    document_id=document_id,
+                    file_content=file_content
+                )
+                db.add(document_content)
+            
+            # Get vector status for Pinecone cleanup
+            vector_status = db.query(VectorStatus).filter(VectorStatus.document_id == document_id).first()
+            
+            # Store old vector_id for cleanup
+            old_vector_id = None
+            if vector_status and vector_status.vector_id:
+                old_vector_id = vector_status.vector_id
+            
+            # Update vector status to pending
+            if vector_status:
+                vector_status.status = "pending"
+                vector_status.vector_id = None
+                vector_status.embedded_at = None
+                vector_status.error_message = None
+            else:
+                # Create new vector status if it doesn't exist
+                vector_status = VectorStatus(
+                    document_id=document_id,
+                    vector_database_id=document.vector_database_id,
+                    status="pending"
+                )
+                db.add(vector_status)
+            
+            # Schedule deletion of old vectors in Pinecone if we have all needed info
+            if old_vector_id and vector_db and document.vector_database_id and background_tasks:
+                try:
+                    # Initialize PDFProcessor for vector deletion
+                    from app.pdf.processor import PDFProcessor
+                    
+                    processor = PDFProcessor(
+                        index_name=vector_db.pinecone_index,
+                        namespace=f"vdb-{document.vector_database_id}",
+                        vector_db_id=document.vector_database_id
+                    )
+                    
+                    # Add deletion task to background tasks
+                    background_tasks.add_task(
+                        processor.delete_document_vectors,
+                        old_vector_id
+                    )
+                    
+                    logger.info(f"Scheduled deletion of old vectors for document {document_id}")
+                except Exception as e:
+                    logger.error(f"Error scheduling vector deletion: {str(e)}")
+                    # Continue with the update even if vector deletion scheduling fails
+            
+            # Schedule document for re-embedding if possible
+            if background_tasks and document.vector_database_id:
+                try:
+                    # Import here to avoid circular imports
+                    from app.pdf.tasks import process_document_for_embedding
+                    
+                    # Schedule embedding
+                    background_tasks.add_task(
+                        process_document_for_embedding,
+                        document_id=document_id,
+                        vector_db_id=document.vector_database_id
+                    )
+                    
+                    logger.info(f"Scheduled re-embedding for document {document_id}")
+                except Exception as e:
+                    logger.error(f"Error scheduling document embedding: {str(e)}")
+                    # Continue with the update even if embedding scheduling fails
+        
+        db.commit()
+        db.refresh(document)
+        
+        # Get vector database name for response
+        vector_db_name = "No Database"
+        if vector_db:
+            vector_db_name = vector_db.name
+        elif document.vector_database_id:
+            vector_db_name = f"db_{document.vector_database_id}"
+        
+        # Create response
+        result = DocumentResponse(
+            id=document.id,
+            name=document.name,
+            file_type=document.file_type,
+            content_type=document.content_type,
+            size=document.size,
+            created_at=document.created_at,
+            updated_at=document.updated_at,
+            vector_database_id=document.vector_database_id or 0,
+            vector_database_name=vector_db_name,
+            is_embedded=document.is_embedded
+        )
+        
+        return result
+    except HTTPException:
+        raise
+    except SQLAlchemyError as e:
+        db.rollback()
+        logger.error(f"Database error updating document: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error updating document: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Error updating document: {str(e)}")
+
+@router.delete("/documents/{document_id}", response_model=dict)
+async def delete_document(
+    document_id: int = Path(..., gt=0),
+    db: Session = Depends(get_db)
+):
+    """
+    Delete a document and its associated content.
+    
+    - **document_id**: ID of the document to delete
+    """
+    try:
+        # Check if document exists
+        document = db.query(Document).filter(Document.id == document_id).first()
+        if not document:
+            raise HTTPException(status_code=404, detail=f"Document with ID {document_id} not found")
+        
+        # Delete vector status
+        db.query(VectorStatus).filter(VectorStatus.document_id == document_id).delete()
+        
+        # Delete document content
+        db.query(DocumentContent).filter(DocumentContent.document_id == document_id).delete()
+        
+        # Delete document
+        db.delete(document)
+        db.commit()
+        
+        return {"status": "success", "message": f"Document with ID {document_id} deleted successfully"}
+    except HTTPException:
+        raise
+    except SQLAlchemyError as e:
+        db.rollback()
+        logger.error(f"Database error deleting document: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error deleting document: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Error deleting document: {str(e)}")

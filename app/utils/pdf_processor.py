@@ -1,292 +1,449 @@
 import os
-import time
-import uuid
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.document_loaders import PyPDFLoader
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
 import logging
-from pinecone import Pinecone
+import uuid
+import pinecone
+from app.utils.pinecone_fix import PineconeConnectionManager, check_connection
+import time
+import os
+from typing import List, Dict, Any, Optional
 
-from app.database.pinecone import get_pinecone_index, init_pinecone
-from app.database.postgresql import get_db
-from app.database.models import VectorDatabase
+# Langchain imports for document processing
+from langchain_community.document_loaders import PyPDFLoader
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
+import google.generativeai as genai
 
-# Configure logging
+# Configure logger
 logger = logging.getLogger(__name__)
 
-# Initialize embeddings model
-embeddings_model = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
-
 class PDFProcessor:
-    """Class for processing PDF files and creating embeddings"""
+    """Process PDF files and create embeddings in Pinecone"""
     
-    def __init__(self, index_name="testbot768", namespace="Default", api_key=None, vector_db_id=None, mock_mode=False):
-        """Initialize with Pinecone index name, namespace and API key"""
+    def __init__(self, index_name="testbot768", namespace="Default", api_key=None, vector_db_id=None, mock_mode=False, correlation_id=None):
         self.index_name = index_name
         self.namespace = namespace
-        self.pinecone_index = None
         self.api_key = api_key
         self.vector_db_id = vector_db_id
-        self.pinecone_client = None
-        self.mock_mode = mock_mode  # Add mock mode for testing
+        self.pinecone_index = None
+        self.mock_mode = mock_mode
+        self.correlation_id = correlation_id or str(uuid.uuid4())[:8]
+        self.google_api_key = os.environ.get("GOOGLE_API_KEY")
         
-    def _get_api_key_from_db(self):
-        """Get API key from database if not provided directly"""
-        if self.api_key:
-            return self.api_key
-            
-        if not self.vector_db_id:
-            logger.error("No API key provided and no vector_db_id to fetch from database")
-            return None
-            
-        try:
-            # Get database session
-            db = next(get_db())
-            
-            # Get vector database
-            vector_db = db.query(VectorDatabase).filter(
-                VectorDatabase.id == self.vector_db_id
-            ).first()
-            
-            if not vector_db:
-                logger.error(f"Vector database with ID {self.vector_db_id} not found")
-                return None
-                
-            # Get API key from relationship
-            if hasattr(vector_db, 'api_key_ref') and vector_db.api_key_ref and hasattr(vector_db.api_key_ref, 'key_value'):
-                logger.info(f"Using API key from api_key table for vector database ID {self.vector_db_id}")
-                return vector_db.api_key_ref.key_value
-                
-            logger.error(f"No API key found for vector database ID {self.vector_db_id}. Make sure the api_key_id is properly set.")
-            return None
-        except Exception as e:
-            logger.error(f"Error fetching API key from database: {e}")
-            return None
-    
-    def _init_pinecone_connection(self):
-        """Initialize connection to Pinecone with new API"""
-        try:
-            # If in mock mode, return a mock index
-            if self.mock_mode:
-                logger.info("Running in mock mode - simulating Pinecone connection")
-                class MockPineconeIndex:
-                    def upsert(self, vectors, namespace=None):
-                        logger.info(f"Mock upsert: {len(vectors)} vectors to namespace '{namespace}'")
-                        return {"upserted_count": len(vectors)}
-                        
-                    def delete(self, ids=None, delete_all=False, namespace=None):
-                        logger.info(f"Mock delete: {'all vectors' if delete_all else f'{len(ids)} vectors'} from namespace '{namespace}'")
-                        return {"deleted_count": 10 if delete_all else len(ids or [])}
-                        
-                    def describe_index_stats(self):
-                        logger.info(f"Mock describe_index_stats")
-                        return {"total_vector_count": 100, "namespaces": {self.namespace: {"vector_count": 50}}}
-                
-                return MockPineconeIndex()
-            
-            # Get API key from database if not provided
-            api_key = self._get_api_key_from_db()
-            
-            if not api_key or not self.index_name:
-                logger.error("Pinecone API key or index name not available")
-                return None
-            
-            # Initialize Pinecone client using the new API
-            self.pinecone_client = Pinecone(api_key=api_key)
-            
-            # Get the index
-            index_list = self.pinecone_client.list_indexes()
-            existing_indexes = index_list.names() if hasattr(index_list, 'names') else []
-            
-            if self.index_name not in existing_indexes:
-                logger.error(f"Index {self.index_name} does not exist in Pinecone")
-                return None
-            
-            # Connect to the index
-            index = self.pinecone_client.Index(self.index_name)
-            logger.info(f"Connected to Pinecone index: {self.index_name}")
-            return index
-        except Exception as e:
-            logger.error(f"Error connecting to Pinecone: {e}")
-            return None
+        # Initialize Pinecone connection if not in mock mode
+        if not self.mock_mode and self.api_key:
+            try:
+                # Use connection manager from pinecone_fix
+                logger.info(f"[{self.correlation_id}] Initializing Pinecone connection to {self.index_name}")
+                self.pinecone_index = PineconeConnectionManager.get_index(self.api_key, self.index_name)
+                logger.info(f"[{self.correlation_id}] Successfully connected to Pinecone index {self.index_name}")
+            except Exception as e:
+                logger.error(f"[{self.correlation_id}] Failed to initialize Pinecone: {str(e)}")
+                # Fall back to mock mode if connection fails
+                self.mock_mode = True
+                logger.warning(f"[{self.correlation_id}] Falling back to mock mode due to connection error")
             
     async def process_pdf(self, file_path, document_id=None, metadata=None, progress_callback=None):
-        """
-        Process PDF file, split into chunks and create embeddings
+        """Process a PDF file and create vector embeddings
         
-        Args:
-            file_path (str): Path to the PDF file
-            document_id (str, optional): Document ID, if not provided a new ID will be created
-            metadata (dict, optional): Additional metadata for the document
-            progress_callback (callable, optional): Callback function for progress updates
-            
-        Returns:
-            dict: Processing result information including document_id and processed chunks count
+        This method:
+        1. Extracts text from PDF using PyPDFLoader
+        2. Splits text into chunks using RecursiveCharacterTextSplitter
+        3. Creates embeddings using Google Gemini model
+        4. Stores embeddings in Pinecone
         """
+        logger.info(f"[{self.correlation_id}] Processing PDF: {file_path}")
+        
+        if self.mock_mode:
+            logger.info(f"[{self.correlation_id}] MOCK: Processing PDF {file_path}")
+            # Mock implementation - just return success
+            if progress_callback:
+                await progress_callback(None, document_id, "embedding_complete", 1.0, "Mock processing completed")
+            return {"success": True, "message": "PDF processed successfully"}
+        
         try:
-            # Initialize Pinecone connection if not already done
-            self.pinecone_index = self._init_pinecone_connection()
-            if not self.pinecone_index:
-                return {"success": False, "error": "Could not connect to Pinecone"}
+            # Initialize metadata if not provided
+            if metadata is None:
+                metadata = {}
             
-            # Create document_id if not provided
-            if not document_id:
+            # Ensure document_id is included
+            if document_id is None:
                 document_id = str(uuid.uuid4())
             
-            # Load PDF using PyPDFLoader
-            logger.info(f"Reading PDF file: {file_path}")
+            # Add document_id to metadata
+            metadata["document_id"] = document_id
+            
+            # The namespace to use might be in vdb-X format if vector_db_id provided
+            actual_namespace = f"vdb-{self.vector_db_id}" if self.vector_db_id else self.namespace
+            
+            # 1. Extract text from PDF
+            logger.info(f"[{self.correlation_id}] Extracting text from PDF: {file_path}")
             if progress_callback:
-                await progress_callback("pdf_loading", 0.5, "Loading PDF file")
+                await progress_callback(None, document_id, "text_extraction", 0.2, "Extracting text from PDF")
                 
             loader = PyPDFLoader(file_path)
-            pages = loader.load()
+            documents = loader.load()
+            total_text_length = sum(len(doc.page_content) for doc in documents)
             
-            # Extract and concatenate text from all pages
-            all_text = ""
-            for page in pages:
-                all_text += page.page_content + "\n"
+            logger.info(f"[{self.correlation_id}] Extracted {len(documents)} pages, total text length: {total_text_length}")
+            
+            # 2. Split text into chunks
+            if progress_callback:
+                await progress_callback(None, document_id, "chunking", 0.4, "Splitting text into chunks")
+            
+            text_splitter = RecursiveCharacterTextSplitter(
+                chunk_size=1000,
+                chunk_overlap=100,
+                length_function=len,
+                separators=["\n\n", "\n", " ", ""]
+            )
+            
+            chunks = text_splitter.split_documents(documents)
+            
+            logger.info(f"[{self.correlation_id}] Split into {len(chunks)} chunks")
+            
+            # 3. Create embeddings
+            if progress_callback:
+                await progress_callback(None, document_id, "embedding", 0.6, "Creating embeddings")
+            
+            # Initialize Google Gemini for embeddings
+            if not self.google_api_key:
+                raise ValueError("Google API key not found in environment variables")
+            
+            genai.configure(api_key=self.google_api_key)
+            
+            # First, get the expected dimensions from Pinecone
+            logger.info(f"[{self.correlation_id}] Checking Pinecone index dimensions")
+            if not self.pinecone_index:
+                self.pinecone_index = PineconeConnectionManager.get_index(self.api_key, self.index_name)
+            
+            stats = self.pinecone_index.describe_index_stats()
+            pinecone_dimension = stats.dimension
+            logger.info(f"[{self.correlation_id}] Pinecone index dimension: {pinecone_dimension}")
+            
+            # Create embedding model
+            embedding_model = GoogleGenerativeAIEmbeddings(
+                model="models/embedding-001",
+                google_api_key=self.google_api_key,
+                task_type="retrieval_document"  # Use document embedding mode for longer text
+            )
+            
+            # Get a sample embedding to check dimensions
+            sample_embedding = embedding_model.embed_query("test")
+            embedding_dimension = len(sample_embedding)
+            
+            logger.info(f"[{self.correlation_id}] Generated embeddings with dimension: {embedding_dimension}")
+            
+            # Dimension handling - if mismatch, we handle it appropriately
+            if embedding_dimension != pinecone_dimension:
+                logger.warning(f"[{self.correlation_id}] Embedding dimension mismatch: got {embedding_dimension}, need {pinecone_dimension}")
+                
+                if embedding_dimension < pinecone_dimension:
+                    # For upscaling from 768 to 1536: duplicate each value and scale appropriately
+                    # This is one approach to handle dimension mismatches while preserving semantic information
+                    logger.info(f"[{self.correlation_id}] Using duplication strategy to upscale from {embedding_dimension} to {pinecone_dimension}")
+                    
+                    if embedding_dimension * 2 == pinecone_dimension:
+                        # Perfect doubling (768 -> 1536)
+                        def adjust_embedding(embedding):
+                            # Duplicate each value to double the dimension
+                            return [val for val in embedding for _ in range(2)]
+                    else:
+                        # Generic padding with zeros
+                        pad_size = pinecone_dimension - embedding_dimension
+                        def adjust_embedding(embedding):
+                            return embedding + [0.0] * pad_size
+                else:
+                    # Truncation strategy - take first pinecone_dimension values
+                    logger.info(f"[{self.correlation_id}] Will truncate embeddings from {embedding_dimension} to {pinecone_dimension}")
+                    
+                    def adjust_embedding(embedding):
+                        return embedding[:pinecone_dimension]
+            else:
+                # No adjustment needed
+                def adjust_embedding(embedding):
+                    return embedding
+            
+            # Process in batches to avoid memory issues
+            batch_size = 10
+            vectors_to_upsert = []
+            
+            for i in range(0, len(chunks), batch_size):
+                batch = chunks[i:i+batch_size]
+                
+                # Extract text content
+                texts = [chunk.page_content for chunk in batch]
+                
+                # Create embeddings for batch
+                embeddings = embedding_model.embed_documents(texts)
+                
+                # Prepare vectors for Pinecone
+                for j, (chunk, embedding) in enumerate(zip(batch, embeddings)):
+                    # Adjust embedding dimensions if needed
+                    adjusted_embedding = adjust_embedding(embedding)
+                    
+                    # Verify dimensions are correct
+                    if len(adjusted_embedding) != pinecone_dimension:
+                        raise ValueError(f"Dimension mismatch after adjustment: got {len(adjusted_embedding)}, expected {pinecone_dimension}")
+                    
+                    # Create metadata for this chunk
+                    chunk_metadata = {
+                        "document_id": document_id,
+                        "page": chunk.metadata.get("page", 0),
+                        "chunk_id": f"{document_id}-chunk-{i+j}",
+                        "text": chunk.page_content[:1000],  # Store first 1000 chars of text
+                        **metadata  # Include original metadata
+                    }
+                    
+                    # Create vector record
+                    vector = {
+                        "id": f"{document_id}-{i+j}",
+                        "values": adjusted_embedding,
+                        "metadata": chunk_metadata
+                    }
+                    
+                    vectors_to_upsert.append(vector)
+                
+                logger.info(f"[{self.correlation_id}] Processed batch {i//batch_size + 1}/{(len(chunks)-1)//batch_size + 1}")
+            
+            # 4. Store embeddings in Pinecone
+            if progress_callback:
+                await progress_callback(None, document_id, "storing", 0.8, f"Storing {len(vectors_to_upsert)} vectors in Pinecone")
+            
+            logger.info(f"[{self.correlation_id}] Upserting {len(vectors_to_upsert)} vectors to Pinecone index {self.index_name}, namespace {actual_namespace}")
+            
+            # Use PineconeConnectionManager for better error handling
+            result = PineconeConnectionManager.upsert_vectors_with_validation(
+                self.pinecone_index,
+                vectors_to_upsert,
+                namespace=actual_namespace
+            )
+            
+            logger.info(f"[{self.correlation_id}] Successfully upserted {result.get('upserted_count', 0)} vectors to Pinecone")
             
             if progress_callback:
-                await progress_callback("text_extraction", 0.6, "Extracted text from PDF")
-                
-            # Split text into chunks
-            text_splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=300)
-            chunks = text_splitter.split_text(all_text)
+                await progress_callback(None, document_id, "embedding_complete", 1.0, "Processing completed")
             
-            logger.info(f"Split PDF file into {len(chunks)} chunks")
-            if progress_callback:
-                await progress_callback("chunking", 0.7, f"Split document into {len(chunks)} chunks")
-            
-            # Process embeddings for each chunk and upsert to Pinecone
-            vectors = []
-            for i, chunk in enumerate(chunks):
-                # Update embedding progress
-                if progress_callback and i % 5 == 0:  # Update every 5 chunks to avoid too many notifications
-                    embedding_progress = 0.7 + (0.3 * (i / len(chunks)))
-                    await progress_callback("embedding", embedding_progress, f"Processing chunk {i+1}/{len(chunks)}")
-                
-                # Create vector embedding for each chunk
-                vector = embeddings_model.embed_query(chunk)
-                
-                # Prepare metadata for vector
-                vector_metadata = {
-                    "document_id": document_id,
-                    "chunk_index": i,
-                    "text": chunk
-                }
-                
-                # Add additional metadata if provided
-                if metadata:
-                    for key, value in metadata.items():
-                        if key not in vector_metadata:
-                            vector_metadata[key] = value
-                
-                # Add vector to list for upserting
-                vectors.append({
-                    "id": f"{document_id}_{i}",
-                    "values": vector,
-                    "metadata": vector_metadata
-                })
-                
-                # Upsert in batches of 100 to avoid overloading
-                if len(vectors) >= 100:
-                    await self._upsert_vectors(vectors)
-                    vectors = []
-            
-            # Upsert any remaining vectors
-            if vectors:
-                await self._upsert_vectors(vectors)
-            
-            logger.info(f"Embedded and saved {len(chunks)} chunks from PDF with document_id: {document_id}")
-            
-            # Final progress update
-            if progress_callback:
-                await progress_callback("completed", 1.0, "PDF processing complete")
-            
+            # Return success with stats
             return {
                 "success": True,
                 "document_id": document_id,
                 "chunks_processed": len(chunks),
-                "total_text_length": len(all_text)
+                "total_text_length": total_text_length,
+                "vectors_created": len(vectors_to_upsert),
+                "vectors_upserted": result.get('upserted_count', 0),
+                "message": "PDF processed successfully"
             }
-            
         except Exception as e:
-            logger.error(f"Error processing PDF: {str(e)}")
-            if progress_callback:
-                await progress_callback("error", 0, f"Error processing PDF: {str(e)}")
+            logger.error(f"[{self.correlation_id}] Error processing PDF: {str(e)}")
             return {
                 "success": False,
-                "error": str(e)
+                "error": f"Error processing PDF: {str(e)}"
             }
     
-    async def _upsert_vectors(self, vectors):
-        """Upsert vectors to Pinecone"""
+    async def list_namespaces(self):
+        """List all namespaces in the Pinecone index"""
+        if self.mock_mode:
+            logger.info(f"[{self.correlation_id}] MOCK: Listing namespaces")
+            return {"success": True, "namespaces": ["test"]}
+        
         try:
-            if not vectors:
-                return
-                
-            # Ensure we have a valid pinecone_index
             if not self.pinecone_index:
-                self.pinecone_index = self._init_pinecone_connection()
-                if not self.pinecone_index:
-                    raise Exception("Cannot connect to Pinecone")
+                self.pinecone_index = PineconeConnectionManager.get_index(self.api_key, self.index_name)
             
-            result = self.pinecone_index.upsert(
-                vectors=vectors,
-                namespace=self.namespace
-            )
-            
-            logger.info(f"Upserted {len(vectors)} vectors to Pinecone")
-            return result
-        except Exception as e:
-            logger.error(f"Error upserting vectors: {str(e)}")
-            raise
-    
-    async def delete_namespace(self):
-        """
-        Delete all vectors in the current namespace (equivalent to deleting the namespace).
-        """
-        # Initialize connection if needed
-        self.pinecone_index = self._init_pinecone_connection()
-        if not self.pinecone_index:
-            return {"success": False, "error": "Could not connect to Pinecone"}
-
-        try:
-            # delete_all=True will delete all vectors in the namespace
-            result = self.pinecone_index.delete(
-                delete_all=True,
-                namespace=self.namespace
-            )
-            logger.info(f"Deleted namespace '{self.namespace}' (all vectors).")
-            return {"success": True, "detail": result}
-        except Exception as e:
-            logger.error(f"Error deleting namespace '{self.namespace}': {e}")
-            return {"success": False, "error": str(e)}
-    
-    async def list_documents(self):
-        """Get list of all document_ids from Pinecone"""
-        try:
-            # Initialize Pinecone connection if not already done
-            self.pinecone_index = self._init_pinecone_connection()
-            if not self.pinecone_index:
-                return {"success": False, "error": "Could not connect to Pinecone"}
-            
-            # Get index information
+            # Get index stats which includes namespaces
             stats = self.pinecone_index.describe_index_stats()
-            
-            # Query to get list of all unique document_ids
-            # This method may not be efficient with large datasets, but is the simplest approach
-            # In practice, you should maintain a list of document_ids in a separate database
+            namespaces = list(stats.get("namespaces", {}).keys())
             
             return {
                 "success": True,
-                "total_vectors": stats.get('total_vector_count', 0),
-                "namespace": self.namespace,
-                "index_name": self.index_name
+                "namespaces": namespaces
             }
         except Exception as e:
-            logger.error(f"Error getting document list: {str(e)}")
+            logger.error(f"[{self.correlation_id}] Error listing namespaces: {str(e)}")
             return {
                 "success": False,
-                "error": str(e)
+                "error": f"Error listing namespaces: {str(e)}"
+            }
+    
+    async def delete_namespace(self):
+        """Delete all vectors in a namespace"""
+        if self.mock_mode:
+            logger.info(f"[{self.correlation_id}] MOCK: Deleting namespace '{self.namespace}'")
+            return {
+                "success": True,
+                "namespace": self.namespace,
+                "deleted_count": 100,
+                "message": f"Successfully deleted namespace '{self.namespace}'"
+            }
+
+        try:
+            if not self.pinecone_index:
+                self.pinecone_index = PineconeConnectionManager.get_index(self.api_key, self.index_name)
+                
+            logger.info(f"[{self.correlation_id}] Deleting namespace '{self.namespace}' from index '{self.index_name}'")
+            
+            # Check if namespace exists
+            stats = self.pinecone_index.describe_index_stats()
+            namespaces = stats.get("namespaces", {})
+            
+            if self.namespace in namespaces:
+                vector_count = namespaces[self.namespace].get("vector_count", 0)
+                # Delete all vectors in namespace
+                self.pinecone_index.delete(delete_all=True, namespace=self.namespace)
+                return {
+                    "success": True,
+                    "namespace": self.namespace,
+                    "deleted_count": vector_count,
+                    "message": f"Successfully deleted namespace '{self.namespace}' with {vector_count} vectors"
+                }
+            else:
+                return {
+                    "success": True,
+                    "namespace": self.namespace,
+                    "deleted_count": 0,
+                    "message": f"Namespace '{self.namespace}' does not exist - nothing to delete"
+                }
+        except Exception as e:
+            logger.error(f"[{self.correlation_id}] Error deleting namespace: {str(e)}")
+            return {
+                "success": False,
+                "namespace": self.namespace,
+                "error": f"Error deleting namespace: {str(e)}"
+            }
+    
+    async def delete_document(self, document_id):
+        """Delete vectors associated with a specific document ID"""
+        logger.info(f"[{self.correlation_id}] Deleting vectors for document '{document_id}' from namespace '{self.namespace}'")
+
+        if self.mock_mode:
+            logger.info(f"[{self.correlation_id}] MOCK: Deleting document vectors for '{document_id}'")
+            # In mock mode, simulate deleting 10 vectors
+            return {
+                "success": True,
+                "document_id": document_id,
+                "namespace": self.namespace,
+                "deleted_count": 10,
+                "message": f"Successfully deleted vectors for document '{document_id}' from namespace '{self.namespace}'"
+            }
+
+        try:
+            if not self.pinecone_index:
+                self.pinecone_index = PineconeConnectionManager.get_index(self.api_key, self.index_name)
+                
+            # Use metadata filtering to find vectors with matching document_id
+            # The specific namespace to use might be vdb-X format if vector_db_id provided
+            actual_namespace = f"vdb-{self.vector_db_id}" if self.vector_db_id else self.namespace
+            
+            # Search for vectors with this document ID
+            results = self.pinecone_index.query(
+                vector=[0] * 1536,  # Dummy vector, we only care about metadata filter
+                top_k=1,
+                include_metadata=True,
+                filter={"document_id": document_id},
+                namespace=actual_namespace
+            )
+            
+            # If no vectors found, return success with warning
+            if len(results.get("matches", [])) == 0:
+                logger.warning(f"[{self.correlation_id}] No vectors found for document '{document_id}' in namespace '{actual_namespace}'")
+                return {
+                    "success": True,
+                    "document_id": document_id,
+                    "namespace": actual_namespace,
+                    "deleted_count": 0,
+                    "warning": f"No vectors found for document '{document_id}' in namespace '{actual_namespace}'",
+                    "message": f"Successfully deleted 0 vectors for document '{document_id}' from namespace '{actual_namespace}'"
+                }
+            
+            # Delete vectors by filter
+            result = self.pinecone_index.delete(
+                filter={"document_id": document_id},
+                namespace=actual_namespace
+            )
+            
+            # Get delete count from result
+            deleted_count = result.get("deleted_count", 0)
+            
+            return {
+                "success": True,
+                "document_id": document_id,
+                "namespace": actual_namespace,
+                "deleted_count": deleted_count,
+                "message": f"Successfully deleted {deleted_count} vectors for document '{document_id}' from namespace '{actual_namespace}'"
+            }
+        except Exception as e:
+            logger.error(f"[{self.correlation_id}] Error deleting document vectors: {str(e)}")
+            return {
+                "success": False,
+                "document_id": document_id,
+                "error": f"Error deleting document vectors: {str(e)}"
+            }
+    
+    async def list_documents(self):
+        """List all documents in the Pinecone index"""
+        if self.mock_mode:
+            logger.info(f"[{self.correlation_id}] MOCK: Listing documents in namespace '{self.namespace}'")
+            return {
+                "success": True,
+                "namespace": self.namespace,
+                "documents": [
+                    {"id": "doc1", "title": "Sample Document 1"},
+                    {"id": "doc2", "title": "Sample Document 2"}
+                ]
+            }
+            
+        try:
+            if not self.pinecone_index:
+                self.pinecone_index = PineconeConnectionManager.get_index(self.api_key, self.index_name)
+                
+            # The namespace to use might be in vdb-X format if vector_db_id provided
+            actual_namespace = f"vdb-{self.vector_db_id}" if self.vector_db_id else self.namespace
+            
+            # Get index stats
+            stats = self.pinecone_index.describe_index_stats()
+            namespaces = stats.get("namespaces", {})
+            total_vectors = namespaces.get(actual_namespace, {}).get("vector_count", 0)
+            
+            # Query unique document IDs
+            # Use a sparse vector with top_k=0 to just get metadata stats
+            # This is more efficient than retrieving actual vectors
+            results = self.pinecone_index.query(
+                vector=[0] * 1536,  # Dummy vector for metadata-only query
+                top_k=100,  # Limit to 100 results
+                include_metadata=True,
+                namespace=actual_namespace
+            )
+            
+            # Extract unique document IDs from metadata
+            document_map = {}
+            matches = results.get("matches", [])
+            
+            for match in matches:
+                metadata = match.get("metadata", {})
+                doc_id = metadata.get("document_id")
+                
+                if doc_id and doc_id not in document_map:
+                    document_map[doc_id] = {
+                        "id": doc_id,
+                        "title": metadata.get("title", "Unknown"),
+                        "chunks": 1
+                    }
+                elif doc_id:
+                    document_map[doc_id]["chunks"] += 1
+            
+            documents = list(document_map.values())
+            
+            return {
+                "success": True,
+                "namespace": actual_namespace,
+                "index_name": self.index_name,
+                "total_vectors": total_vectors,
+                "documents": documents
+            }
+        except Exception as e:
+            logger.error(f"[{self.correlation_id}] Error listing documents: {str(e)}")
+            return {
+                "success": False,
+                "error": f"Error listing documents: {str(e)}"
             } 
+

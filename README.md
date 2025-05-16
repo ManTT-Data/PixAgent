@@ -416,4 +416,145 @@ Lịch sử hội thoại người dùng được lưu trong queue riêng với 
 
 ## Tác giả
 
-- **PIX Project Team** 
+- **PIX Project Team**
+
+# PixAgent PDF Processing
+
+This README provides instructions for the PDF processing functionality in PixAgent, including uploading PDF documents, managing vector embeddings, and deleting documents.
+
+## API Endpoints
+
+### Health Check
+
+```
+GET /health
+GET /pdf/health
+```
+
+Verify the API is running and the connection to databases (MongoDB, PostgreSQL, Pinecone) is established.
+
+### Upload PDF
+
+```
+POST /pdf/upload
+```
+
+**Parameters:**
+- `file`: The PDF file to upload (multipart/form-data)
+- `namespace`: The namespace to store vectors in (default: "Default")
+- `mock_mode`: Set to "true" or "false" (default: "false")
+- `vector_database_id`: The ID of the vector database to use (required for real mode)
+- `document_id`: Optional custom document ID (if not provided, a UUID will be generated)
+
+**Example Python Request:**
+```python
+import requests
+import uuid
+
+document_id = str(uuid.uuid4())
+files = {'file': open('your_document.pdf', 'rb')}
+response = requests.post(
+    'http://localhost:8000/pdf/upload',
+    files=files,
+    data={
+        'namespace': 'my-namespace',
+        'mock_mode': 'false',
+        'vector_database_id': '9',
+        'document_id': document_id
+    }
+)
+print(f'Status: {response.status_code}')
+print(f'Response: {response.json()}')
+```
+
+### List Documents
+
+```
+GET /pdf/documents
+```
+
+**Parameters:**
+- `namespace`: The namespace to retrieve documents from
+- `vector_database_id`: The ID of the vector database to use
+
+**Example Python Request:**
+```python
+import requests
+
+response = requests.get(
+    'http://localhost:8000/pdf/documents',
+    params={
+        'namespace': 'my-namespace',
+        'vector_database_id': '9'
+    }
+)
+print(f'Status: {response.status_code}')
+print(f'Documents: {response.json()}')
+```
+
+### Delete Document
+
+```
+DELETE /pdf/document
+```
+
+**Parameters:**
+- `document_id`: The ID of the document to delete
+- `namespace`: The namespace containing the document
+- `vector_database_id`: The ID of the vector database
+
+**Example Python Request:**
+```python
+import requests
+
+response = requests.delete(
+    'http://localhost:8000/pdf/document',
+    params={
+        'document_id': 'your-document-id',
+        'namespace': 'my-namespace',
+        'vector_database_id': '9'
+    }
+)
+print(f'Status: {response.status_code}')
+print(f'Result: {response.json()}')
+```
+
+### List Available Vector Databases
+
+```
+GET /postgres/vector-databases
+```
+
+**Example Python Request:**
+```python
+import requests
+
+response = requests.get('http://localhost:8000/postgres/vector-databases')
+vector_dbs = response.json()
+print(f'Available vector databases: {vector_dbs}')
+```
+
+## PDF Processing and Vector Embedding
+
+The system processes PDFs in the following steps:
+
+1. **Text Extraction**: Uses `PyPDFLoader` from LangChain to extract text from the PDF.
+2. **Text Chunking**: Splits the text into manageable chunks using `RecursiveCharacterTextSplitter` with a chunk size of 1000 characters and 100 character overlap.
+3. **Embedding Creation**: Uses Google's Gemini embedding model (`models/embedding-001`) to create embeddings for each text chunk.
+4. **Dimension Adjustment**: Ensures the embedding dimensions match the Pinecone index requirements:
+   - If Gemini produces 768-dim embeddings and Pinecone expects 1536-dim, each value is duplicated.
+   - For other mismatches, appropriate padding or truncation is applied.
+5. **Vector Storage**: Uploads the embeddings to Pinecone in the specified namespace.
+
+## Notes
+
+- **Mock Mode**: When `mock_mode` is set to "true", the system simulates the PDF processing without actually creating or storing embeddings.
+- **Namespace Handling**: When using a vector database ID, the namespace is automatically formatted as `vdb-{vector_database_id}`.
+- **Error Handling**: The system validates vector dimensions and handles errors appropriately, with detailed logging.
+- **PDF Storage**: Processed PDFs are stored in the `pdf_storage` directory with the document ID as the filename.
+
+## Troubleshooting
+
+- **Dimension Mismatch Error**: If you receive an error about vector dimensions not matching Pinecone index configuration, check that the embedding model and Pinecone index dimensions are compatible. The system will attempt to adjust dimensions but may encounter limits.
+- **Connection Issues**: Verify that MongoDB, PostgreSQL, and Pinecone credentials are correctly configured in the environment variables.
+- **Processing Failures**: Check the `pdf_api_debug.log` file for detailed error messages and processing information. 
