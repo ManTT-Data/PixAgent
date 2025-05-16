@@ -31,21 +31,9 @@ from app.api.pdf_websocket import (
 # Setup logger
 logger = logging.getLogger(__name__)
 
-# Add a file handler specifically for PDF upload debugging
+# Add a stream handler for PDF debug logging
 pdf_debug_logger = logging.getLogger("pdf_debug_api")
 pdf_debug_logger.setLevel(logging.DEBUG)
-
-# Get the project root directory
-project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-debug_log_path = os.path.join(project_root, "pdf_api_debug.log")
-
-try:
-    debug_handler = logging.FileHandler(debug_log_path)
-    debug_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
-    pdf_debug_logger.addHandler(debug_handler)
-    pdf_debug_logger.info(f"PDF debug logging initialized, writing to {debug_log_path}")
-except Exception as log_setup_error:
-    logger.error(f"Failed to setup PDF debug logging: {log_setup_error}")
 
 # Check if a stream handler already exists, add one if not
 if not any(isinstance(h, logging.StreamHandler) for h in pdf_debug_logger.handlers):
@@ -59,13 +47,9 @@ router = APIRouter(
     tags=["PDF Processing"],
 )
 
-# Constants
-TEMP_UPLOAD_DIR = os.path.join(project_root, "temp_uploads")
-STORAGE_DIR = os.path.join(project_root, "pdf_storage")
-
-# Create directories if they don't exist
-os.makedirs(TEMP_UPLOAD_DIR, exist_ok=True)
-os.makedirs(STORAGE_DIR, exist_ok=True)
+# Constants - Use system temp directory instead of creating our own
+TEMP_UPLOAD_DIR = tempfile.gettempdir()
+STORAGE_DIR = tempfile.gettempdir()  # Also use system temp for storage
 
 USE_MOCK_MODE = False  # Disabled - using real database with improved connection handling
 logger.info(f"PDF API starting with USE_MOCK_MODE={USE_MOCK_MODE}")
@@ -116,14 +100,12 @@ async def send_progress_update(user_id, file_id, step, progress=0.0, message="")
 async def handle_pdf_processing_result(result, correlation_id, user_id, file_id, filename, document, vector_status, 
                                     vector_database_id, temp_file_path, db, is_pdf, mock_mode):
     """Fixed version of the code with proper indentation"""
-    # If successful, move file to permanent storage
+    # If successful, update status but don't try to permanently store files
     if result.get('success'):
         try:
-            storage_path = os.path.join(STORAGE_DIR, f"{file_id}{'.pdf' if is_pdf else '.txt'}")
-            shutil.move(temp_file_path, storage_path)
-            log_upload_debug(correlation_id, f"Moved file to storage at {storage_path}")
+            log_upload_debug(correlation_id, f"Processed file successfully - no permanent storage in Hugging Face environment")
         except Exception as move_error:
-            log_upload_debug(correlation_id, f"Error moving file to storage: {move_error}", move_error)
+            log_upload_debug(correlation_id, f"Error in storage handling: {move_error}", move_error)
         
         # Update status in PostgreSQL
         if vector_database_id and document and vector_status:
@@ -506,6 +488,7 @@ async def handle_upload_error(e, correlation_id, temp_file_path, user_id, file_i
         error=str(e),
         mock_mode=mock_mode
     )
+
 # Endpoint xóa tài liệu
 @router.delete("/namespace", response_model=PDFResponse)
 async def delete_namespace(
