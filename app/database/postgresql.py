@@ -12,9 +12,9 @@ logger = logging.getLogger(__name__)
 # Load environment variables
 load_dotenv()
 
+# Define default PostgreSQL connection string
+DEFAULT_DB_URL = os.getenv("AIVEN_DB_URL")  
 # Set the default DB URL with the correct domain (.l.)
-DEFAULT_DB_URL = 'postgresql://avnadmin:AVNS_P-IbGNM4jGEplEhgyd2@pg-25fd2fd6-maiphuocminhtai21032005-5879.l.aivencloud.com:17442/defaultdb?sslmode=require'
-
 # Get DB connection mode from environment
 DB_CONNECTION_MODE = os.getenv("DB_CONNECTION_MODE", "aiven")
 

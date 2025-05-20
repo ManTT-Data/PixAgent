@@ -3810,8 +3810,10 @@ async def update_document(
                                     logger.error(f"Failed to upload document: {response.status_code} - {response.text}")
                             
                             # Clean up temporary file
-                            await aio_os.remove(temp_path)
-                            
+                            try:
+                                await aio_os.remove(temp_path)
+                            except Exception as cleanup_error:
+                                logger.error(f"Error cleaning up temporary file: {str(cleanup_error)}")
                         except Exception as e:
                             logger.error(f"Error in background upload task: {str(e)}")
                             logger.error(traceback.format_exc())
