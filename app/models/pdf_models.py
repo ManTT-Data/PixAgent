@@ -18,7 +18,6 @@ class PDFResponse(BaseModel):
     total_text_length: Optional[int] = Field(None, description="Tổng kích thước text đã xử lý")
     error: Optional[str] = Field(None, description="Thông báo lỗi (nếu có)")
     warning: Optional[str] = Field(None, description="Cảnh báo (nếu có)")
-    mock_mode: Optional[bool] = Field(None, description="Đã chạy ở chế độ mock hay không")
     message: Optional[str] = Field(None, description="Thông báo thành công")
     
     class Config:
@@ -28,7 +27,6 @@ class PDFResponse(BaseModel):
                 "document_id": "550e8400-e29b-41d4-a716-446655440000",
                 "chunks_processed": 25,
                 "total_text_length": 50000,
-                "mock_mode": False,
                 "message": "Successfully processed document"
             }
         }

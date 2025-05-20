@@ -12,19 +12,22 @@ logger = logging.getLogger(__name__)
 # Load environment variables
 load_dotenv()
 
+# Set the default DB URL with the correct domain (.l.)
+DEFAULT_DB_URL = 'postgresql://avnadmin:AVNS_P-IbGNM4jGEplEhgyd2@pg-25fd2fd6-maiphuocminhtai21032005-5879.l.aivencloud.com:17442/defaultdb?sslmode=require'
+
 # Get DB connection mode from environment
 DB_CONNECTION_MODE = os.getenv("DB_CONNECTION_MODE", "aiven")
 
 # Set connection string based on mode
 if DB_CONNECTION_MODE == "aiven":
-    DATABASE_URL = os.getenv("AIVEN_DB_URL")
+    DATABASE_URL = os.getenv("AIVEN_DB_URL", DEFAULT_DB_URL)
 else:
     # Default or other connection modes can be added here
-    DATABASE_URL = os.getenv("AIVEN_DB_URL")
+    DATABASE_URL = os.getenv("AIVEN_DB_URL", DEFAULT_DB_URL)
 
 if not DATABASE_URL:
-    logger.error("No database URL configured. Please set AIVEN_DB_URL environment variable.")
-    DATABASE_URL = "postgresql://localhost/test"  # Fallback to avoid crash on startup
+    logger.error("No database URL configured. Using default URL.")
+    DATABASE_URL = DEFAULT_DB_URL  # Use the correct default URL
 
 # Create SQLAlchemy engine with optimized settings
 try:

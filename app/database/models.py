@@ -125,6 +125,7 @@ class VectorStatus(Base):
     document_id = Column(Integer, ForeignKey("document.id"), nullable=False)
     vector_database_id = Column(Integer, ForeignKey("vector_database.id"), nullable=False)
     vector_id = Column(String, nullable=True)
+    document_name = Column(String, nullable=True)
     status = Column(String, default="pending")
     error_message = Column(String, nullable=True)
     embedded_at = Column(DateTime, nullable=True)

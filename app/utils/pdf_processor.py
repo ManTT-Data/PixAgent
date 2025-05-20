@@ -4,7 +4,6 @@ import uuid
 import pinecone
 from app.utils.pinecone_fix import PineconeConnectionManager, check_connection
 import time
-import os
 from typing import List, Dict, Any, Optional
 
 # Langchain imports for document processing
@@ -25,12 +24,12 @@ class PDFProcessor:
         self.api_key = api_key
         self.vector_db_id = vector_db_id
         self.pinecone_index = None
-        self.mock_mode = mock_mode
+        self.mock_mode = False  # Always set mock_mode to False to use real database
         self.correlation_id = correlation_id or str(uuid.uuid4())[:8]
         self.google_api_key = os.environ.get("GOOGLE_API_KEY")
         
-        # Initialize Pinecone connection if not in mock mode
-        if not self.mock_mode and self.api_key:
+        # Initialize Pinecone connection
+        if self.api_key:
             try:
                 # Use connection manager from pinecone_fix
                 logger.info(f"[{self.correlation_id}] Initializing Pinecone connection to {self.index_name}")
@@ -38,9 +37,7 @@ class PDFProcessor:
                 logger.info(f"[{self.correlation_id}] Successfully connected to Pinecone index {self.index_name}")
             except Exception as e:
                 logger.error(f"[{self.correlation_id}] Failed to initialize Pinecone: {str(e)}")
-                # Fall back to mock mode if connection fails
-                self.mock_mode = True
-                logger.warning(f"[{self.correlation_id}] Falling back to mock mode due to connection error")
+                # No fallback to mock mode - require a valid connection
             
     async def process_pdf(self, file_path, document_id=None, metadata=None, progress_callback=None):
         """Process a PDF file and create vector embeddings
@@ -52,13 +49,6 @@ class PDFProcessor:
         4. Stores embeddings in Pinecone
         """
         logger.info(f"[{self.correlation_id}] Processing PDF: {file_path}")
-        
-        if self.mock_mode:
-            logger.info(f"[{self.correlation_id}] MOCK: Processing PDF {file_path}")
-            # Mock implementation - just return success
-            if progress_callback:
-                await progress_callback(None, document_id, "embedding_complete", 1.0, "Mock processing completed")
-            return {"success": True, "message": "PDF processed successfully"}
         
         try:
             # Initialize metadata if not provided
@@ -242,10 +232,6 @@ class PDFProcessor:
     
     async def list_namespaces(self):
         """List all namespaces in the Pinecone index"""
-        if self.mock_mode:
-            logger.info(f"[{self.correlation_id}] MOCK: Listing namespaces")
-            return {"success": True, "namespaces": ["test"]}
-        
         try:
             if not self.pinecone_index:
                 self.pinecone_index = PineconeConnectionManager.get_index(self.api_key, self.index_name)
@@ -267,15 +253,6 @@ class PDFProcessor:
     
     async def delete_namespace(self):
         """Delete all vectors in a namespace"""
-        if self.mock_mode:
-            logger.info(f"[{self.correlation_id}] MOCK: Deleting namespace '{self.namespace}'")
-            return {
-                "success": True,
-                "namespace": self.namespace,
-                "deleted_count": 100,
-                "message": f"Successfully deleted namespace '{self.namespace}'"
-            }
-
         try:
             if not self.pinecone_index:
                 self.pinecone_index = PineconeConnectionManager.get_index(self.api_key, self.index_name)
@@ -311,20 +288,9 @@ class PDFProcessor:
                 "error": f"Error deleting namespace: {str(e)}"
             }
     
-    async def delete_document(self, document_id):
-        """Delete vectors associated with a specific document ID"""
+    async def delete_document(self, document_id, additional_metadata=None):
+        """Delete vectors associated with a specific document ID or name"""
         logger.info(f"[{self.correlation_id}] Deleting vectors for document '{document_id}' from namespace '{self.namespace}'")
-
-        if self.mock_mode:
-            logger.info(f"[{self.correlation_id}] MOCK: Deleting document vectors for '{document_id}'")
-            # In mock mode, simulate deleting 10 vectors
-            return {
-                "success": True,
-                "document_id": document_id,
-                "namespace": self.namespace,
-                "deleted_count": 10,
-                "message": f"Successfully deleted vectors for document '{document_id}' from namespace '{self.namespace}'"
-            }
 
         try:
             if not self.pinecone_index:
@@ -334,116 +300,189 @@ class PDFProcessor:
             # The specific namespace to use might be vdb-X format if vector_db_id provided
             actual_namespace = f"vdb-{self.vector_db_id}" if self.vector_db_id else self.namespace
             
-            # Search for vectors with this document ID
-            results = self.pinecone_index.query(
-                vector=[0] * 1536,  # Dummy vector, we only care about metadata filter
-                top_k=1,
-                include_metadata=True,
-                filter={"document_id": document_id},
-                namespace=actual_namespace
-            )
+            # Try to find vectors using multiple approaches
+            filters = []
             
-            # If no vectors found, return success with warning
-            if len(results.get("matches", [])) == 0:
+            # First try with exact document_id which could be UUID (preferred)
+            filters.append({"document_id": document_id})
+            
+            # If this is a UUID, try with different formats (with/without hyphens)
+            if len(document_id) >= 32:
+                # This looks like it might be a UUID - try variations
+                if "-" in document_id:
+                    # If it has hyphens, try without
+                    filters.append({"document_id": document_id.replace("-", "")})
+                else:
+                    # If it doesn't have hyphens, try to format it as UUID
+                    try:
+                        formatted_uuid = str(uuid.UUID(document_id))
+                        filters.append({"document_id": formatted_uuid})
+                    except ValueError:
+                        pass
+            
+            # Also try with title field if it could be a document name
+            if not document_id.startswith("doc-") and not document_id.startswith("test-doc-") and len(document_id) < 36:
+                # This might be a document title/name
+                filters.append({"title": document_id})
+            
+            # If additional metadata was provided, use it to make extra filters
+            if additional_metadata:
+                if "document_name" in additional_metadata:
+                    # Try exact name match
+                    filters.append({"title": additional_metadata["document_name"]})
+                    
+                    # Also try filename if name has extension
+                    if "." in additional_metadata["document_name"]:
+                        filters.append({"filename": additional_metadata["document_name"]})
+            
+            # Search for vectors with any of these filters
+            found_vectors = False
+            deleted_count = 0
+            filter_used = ""
+            
+            logger.info(f"[{self.correlation_id}] Will try {len(filters)} different filters to find document")
+            
+            for i, filter_query in enumerate(filters):
+                logger.info(f"[{self.correlation_id}] Searching for vectors with filter #{i+1}: {filter_query}")
+                
+                # Search for vectors with this filter
+                try:
+                    results = self.pinecone_index.query(
+                        vector=[0] * 1536,  # Dummy vector, we only care about metadata filter
+                        top_k=1,
+                        include_metadata=True,
+                        filter=filter_query,
+                        namespace=actual_namespace
+                    )
+                    
+                    if results and results.get("matches") and len(results.get("matches", [])) > 0:
+                        logger.info(f"[{self.correlation_id}] Found vectors matching filter: {filter_query}")
+                        found_vectors = True
+                        filter_used = str(filter_query)
+                        
+                        # Delete vectors by filter
+                        delete_result = self.pinecone_index.delete(
+                            filter=filter_query,
+                            namespace=actual_namespace
+                        )
+                        
+                        # Get delete count from result
+                        deleted_count = delete_result.get("deleted_count", 0)
+                        logger.info(f"[{self.correlation_id}] Deleted {deleted_count} vectors with filter: {filter_query}")
+                        break
+                except Exception as filter_error:
+                    logger.warning(f"[{self.correlation_id}] Error searching with filter {filter_query}: {str(filter_error)}")
+                    continue
+            
+            # If no vectors found with any filter
+            if not found_vectors:
                 logger.warning(f"[{self.correlation_id}] No vectors found for document '{document_id}' in namespace '{actual_namespace}'")
                 return {
-                    "success": True,
+                    "success": True,  # Still return success=True to maintain backward compatibility
                     "document_id": document_id,
                     "namespace": actual_namespace,
                     "deleted_count": 0,
                     "warning": f"No vectors found for document '{document_id}' in namespace '{actual_namespace}'",
-                    "message": f"Successfully deleted 0 vectors for document '{document_id}' from namespace '{actual_namespace}'"
+                    "message": f"Found 0 vectors for document '{document_id}' in namespace '{actual_namespace}'",
+                    "vectors_found": False,
+                    "vectors_deleted": 0
                 }
-            
-            # Delete vectors by filter
-            result = self.pinecone_index.delete(
-                filter={"document_id": document_id},
-                namespace=actual_namespace
-            )
-            
-            # Get delete count from result
-            deleted_count = result.get("deleted_count", 0)
             
             return {
                 "success": True,
                 "document_id": document_id,
                 "namespace": actual_namespace,
                 "deleted_count": deleted_count,
-                "message": f"Successfully deleted {deleted_count} vectors for document '{document_id}' from namespace '{actual_namespace}'"
+                "filter_used": filter_used,
+                "message": f"Successfully deleted {deleted_count} vectors for document '{document_id}' from namespace '{actual_namespace}'",
+                "vectors_found": True,
+                "vectors_deleted": deleted_count
             }
         except Exception as e:
             logger.error(f"[{self.correlation_id}] Error deleting document vectors: {str(e)}")
             return {
                 "success": False,
                 "document_id": document_id,
-                "error": f"Error deleting document vectors: {str(e)}"
+                "error": f"Error deleting document vectors: {str(e)}",
+                "vectors_found": False,
+                "vectors_deleted": 0
             }
     
     async def list_documents(self):
-        """List all documents in the Pinecone index"""
-        if self.mock_mode:
-            logger.info(f"[{self.correlation_id}] MOCK: Listing documents in namespace '{self.namespace}'")
-            return {
-                "success": True,
-                "namespace": self.namespace,
-                "documents": [
-                    {"id": "doc1", "title": "Sample Document 1"},
-                    {"id": "doc2", "title": "Sample Document 2"}
-                ]
-            }
-            
+        """List all documents in a namespace"""
+        # The namespace to use might be vdb-X format if vector_db_id provided
+        actual_namespace = f"vdb-{self.vector_db_id}" if self.vector_db_id else self.namespace
+        
         try:
             if not self.pinecone_index:
                 self.pinecone_index = PineconeConnectionManager.get_index(self.api_key, self.index_name)
                 
-            # The namespace to use might be in vdb-X format if vector_db_id provided
-            actual_namespace = f"vdb-{self.vector_db_id}" if self.vector_db_id else self.namespace
+            logger.info(f"[{self.correlation_id}] Listing documents in namespace '{actual_namespace}'")
             
-            # Get index stats
+            # Get index stats for namespace
             stats = self.pinecone_index.describe_index_stats()
-            namespaces = stats.get("namespaces", {})
-            total_vectors = namespaces.get(actual_namespace, {}).get("vector_count", 0)
+            namespace_stats = stats.get("namespaces", {}).get(actual_namespace, {})
+            vector_count = namespace_stats.get("vector_count", 0)
             
-            # Query unique document IDs
-            # Use a sparse vector with top_k=0 to just get metadata stats
-            # This is more efficient than retrieving actual vectors
+            if vector_count == 0:
+                # No vectors in namespace
+                return DocumentsListResponse(
+                    success=True,
+                    total_vectors=0,
+                    namespace=actual_namespace,
+                    index_name=self.index_name,
+                    documents=[]
+                ).dict()
+                
+            # Query for vectors with a dummy vector to get back metadata
+            # This is not efficient but is a simple approach to extract document info
             results = self.pinecone_index.query(
-                vector=[0] * 1536,  # Dummy vector for metadata-only query
-                top_k=100,  # Limit to 100 results
+                vector=[0] * stats.dimension,  # Use index dimensions
+                top_k=min(vector_count, 1000),  # Get at most 1000 vectors
                 include_metadata=True,
                 namespace=actual_namespace
             )
             
-            # Extract unique document IDs from metadata
-            document_map = {}
-            matches = results.get("matches", [])
+            # Process results to extract unique documents
+            seen_documents = set()
+            documents = []
             
-            for match in matches:
+            for match in results.get("matches", []):
                 metadata = match.get("metadata", {})
-                doc_id = metadata.get("document_id")
+                document_id = metadata.get("document_id")
                 
-                if doc_id and doc_id not in document_map:
-                    document_map[doc_id] = {
-                        "id": doc_id,
-                        "title": metadata.get("title", "Unknown"),
-                        "chunks": 1
+                if document_id and document_id not in seen_documents:
+                    seen_documents.add(document_id)
+                    doc_info = {
+                        "id": document_id,
+                        "title": metadata.get("title"),
+                        "filename": metadata.get("filename"),
+                        "content_type": metadata.get("content_type"),
+                        "chunk_count": 0
                     }
-                elif doc_id:
-                    document_map[doc_id]["chunks"] += 1
+                    documents.append(doc_info)
+                    
+                # Count chunks for this document
+                for doc in documents:
+                    if doc["id"] == document_id:
+                        doc["chunk_count"] += 1
+                        break
             
-            documents = list(document_map.values())
+            return DocumentsListResponse(
+                success=True,
+                total_vectors=vector_count,
+                namespace=actual_namespace,
+                index_name=self.index_name,
+                documents=documents
+            ).dict()
             
-            return {
-                "success": True,
-                "namespace": actual_namespace,
-                "index_name": self.index_name,
-                "total_vectors": total_vectors,
-                "documents": documents
-            }
         except Exception as e:
             logger.error(f"[{self.correlation_id}] Error listing documents: {str(e)}")
-            return {
-                "success": False,
-                "error": f"Error listing documents: {str(e)}"
-            } 
+            return DocumentsListResponse(
+                success=False,
+                error=f"Error listing documents: {str(e)}"
+            ).dict() 
+
+
+
 

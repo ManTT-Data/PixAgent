@@ -67,9 +67,6 @@ STORAGE_DIR = os.path.join(project_root, "pdf_storage")
 os.makedirs(TEMP_UPLOAD_DIR, exist_ok=True)
 os.makedirs(STORAGE_DIR, exist_ok=True)
 
-USE_MOCK_MODE = False  # Disabled - using real database with improved connection handling
-logger.info(f"PDF API starting with USE_MOCK_MODE={USE_MOCK_MODE}")
-
 # Helper function to log with timestamp
 def log_with_timestamp(message: str, level: str = "info", error: Exception = None):
     """Add timestamps to log messages and log to the PDF debug logger if available"""
@@ -114,8 +111,8 @@ async def send_progress_update(user_id, file_id, step, progress=0.0, message="")
 
 # Function with fixed indentation for the troublesome parts
 async def handle_pdf_processing_result(result, correlation_id, user_id, file_id, filename, document, vector_status, 
-                                    vector_database_id, temp_file_path, db, is_pdf, mock_mode):
-    """Fixed version of the code with proper indentation"""
+                                    vector_database_id, temp_file_path, db, is_pdf):
+    """Process the result of PDF processing and update database records"""
     # If successful, move file to permanent storage
     if result.get('success'):
         try:
@@ -129,10 +126,32 @@ async def handle_pdf_processing_result(result, correlation_id, user_id, file_id,
         if vector_database_id and document and vector_status:
             try:
                 log_upload_debug(correlation_id, f"Updating vector status to 'completed' for document ID {document.id}")
+                
+                # Update the vector status with the result document_id (important for later deletion)
+                result_document_id = result.get('document_id') 
+                
                 vector_status.status = "completed"
                 vector_status.embedded_at = datetime.now()
-                vector_status.vector_id = file_id
+                
+                # Critical: Store the correct vector ID for future deletion
+                # This can be either the original file_id or the result_document_id
+                if result_document_id and result_document_id != file_id:
+                    # If Pinecone returned a specific document_id, use that
+                    vector_status.vector_id = result_document_id
+                    log_upload_debug(correlation_id, f"Updated vector_id to {result_document_id} (from result)")
+                elif file_id:
+                    # Make sure file_id is stored as the vector_id
+                    vector_status.vector_id = file_id
+                    log_upload_debug(correlation_id, f"Updated vector_id to {file_id} (from file_id)")
+                
+                # Also ensure we store some backup identifiers in case the primary one fails
+                # Store the document name as a secondary identifier
+                vector_status.document_name = document.name
+                log_upload_debug(correlation_id, f"Stored document_name '{document.name}' in vector status for backup")
+                
+                # Mark document as embedded
                 document.is_embedded = True
+                
                 db.commit()
                 log_upload_debug(correlation_id, f"Database status updated successfully")
             except Exception as db_error:
@@ -154,9 +173,6 @@ async def handle_pdf_processing_result(result, correlation_id, user_id, file_id,
         # Add document information to the result
         if document:
             result["document_database_id"] = document.id
-            
-        # Include mock_mode in response
-        result["mock_mode"] = mock_mode
     else:
         log_upload_debug(correlation_id, f"PDF processing failed: {result.get('error', 'Unknown error')}")
         
@@ -185,7 +201,7 @@ async def handle_pdf_processing_result(result, correlation_id, user_id, file_id,
                 log_upload_debug(correlation_id, f"Error sending WebSocket notification: {ws_error}", ws_error)
         
     # Cleanup: delete temporary file if it still exists
-    if os.path.exists(temp_file_path):
+    if temp_file_path and os.path.exists(temp_file_path):
         try:
             os.remove(temp_file_path)
             log_upload_debug(correlation_id, f"Removed temporary file {temp_file_path}")
@@ -207,7 +223,6 @@ async def upload_pdf(
     vector_database_id: Optional[int] = Form(None),
     content_type: Optional[str] = Form(None),  # Add content_type parameter
     background_tasks: BackgroundTasks = None,
-    mock_mode: bool = Form(False),  # Set to False to use real database
     db: Session = Depends(get_db)
 ):
     """
@@ -221,12 +236,18 @@ async def upload_pdf(
     - **user_id**: User ID for WebSocket status updates
     - **vector_database_id**: ID of vector database in PostgreSQL (optional)
     - **content_type**: Content type of the file (optional)
-    - **mock_mode**: Simulate Pinecone operations instead of performing real calls (default: false)
+    
+    Note: Mock mode has been permanently removed and the system always operates in real mode
     """
     # Generate request ID for tracking
     correlation_id = str(uuid.uuid4())[:8]
     logger.info(f"[{correlation_id}] PDF upload request received: ns={namespace}, index={index_name}, user={user_id}")
-    log_upload_debug(correlation_id, f"Upload request: vector_db_id={vector_database_id}, mock_mode={mock_mode}")
+    log_upload_debug(correlation_id, f"Upload request: vector_db_id={vector_database_id}")
+    
+    # Variables that might need cleanup in case of error
+    temp_file_path = None
+    document = None
+    vector_status = None
     
     try:
         # Check file type - accept both PDF and plaintext for testing
@@ -236,13 +257,8 @@ async def upload_pdf(
         log_upload_debug(correlation_id, f"File type check: is_pdf={is_pdf}, is_text={is_text}, filename={file.filename}")
         
         if not (is_pdf or is_text):
-            if not mock_mode:
-                # In real mode, only accept PDFs
-                log_upload_debug(correlation_id, f"Rejecting non-PDF file in real mode: {file.filename}")
-                raise HTTPException(status_code=400, detail="Only PDF files are accepted")
-            else:
-                # In mock mode, convert any file to text for testing
-                logger.warning(f"[{correlation_id}] Non-PDF file uploaded in mock mode: {file.filename} - will treat as text")
+            log_upload_debug(correlation_id, f"Rejecting non-PDF file: {file.filename}")
+            raise HTTPException(status_code=400, detail="Only PDF files are accepted")
         
         # If vector_database_id provided, get info from PostgreSQL
         api_key = None
@@ -255,11 +271,10 @@ async def upload_pdf(
                 VectorDatabase.id == vector_database_id,
                 VectorDatabase.status == "active"
             ).first()
+            
             if not vector_db:
-                return PDFResponse(
-                    success=False,
-                    error=f"Vector database with ID {vector_database_id} not found or inactive"
-                )
+                log_upload_debug(correlation_id, f"Vector database {vector_database_id} not found or inactive")
+                raise HTTPException(status_code=404, detail="Vector database not found or inactive")
             
             log_upload_debug(correlation_id, f"Found vector database: id={vector_db.id}, name={vector_db.name}, index={vector_db.pinecone_index}")
             
@@ -343,13 +358,26 @@ async def upload_pdf(
             
         metadata["content_type"] = actual_content_type
         
-        if title:
-            metadata["title"] = title
-        else:
-            # Use filename as title if not provided
-            title = file.filename
-            metadata["title"] = title
+        # Use provided title or filename as document name
+        document_name = title or file.filename
+        
+        # Verify document name is unique within this vector database
+        if vector_database_id:
+            # Check if a document with this name already exists in this vector database
+            existing_doc = db.query(Document).filter(
+                Document.name == document_name,
+                Document.vector_database_id == vector_database_id
+            ).first()
             
+            if existing_doc:
+                # Make the name unique by appending timestamp
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                base_name, extension = os.path.splitext(document_name)
+                document_name = f"{base_name}_{timestamp}{extension}"
+                log_upload_debug(correlation_id, f"Document name already exists, using unique name: {document_name}")
+        
+        metadata["title"] = document_name
+        
         if description:
             metadata["description"] = description
         
@@ -377,7 +405,7 @@ async def upload_pdf(
             # Create document record without file content
             try:
                 document = Document(
-                    name=title or file.filename,
+                    name=document_name,  # Use the (potentially) modified document name
                     file_type="pdf" if is_pdf else "text",
                     content_type=actual_content_type,  # Use the actual_content_type here
                     size=len(file_content),
@@ -405,16 +433,17 @@ async def upload_pdf(
                 log_upload_debug(correlation_id, f"Error creating document content: {content_error}", content_error)
                 raise
             
-            # Create vector status record
+            # Create vector status record - store file_id as the vector_id for deletion later
             try:
                 vector_status = VectorStatus(
                     document_id=document.id,
                     vector_database_id=vector_database_id,
-                    status="pending"
+                    status="pending",
+                    vector_id=file_id  # Store the document UUID as vector_id for later deletion
                 )
                 db.add(vector_status)
                 db.commit()
-                log_upload_debug(correlation_id, f"Created vector status record for document ID {document.id}")
+                log_upload_debug(correlation_id, f"Created vector status record for document ID {document.id} with vector_id={file_id}")
             except Exception as status_error:
                 log_upload_debug(correlation_id, f"Error creating vector status: {status_error}", status_error)
                 raise
@@ -422,13 +451,12 @@ async def upload_pdf(
             logger.info(f"[{correlation_id}] Created document ID {document.id} and vector status in PostgreSQL")
             
         # Initialize PDF processor with correct parameters
-        log_upload_debug(correlation_id, f"Initializing PDFProcessor: index={index_name}, vector_db_id={vector_database_id}, mock_mode={mock_mode}")
+        log_upload_debug(correlation_id, f"Initializing PDFProcessor: index={index_name}, vector_db_id={vector_database_id}")
         processor = PDFProcessor(
             index_name=index_name, 
             namespace=namespace, 
             api_key=api_key, 
             vector_db_id=vector_database_id,
-            mock_mode=mock_mode,
             correlation_id=correlation_id
         )
         
@@ -450,7 +478,7 @@ async def upload_pdf(
         log_upload_debug(correlation_id, f"Processing PDF with file_path={temp_file_path}, document_id={file_id}")
         result = await processor.process_pdf(
             file_path=temp_file_path,
-            document_id=file_id,
+            document_id=file_id,  # Use UUID as document_id for Pinecone
             metadata=metadata,
             progress_callback=send_progress_update if user_id else None
         )
@@ -459,53 +487,48 @@ async def upload_pdf(
         
         # Handle PDF processing result
         return await handle_pdf_processing_result(result, correlation_id, user_id, file_id, file.filename, document, vector_status, 
-                                                vector_database_id, temp_file_path, db, is_pdf, mock_mode)
+                                                vector_database_id, temp_file_path, db, is_pdf)
     except Exception as e:
-        return await handle_upload_error(e, correlation_id, temp_file_path, user_id, file_id, file.filename, vector_database_id, vector_status, db, mock_mode)
-
-# Error handling for upload_pdf function
-async def handle_upload_error(e, correlation_id, temp_file_path, user_id, file_id, filename, vector_database_id, vector_status, db, mock_mode):
-    """Fixed version of the error handling part with proper indentation"""
-    log_upload_debug(correlation_id, f"Error in upload_pdf: {str(e)}", e)
-    logger.exception(f"[{correlation_id}] Error in upload_pdf: {str(e)}")
-    
-    # Cleanup on error
-    if os.path.exists(temp_file_path):
-        try:
-            os.remove(temp_file_path)
-            log_upload_debug(correlation_id, f"Cleaned up temp file after error: {temp_file_path}")
-        except Exception as cleanup_error:
-            log_upload_debug(correlation_id, f"Error cleaning up temporary file: {cleanup_error}", cleanup_error)
+        log_upload_debug(correlation_id, f"Error in upload_pdf: {str(e)}", e)
+        logger.exception(f"[{correlation_id}] Error in upload_pdf: {str(e)}")
         
-    # Update error status in PostgreSQL
-    if vector_database_id and vector_status:
-        try:
-            vector_status.status = "failed"
-            vector_status.error_message = str(e)
-            db.commit()
-            log_upload_debug(correlation_id, f"Updated database with error status")
-        except Exception as db_error:
-            log_upload_debug(correlation_id, f"Error updating database with error status: {db_error}", db_error)
+        # Cleanup on error
+        if os.path.exists(temp_file_path):
+            try:
+                os.remove(temp_file_path)
+                log_upload_debug(correlation_id, f"Cleaned up temp file after error: {temp_file_path}")
+            except Exception as cleanup_error:
+                log_upload_debug(correlation_id, f"Error cleaning up temporary file: {cleanup_error}", cleanup_error)
         
-    # Send failure notification via WebSocket
-    if user_id and file_id:
-        try:
-            await send_pdf_upload_failed(
-                user_id,
-                file_id,
-                filename,
-                str(e)
-            )
-            log_upload_debug(correlation_id, f"Sent failure notification for exception")
-        except Exception as ws_error:
-            log_upload_debug(correlation_id, f"Error sending WebSocket notification for failure: {ws_error}", ws_error)
+        # Update error status in PostgreSQL
+        if vector_database_id and vector_status:
+            try:
+                vector_status.status = "failed"
+                vector_status.error_message = str(e)
+                db.commit()
+                log_upload_debug(correlation_id, f"Updated database with error status")
+            except Exception as db_error:
+                log_upload_debug(correlation_id, f"Error updating database with error status: {db_error}", db_error)
             
-    log_upload_debug(correlation_id, f"Upload request failed with exception: {str(e)}")
-    return PDFResponse(
-        success=False,
-        error=str(e),
-        mock_mode=mock_mode
-    )
+        # Send failure notification via WebSocket
+        if user_id and file_id:
+            try:
+                await send_pdf_upload_failed(
+                    user_id,
+                    file_id,
+                    file.filename,
+                    str(e)
+                )
+                log_upload_debug(correlation_id, f"Sent failure notification for exception")
+            except Exception as ws_error:
+                log_upload_debug(correlation_id, f"Error sending WebSocket notification for failure: {ws_error}", ws_error)
+            
+        log_upload_debug(correlation_id, f"Upload request failed with exception: {str(e)}")
+        return PDFResponse(
+            success=False,
+            error=str(e)
+        )
+
 # Endpoint xóa tài liệu
 @router.delete("/namespace", response_model=PDFResponse)
 async def delete_namespace(
@@ -529,7 +552,6 @@ async def delete_namespace(
         # Nếu có vector_database_id, lấy thông tin từ PostgreSQL
         api_key = None
         vector_db = None
-        mock_mode = False  # Use real mode by default
 
         if vector_database_id:
             vector_db = db.query(VectorDatabase).filter(
@@ -563,13 +585,12 @@ async def delete_namespace(
             index_name=index_name, 
             namespace=namespace,
             api_key=api_key,
-            vector_db_id=vector_database_id,
-            mock_mode=mock_mode
+            vector_db_id=vector_database_id
         )
         result = await processor.delete_namespace()
         
-        # If in mock mode, also update PostgreSQL to reflect the deletion
-        if mock_mode and result.get('success') and vector_database_id:
+        # If successful and vector_database_id, update PostgreSQL to reflect the deletion
+        if result.get('success') and vector_database_id:
             try:
                 # Update vector statuses for this database
                 affected_count = db.query(VectorStatus).filter(
@@ -633,7 +654,6 @@ async def get_documents(
         # Nếu có vector_database_id, lấy thông tin từ PostgreSQL
         api_key = None
         vector_db = None
-        mock_mode = False  # Use real mode by default
 
         if vector_database_id:
             vector_db = db.query(VectorDatabase).filter(
@@ -665,8 +685,7 @@ async def get_documents(
             index_name=index_name, 
             namespace=namespace,
             api_key=api_key,
-            vector_db_id=vector_database_id,
-            mock_mode=mock_mode
+            vector_db_id=vector_database_id
         )
         
         # Lấy danh sách documents từ Pinecone
@@ -708,7 +727,7 @@ async def get_documents(
         return DocumentsListResponse(
             success=False,
             error=str(e)
-        ) 
+        )
 
 # Health check endpoint for PDF API
 @router.get("/health")
@@ -727,25 +746,32 @@ async def delete_document(
     index_name: str = "testbot768",
     vector_database_id: Optional[int] = None,
     user_id: Optional[str] = None,
-    mock_mode: bool = False,
     db: Session = Depends(get_db)
 ):
     """
     Delete vectors for a specific document from the vector database
     
-    - **document_id**: ID of the document to delete
+    This endpoint can be called in two ways:
+    1. With the PostgreSQL document ID - will look up the actual vector_id first
+    2. With the actual vector_id directly - when called from the PostgreSQL document deletion endpoint
+    
+    - **document_id**: ID of the document to delete (can be PostgreSQL document ID or Pinecone vector_id)
     - **namespace**: Namespace in the vector database (default: "Default")
     - **index_name**: Name of the vector index (default: "testbot768")
     - **vector_database_id**: ID of vector database in PostgreSQL (optional)
     - **user_id**: User ID for WebSocket status updates (optional)
-    - **mock_mode**: Simulate vector database operations (default: false)
     """
-    logger.info(f"Delete document request: document_id={document_id}, namespace={namespace}, index={index_name}, vector_db_id={vector_database_id}, mock_mode={mock_mode}")
+    logger.info(f"Delete document request: document_id={document_id}, namespace={namespace}, index={index_name}, vector_db_id={vector_database_id}")
     
     try:
         # If vector_database_id is provided, get info from PostgreSQL
         api_key = None
         vector_db = None
+        pinecone_document_id = document_id  # Default to the provided document_id
+        document_to_delete = None
+        vector_status_to_update = None
+        document_found = False  # Flag to track if document was found
+        vector_id_found = False  # Flag to track if a valid vector ID was found
 
         if vector_database_id:
             vector_db = db.query(VectorDatabase).filter(
@@ -771,10 +797,58 @@ async def delete_document(
             namespace = f"vdb-{vector_database_id}" if vector_database_id else namespace
             logger.info(f"Using namespace '{namespace}' based on vector database ID")
             
+            # Check if document_id is a numeric database ID or document name
+            if document_id.isdigit():
+                # Try to find the document in PostgreSQL by its ID
+                db_document_id = int(document_id)
+                document_to_delete = db.query(Document).filter(Document.id == db_document_id).first()
+                
+                if document_to_delete:
+                    document_found = True
+                    logger.info(f"Found document in database: id={document_to_delete.id}, name={document_to_delete.name}")
+                    
+                    # Look for vector status to find the Pinecone vector_id
+                    vector_status_to_update = db.query(VectorStatus).filter(
+                        VectorStatus.document_id == document_to_delete.id,
+                        VectorStatus.vector_database_id == vector_database_id
+                    ).first()
+                    
+                    if vector_status_to_update and vector_status_to_update.vector_id:
+                        pinecone_document_id = vector_status_to_update.vector_id
+                        vector_id_found = True
+                        logger.info(f"Using vector_id '{pinecone_document_id}' from vector status")
+                    else:
+                        # Fallback options if vector_id is not directly found
+                        pinecone_document_id = document_to_delete.name
+                        logger.info(f"Vector ID not found in status, using document name '{pinecone_document_id}' as fallback")
+                else:
+                    logger.warning(f"Document with ID {db_document_id} not found in database. Using ID as is.")
+            else:
+                # Try to find document by name/title
+                document_to_delete = db.query(Document).filter(
+                    Document.name == document_id,
+                    Document.vector_database_id == vector_database_id
+                ).first()
+                
+                if document_to_delete:
+                    document_found = True
+                    logger.info(f"Found document by name: id={document_to_delete.id}, name={document_to_delete.name}")
+                    
+                    # Get vector status for this document
+                    vector_status_to_update = db.query(VectorStatus).filter(
+                        VectorStatus.document_id == document_to_delete.id,
+                        VectorStatus.vector_database_id == vector_database_id
+                    ).first()
+                    
+                    if vector_status_to_update and vector_status_to_update.vector_id:
+                        pinecone_document_id = vector_status_to_update.vector_id
+                        vector_id_found = True
+                        logger.info(f"Using vector_id '{pinecone_document_id}' from vector status")
+            
         # Send notification of deletion start via WebSocket if user_id provided
         if user_id:
             try:
-                await send_pdf_delete_started(user_id, document_id)
+                await send_pdf_delete_started(user_id, pinecone_document_id)
             except Exception as ws_error:
                 logger.error(f"Error sending WebSocket notification: {ws_error}")
         
@@ -783,47 +857,98 @@ async def delete_document(
             index_name=index_name, 
             namespace=namespace, 
             api_key=api_key, 
-            vector_db_id=vector_database_id,
-            mock_mode=mock_mode
+            vector_db_id=vector_database_id
         )
         
-        # Delete document vectors
-        result = await processor.delete_document(document_id)
+        # Delete document vectors using the pinecone_document_id and additional metadata
+        additional_metadata = {}
+        if document_to_delete:
+            # Add document name as title for searching
+            additional_metadata["document_name"] = document_to_delete.name
+        
+        result = await processor.delete_document(pinecone_document_id, additional_metadata)
+        
+        # Check if vectors were actually deleted or found
+        vectors_deleted = result.get('vectors_deleted', 0)
+        vectors_found = result.get('vectors_found', False)
+        
+        # If no document was found in PostgreSQL and no vectors were found/deleted in Pinecone
+        if not document_found and not vectors_found:
+            result['success'] = False  # Override success to false
+            result['error'] = f"Document ID {document_id} not found in PostgreSQL or Pinecone"
+            
+            # Send notification of deletion failure via WebSocket if user_id provided
+            if user_id:
+                try:
+                    await send_pdf_delete_failed(user_id, document_id, result['error'])
+                except Exception as ws_error:
+                    logger.error(f"Error sending WebSocket notification: {ws_error}")
+                    
+            return result
         
         # If successful and vector_database_id is provided, update PostgreSQL records
         if result.get('success') and vector_database_id:
             try:
-                # Find document by vector ID if it exists
-                document = db.query(Document).join(
-                    VectorStatus, Document.id == VectorStatus.document_id
-                ).filter(
-                    Document.vector_database_id == vector_database_id,
-                    VectorStatus.vector_id == document_id
-                ).first()
-                
-                if document:
-                    # Update vector status
-                    vector_status = db.query(VectorStatus).filter(
-                        VectorStatus.document_id == document.id,
-                        VectorStatus.vector_database_id == vector_database_id
-                    ).first()
+                # Update vector status if we found it earlier
+                if vector_status_to_update:
+                    vector_status_to_update.status = "deleted"
+                    db.commit()
+                    result["postgresql_updated"] = True
+                    logger.info(f"Updated vector status for document ID {document_to_delete.id if document_to_delete else document_id} to 'deleted'")
+                else:
+                    # If we didn't find it earlier, try again with more search options
+                    document = None
                     
-                    if vector_status:
-                        vector_status.status = "deleted"
-                        db.commit()
-                        result["postgresql_updated"] = True
-                        logger.info(f"Updated vector status for document ID {document.id} to 'deleted'")
+                    if document_id.isdigit():
+                        # If the original document_id was numeric, use it directly
+                        document = db.query(Document).filter(Document.id == int(document_id)).first()
+                    
+                    if not document:
+                        # Find document by vector ID if it exists
+                        document = db.query(Document).join(
+                            VectorStatus, Document.id == VectorStatus.document_id
+                        ).filter(
+                            Document.vector_database_id == vector_database_id,
+                            VectorStatus.vector_id == pinecone_document_id
+                        ).first()
+                    
+                    if not document:
+                        # Try finding by name
+                        document = db.query(Document).filter(
+                            Document.vector_database_id == vector_database_id,
+                            Document.name == pinecone_document_id
+                        ).first()
+                    
+                    if document:
+                        # Update vector status
+                        vector_status = db.query(VectorStatus).filter(
+                            VectorStatus.document_id == document.id,
+                            VectorStatus.vector_database_id == vector_database_id
+                        ).first()
+                        
+                        if vector_status:
+                            vector_status.status = "deleted"
+                            db.commit()
+                            result["postgresql_updated"] = True
+                            logger.info(f"Updated vector status for document ID {document.id} to 'deleted'")
+                    else:
+                        logger.warning(f"Could not find document record for deletion confirmation. Document ID: {document_id}, Vector ID: {pinecone_document_id}")
             except Exception as db_error:
                 logger.error(f"Error updating PostgreSQL records: {db_error}")
                 result["postgresql_error"] = str(db_error)
+        
+        # Add information about what was found and deleted
+        result["document_found_in_db"] = document_found
+        result["vector_id_found"] = vector_id_found
+        result["vectors_deleted"] = vectors_deleted
         
         # Send notification of deletion completion via WebSocket if user_id provided
         if user_id:
             try:
                 if result.get('success'):
-                    await send_pdf_delete_completed(user_id, document_id)
+                    await send_pdf_delete_completed(user_id, pinecone_document_id)
                 else:
-                    await send_pdf_delete_failed(user_id, document_id, result.get('error', 'Unknown error'))
+                    await send_pdf_delete_failed(user_id, pinecone_document_id, result.get('error', 'Unknown error'))
             except Exception as ws_error:
                 logger.error(f"Error sending WebSocket notification: {ws_error}")
         
@@ -840,8 +965,7 @@ async def delete_document(
         
         return PDFResponse(
             success=False,
-            error=str(e),
-            mock_mode=mock_mode
+            error=str(e)
         )
 
 
