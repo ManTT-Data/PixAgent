@@ -442,31 +442,39 @@ async def websocket_listener():
                     logger.info("Admin WebSocket connected successfully! Now monitoring for 'I'm sorry' responses.")
                 
                 # Start keepalive thread
-                def send_keepalive_thread():
-                    while True:
+                def send_keepalive_thread(websocket):
+                    ws_ref = websocket  # Lưu trữ tham chiếu cục bộ đến WebSocket
+                    is_running = True
+                    
+                    while is_running:
                         try:
-                            if ws.sock and ws.sock.connected:
+                            # Kiểm tra xem WebSocket có còn hợp lệ không
+                            if ws_ref is None or not hasattr(ws_ref, 'sock') or not ws_ref.sock or not ws_ref.sock.connected:
+                                logger.info("WebSocket không còn kết nối, dừng thread keepalive")
+                                is_running = False
+                                break
+                                
+                            # Gửi tin nhắn giữ kết nối
+                            try:
+                                # Format 1: JSON with action ping (per admin guide)
+                                ws_ref.send(json.dumps({"action": "ping"}))
+                                logger.info("Sent keepalive message (JSON format)")
+                            except Exception as e1:
+                                logger.error(f"Error sending JSON keepalive: {e1}")
+                                
                                 try:
-                                    # Format 1: JSON with action ping (per admin guide)
-                                    ws.send(json.dumps({"action": "ping"}))
-                                    logger.info("Sent keepalive message (JSON format)")
-                                except Exception as e1:
-                                    logger.error(f"Error sending JSON keepalive: {e1}")
+                                    # Format 2: Simple string "keepalive"
+                                    ws_ref.send("keepalive")
+                                    logger.info("Sent keepalive message (string format)")
+                                except Exception as e2:
+                                    logger.error(f"Error sending string keepalive: {e2}")
                                     
-                                    try:
-                                        # Format 2: Simple string "keepalive"
-                                        ws.send("keepalive")
-                                        logger.info("Sent keepalive message (string format)")
-                                    except Exception as e2:
-                                        logger.error(f"Error sending string keepalive: {e2}")
-                            
                             time.sleep(120)  # 2 minutes instead of 5 minutes
                         except Exception as e:
                             logger.error(f"Error in keepalive thread: {e}")
                             time.sleep(60)  # Retry after 1 minute if error
-                
-                keepalive_thread = threading.Thread(target=send_keepalive_thread, daemon=True)
-                keepalive_thread.start()
+                            
+                    logger.info("Keepalive thread đã kết thúc")
                 
                 # Create WebSocket app with event handlers
                 ws = websocket.WebSocketApp(
@@ -476,6 +484,10 @@ async def websocket_listener():
                     on_error=on_error,
                     on_close=on_close
                 )
+                
+                # Khởi động thread keepalive với tham chiếu rõ ràng đến ws
+                keepalive_thread = threading.Thread(target=send_keepalive_thread, args=(ws,), daemon=True)
+                keepalive_thread.start()
                 
                 # Add SSL options if using wss://
                 if ws_url.startswith("wss://"):
