@@ -16,7 +16,6 @@ from main import (
     start_command,
     help_command,
     status_command,
-    clear_history_command,
     websocket_listener,
     ADMIN_TELEGRAM_BOT_TOKEN,
     ADMIN_GROUP_CHAT_ID,
@@ -38,7 +37,6 @@ bot_app = Application.builder().token(ADMIN_TELEGRAM_BOT_TOKEN).build()
 bot_app.add_handler(CommandHandler("start", start_command))
 bot_app.add_handler(CommandHandler("help", help_command))
 bot_app.add_handler(CommandHandler("status", status_command))
-bot_app.add_handler(CommandHandler("clear_history", clear_history_command))
 
 # WebSocket task variables
 websocket_task = None
@@ -59,7 +57,7 @@ async def startup():
                 backend_url = backend_url.replace("ws://", "http://")
             elif backend_url.startswith("wss://"):
                 backend_url = backend_url.replace("wss://", "https://")
-
+                
             # Loại bỏ dấu / ở cuối URL nếu có
             if backend_url.endswith('/'):
                 backend_url = backend_url[:-1]

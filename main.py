@@ -206,7 +206,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Here are the available commands:\n\n"
         "/start - Start the bot\n"
         "/status - Check backend connection status\n"
-        "/clear_history - Clear chat history for session tracking\n"
         "/help - Show this help message\n\n"
         "The Admin Bot helps manage content for the User Bot by monitoring "
         "the backend system and allowing direct management of events, FAQs, "
@@ -221,61 +220,6 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text("Checking backend connections...")
     await send_status_message(chat_id=update.effective_chat.id)
-
-async def clear_history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Clear chat history by creating a marker session in the database."""
-    logger.info(f"Received /clear_history command from {update.effective_user.id}")
-    
-    if not API_DATABASE_URL:
-        await update.message.reply_text("⚠️ Database URL not configured. Cannot clear history.")
-        return
-    
-    # Tạo một session_id với định dạng giống như các session thường
-    user_id = str(update.effective_user.id)
-    current_time = datetime.now().strftime("%Y-%m-%d_%H:%M:%S")
-    session_id = f"{user_id}_{current_time}"
-    
-    try:
-        # Gửi HTTP request đến backend API để lưu session
-        # Chuyển đổi URL từ websocket sang http(s)
-        api_url = API_DATABASE_URL
-        if api_url.startswith("ws://"):
-            api_url = api_url.replace("ws://", "http://")
-        elif api_url.startswith("wss://"):
-            api_url = api_url.replace("wss://", "https://")
-            
-        # Loại bỏ slash ở cuối nếu có
-        if api_url.endswith('/'):
-            api_url = api_url[:-1]
-            
-        # Endpoint để lưu session
-        endpoint = f"{api_url}/mongodb/session"
-        
-        # Tạo dữ liệu session
-        payload = {
-            "session_id": session_id,
-            "factor": "user",
-            "action": "clear",  # Đặt action là "clear" để đánh dấu này là lệnh xóa lịch sử
-            "message": "clear history",
-            "user_id": user_id,
-            "first_name": update.effective_user.first_name or "",
-            "last_name": update.effective_user.last_name or "",
-            "username": update.effective_user.username or "",
-        }
-        
-        # Gửi yêu cầu POST để lưu session
-        response = requests.post(endpoint, json=payload)
-        
-        if response.status_code == 200:
-            logger.info(f"Clear history session saved with ID: {session_id}")
-            await update.message.reply_text("✅ History cleared successfully. Future conversations will start fresh!")
-        else:
-            logger.error(f"Failed to save clear history session: {response.status_code} - {response.text}")
-            await update.message.reply_text("❌ Failed to clear history. Please try again later.")
-            
-    except Exception as e:
-        logger.error(f"Error saving clear history session: {e}")
-        await update.message.reply_text(f"❌ Error clearing history: {str(e)}")
 
 # WebSocket monitoring
 async def websocket_listener():
@@ -496,33 +440,33 @@ async def websocket_listener():
                     
                     # Ghi log kết nối thành công nhưng không gửi thông báo
                     logger.info("Admin WebSocket connected successfully! Now monitoring for 'I'm sorry' responses.")
-                    
-                    # Start keepalive thread
-                    def send_keepalive_thread():
-                        while True:
-                            try:
-                                if ws.sock and ws.sock.connected:
+                
+                # Start keepalive thread
+                def send_keepalive_thread():
+                    while True:
+                        try:
+                            if ws.sock and ws.sock.connected:
+                                try:
+                                    # Format 1: JSON with action ping (per admin guide)
+                                    ws.send(json.dumps({"action": "ping"}))
+                                    logger.info("Sent keepalive message (JSON format)")
+                                except Exception as e1:
+                                    logger.error(f"Error sending JSON keepalive: {e1}")
+                                    
                                     try:
-                                        # Format 1: JSON with action ping (per admin guide)
-                                        ws.send(json.dumps({"action": "ping"}))
-                                        logger.info("Sent keepalive message (JSON format)")
-                                    except Exception as e1:
-                                        logger.error(f"Error sending JSON keepalive: {e1}")
-                                        
-                                        try:
-                                            # Format 2: Simple string "keepalive"
-                                            ws.send("keepalive")
-                                            logger.info("Sent keepalive message (string format)")
-                                        except Exception as e2:
-                                            logger.error(f"Error sending string keepalive: {e2}")
-                                
-                                time.sleep(120)  # 2 minutes instead of 5 minutes
-                            except Exception as e:
-                                logger.error(f"Error in keepalive thread: {e}")
-                                time.sleep(60)  # Retry after 1 minute if error
-                                
-                    keepalive_thread = threading.Thread(target=send_keepalive_thread, daemon=True)
-                    keepalive_thread.start()
+                                        # Format 2: Simple string "keepalive"
+                                        ws.send("keepalive")
+                                        logger.info("Sent keepalive message (string format)")
+                                    except Exception as e2:
+                                        logger.error(f"Error sending string keepalive: {e2}")
+                            
+                            time.sleep(120)  # 2 minutes instead of 5 minutes
+                        except Exception as e:
+                            logger.error(f"Error in keepalive thread: {e}")
+                            time.sleep(60)  # Retry after 1 minute if error
+                
+                keepalive_thread = threading.Thread(target=send_keepalive_thread, daemon=True)
+                keepalive_thread.start()
                 
                 # Create WebSocket app with event handlers
                 ws = websocket.WebSocketApp(
@@ -588,8 +532,10 @@ async def websocket_listener():
                     if notification["type"] == "sorry_response":
                         # Format full name
                         user_full_name = f"{notification['first_name']} {notification['last_name']}".strip()
-                        # Format username with @ if available
-                        username_display = f" (@{notification['username']})" if notification['username'] else ""
+                        
+                        # Escape username trước, sau đó mới thêm @ để tránh escape sai
+                        escaped_username = escape_markdown(notification['username']) if notification['username'] else ""
+                        username_display = f" (@{escaped_username})" if escaped_username else ""
                         
                         # Escape special characters for Markdown
                         escaped_question = escape_markdown(notification['question'])
@@ -598,7 +544,7 @@ async def websocket_listener():
                         
                         message_text = (
                             f"🚨 *Phát hiện phản hồi \"I'm sorry\"*\n"
-                            f"👤 Người dùng: {escape_markdown(user_full_name)}{escape_markdown(username_display)}\n"
+                            f"👤 Người dùng: {escape_markdown(user_full_name)}{username_display}\n"
                             f"💬 Câu hỏi: {escaped_question}\n"
                             f"🤖 Phản hồi: {escaped_response}\n"
                             f"🕒 Thời gian: {escape_markdown(notification['created_at'])}\n"
@@ -610,23 +556,44 @@ async def websocket_listener():
                         message_text = f"✅ {escape_markdown(notification['message'])}"
                     
                     if message_text:
-                        # Chỉ gửi thông báo cho các phản hồi "I'm sorry" từ session chat
-                        if notification["type"] == "sorry_response":
+                        # Thử gửi với Markdown V2 trước
+                        try:
+                            await bot.send_message(
+                                chat_id=ADMIN_GROUP_CHAT_ID,
+                                text=message_text,
+                                parse_mode=ParseMode.MARKDOWN_V2
+                            )
+                            logger.info(f"Markdown notification sent to admin group: {notification['type']}")
+                        except Exception as e:
+                            logger.error(f"Error sending markdown notification: {e}")
+                            
+                            # Thử lại với plain text, xóa bỏ tất cả các ký tự đặc biệt của Markdown
                             try:
-                                # First try without markdown formatting to avoid escaping issues
-                                plain_text = message_text.replace('\\', '').replace('*', '').replace('`', '').replace('_', '')
+                                # Format lại text thông báo mà không có Markdown
+                                user_full_name = f"{notification['first_name']} {notification['last_name']}".strip()
+                                username_display = f" (@{notification['username']})" if notification['username'] else ""
+                                
+                                plain_text = (
+                                    f"🚨 Phát hiện phản hồi \"I'm sorry\"\n"
+                                    f"👤 Người dùng: {user_full_name}{username_display}\n"
+                                    f"💬 Câu hỏi: {notification['question']}\n"
+                                    f"🤖 Phản hồi: {notification['response']}\n"
+                                    f"🕒 Thời gian: {notification['created_at']}\n"
+                                    f"🆔 Session ID: {notification['session_id']}"
+                                )
+                                
                                 await bot.send_message(
                                     chat_id=ADMIN_GROUP_CHAT_ID,
                                     text=plain_text,
                                     parse_mode=None
                                 )
                                 logger.info(f"Plain text notification sent to admin group: {notification['type']}")
-                            except Exception as e:
-                                logger.error(f"Error sending notification: {e}")
+                            except Exception as fallback_e:
+                                logger.error(f"Error sending plain notification: {fallback_e}")
                                 logger.error(f"Make sure ADMIN_GROUP_CHAT_ID is correctly set: {ADMIN_GROUP_CHAT_ID}")
-                        else:
-                            # Ghi log các thông báo khác mà không gửi đến người dùng
-                            logger.info(f"Status notification skipped (not sent to user): {notification['type']}")
+                    else:
+                        # Ghi log các thông báo khác mà không gửi đến người dùng
+                        logger.info(f"Status notification skipped (not sent to user): {notification['type']}")
                 
             except queue.Empty:
                 # Timeout is just for thread checking, not an error
