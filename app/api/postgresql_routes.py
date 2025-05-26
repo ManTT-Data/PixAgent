@@ -19,8 +19,6 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy import desc, func
 from cachetools import TTLCache
 import uuid
-import asyncio
-import httpx  # Import httpx for HTTP requests
 
 from app.database.postgresql import get_db
 from app.database.models import FAQItem, EmergencyItem, EventItem, AboutPixity, SolanaSummit, DaNangBucketList, ApiKey, VectorDatabase, Document, VectorStatus, TelegramBot, ChatEngine, BotEngine, EngineVectorDb, DocumentContent
@@ -3204,7 +3202,6 @@ class VectorStatusBase(BaseModel):
     document_id: int
     vector_database_id: int
     vector_id: Optional[str] = None
-    document_name: Optional[str] = None  # Added to match database schema
     status: str = "pending"
     error_message: Optional[str] = None
 
@@ -3668,167 +3665,69 @@ async def update_document(
                 db.add(document_content)
             
             # Get vector status for Pinecone cleanup
-            vector_status = db.query(VectorStatus).filter(
-                VectorStatus.document_id == document_id,
-                VectorStatus.vector_database_id == document.vector_database_id
-            ).first()
+            vector_status = db.query(VectorStatus).filter(VectorStatus.document_id == document_id).first()
             
             # Store old vector_id for cleanup
             old_vector_id = None
             if vector_status and vector_status.vector_id:
                 old_vector_id = vector_status.vector_id
-                logger.info(f"Found old vector_id {old_vector_id} for document {document_id}, planning to delete")
             
-            # Delete old vector status and create a new one
+            # Update vector status to pending
             if vector_status:
-                # Instead of updating the status, delete the old one and create a new one
-                # This avoids validation errors with constrains on the vector_status table
-                db.delete(vector_status)
-                db.flush()  # Ensure the delete is processed before creating a new one
-                logger.info(f"Deleted old vector status for document {document_id}")
-            
-            # Create new vector status
+                vector_status.status = "pending"
+                vector_status.vector_id = None
+                vector_status.embedded_at = None
+                vector_status.error_message = None
+            else:
+                # Create new vector status if it doesn't exist
                 vector_status = VectorStatus(
                     document_id=document_id,
                     vector_database_id=document.vector_database_id,
-                status="pending",
-                document_name=document.name
+                    status="pending"
                 )
                 db.add(vector_status)
-            db.flush()
-            logger.info(f"Created new vector status for document {document_id} with status 'pending'")
             
-            # Delete old vectors from Pinecone if we have vector_id and vector_db
-            if old_vector_id and vector_db and document.vector_database_id:
+            # Schedule deletion of old vectors in Pinecone if we have all needed info
+            if old_vector_id and vector_db and document.vector_database_id and background_tasks:
                 try:
-                    import httpx
+                    # Initialize PDFProcessor for vector deletion
+                    from app.pdf.processor import PDFProcessor
                     
-                    # Call PDF API to delete document using HTTP request (avoids circular imports)
-                    base_url = "http://localhost:8000"
-                    delete_url = f"{base_url}/pdf/document"
+                    processor = PDFProcessor(
+                        index_name=vector_db.pinecone_index,
+                        namespace=f"vdb-{document.vector_database_id}",
+                        vector_db_id=document.vector_database_id
+                    )
                     
-                    params = {
-                        "document_id": old_vector_id,  # Use the vector_id instead of document ID
-                        "namespace": f"vdb-{document.vector_database_id}",
-                        "index_name": vector_db.pinecone_index,
-                        "vector_database_id": document.vector_database_id
-                    }
+                    # Add deletion task to background tasks
+                    background_tasks.add_task(
+                        processor.delete_document_vectors,
+                        old_vector_id
+                    )
                     
-                    logger.info(f"Deleting old vectors for document {document_id} with params: {params}")
-                    
-                    # Run deletion synchronously to ensure completion before proceeding
-                    async with httpx.AsyncClient() as client:
-                        response = await client.delete(delete_url, params=params)
-                        if response.status_code == 200:
-                            result = response.json()
-                            vectors_deleted = result.get('vectors_deleted', 0)
-                            logger.info(f"Successfully deleted {vectors_deleted} old vectors for document {document_id}")
-                        else:
-                            logger.warning(f"Failed to delete old vectors: {response.status_code} - {response.text}")
+                    logger.info(f"Scheduled deletion of old vectors for document {document_id}")
                 except Exception as e:
-                    logger.error(f"Error deleting old vectors: {str(e)}")
-                    # Continue with the update even if vector deletion fails
+                    logger.error(f"Error scheduling vector deletion: {str(e)}")
+                    # Continue with the update even if vector deletion scheduling fails
             
-            # Now start a background task to upload and process the new document
-            if document.vector_database_id:
+            # Schedule document for re-embedding if possible
+            if background_tasks and document.vector_database_id:
                 try:
-                    # Use httpx to call the PDF API to upload the new document
-                    # This ensures we reuse all the existing upload and vector creation logic
-                    import tempfile
-                    import os
+                    # Import here to avoid circular imports
+                    from app.pdf.tasks import process_document_for_embedding
                     
-                    logger.info(f"Starting background task to re-upload document {document_id}")
+                    # Schedule embedding
+                    background_tasks.add_task(
+                        process_document_for_embedding,
+                        document_id=document_id,
+                        vector_db_id=document.vector_database_id
+                    )
                     
-                    # Define an async function for uploading in background
-                    async def upload_and_process_document():
-                        try:
-                            # Create temporary file with the document content
-                            with tempfile.NamedTemporaryFile(delete=False, suffix=f".{file_extension}") as temp_file:
-                                temp_file.write(file_content)
-                                temp_path = temp_file.name
-                            
-                            # Prepare multipart form data for the upload
-                            import aiofiles
-                            from aiofiles import os as aio_os
-                            
-                            async with httpx.AsyncClient(timeout=300) as client:  # Increased timeout to 300 seconds
-                                # Open the temp file for async reading
-                                async with aiofiles.open(temp_path, "rb") as f:
-                                    file_data = await f.read()
-                                
-                                # Create form data
-                                files = {"file": (filename, file_data, document.content_type)}
-                                form_data = {
-                                    "title": document.name,
-                                    "vector_database_id": str(document.vector_database_id),
-                                    "namespace": f"vdb-{document.vector_database_id}"
-                                }
-                                
-                                # Call the PDF upload API
-                                upload_url = f"{base_url}/pdf/upload"
-                                logger.info(f"Calling PDF upload API for document {document_id}")
-                                
-                                response = await client.post(upload_url, files=files, data=form_data)
-                                
-                                # Process the response
-                                if response.status_code == 200:
-                                    result = response.json()
-                                    logger.info(f"Successfully uploaded document {document_id}: {result}")
-                                    
-                                    # Get the new vector_id from the result
-                                    new_vector_id = result.get('document_id')
-                                    
-                                    # If upload was successful, update the vector status in PostgreSQL
-                                    if result.get('success') and new_vector_id:
-                                        # Get the latest vector status
-                                        await asyncio.sleep(1)  # Small delay to ensure DB consistency
-                                        
-                                        # Use a new DB session for this update
-                                        from app.database.postgresql import SessionLocal
-                                        async_db = SessionLocal()
-                                        try:
-                                            vs = async_db.query(VectorStatus).filter(
-                                                VectorStatus.document_id == document_id,
-                                                VectorStatus.vector_database_id == document.vector_database_id
-                                            ).first()
-                                            
-                                            if vs:
-                                                vs.vector_id = new_vector_id
-                                                vs.status = "completed"
-                                                vs.embedded_at = datetime.now()
-                                                
-                                                # Also update document embedded status
-                                                doc = async_db.query(Document).filter(Document.id == document_id).first()
-                                                if doc:
-                                                    doc.is_embedded = True
-                                                
-                                                async_db.commit()
-                                                logger.info(f"Updated vector status with new vector_id {new_vector_id}")
-                                        finally:
-                                            async_db.close()
-                                else:
-                                    logger.error(f"Failed to upload document: {response.status_code} - {response.text}")
-                            
-                            # Clean up temporary file
-                            try:
-                                await aio_os.remove(temp_path)
-                            except Exception as cleanup_error:
-                                logger.error(f"Error cleaning up temporary file: {str(cleanup_error)}")
-                        except Exception as e:
-                            logger.error(f"Error in background upload task: {str(e)}")
-                            logger.error(traceback.format_exc())
-                    
-                    # Add the task to background tasks
-                    if background_tasks:
-                        background_tasks.add_task(upload_and_process_document)
-                        logger.info("Added document upload to background tasks")
-                    else:
-                        logger.warning("Background tasks not available, skipping document upload")
+                    logger.info(f"Scheduled re-embedding for document {document_id}")
                 except Exception as e:
-                    logger.error(f"Error setting up document re-upload: {str(e)}")
-                    # Continue with the update even if re-upload setup fails
+                    logger.error(f"Error scheduling document embedding: {str(e)}")
+                    # Continue with the update even if embedding scheduling fails
         
-        # Commit changes to document record
         db.commit()
         db.refresh(document)
         
@@ -3878,152 +3777,31 @@ async def delete_document(
     - **document_id**: ID of the document to delete
     """
     try:
-        logger.info(f"Starting deletion process for document ID {document_id}")
-        
         # Check if document exists
         document = db.query(Document).filter(Document.id == document_id).first()
         if not document:
-            logger.warning(f"Document with ID {document_id} not found for deletion")
             raise HTTPException(status_code=404, detail=f"Document with ID {document_id} not found")
         
-        vector_database_id = document.vector_database_id
-        logger.info(f"Found document to delete: name={document.name}, vector_database_id={vector_database_id}")
-        
-        # Get the vector_id from VectorStatus before deletion
-        vector_status = db.query(VectorStatus).filter(
-            VectorStatus.document_id == document_id,
-            VectorStatus.vector_database_id == vector_database_id
-        ).first()
-        
-        # Store the vector_id for Pinecone deletion
-        vector_id = None
-        pinecone_deletion_success = False
-        pinecone_error = None
-        
-        if vector_status and vector_status.vector_id:
-            vector_id = vector_status.vector_id
-            logger.info(f"Found vector_id {vector_id} for document {document_id}")
-            
-            # Get vector database info
-            vector_db = db.query(VectorDatabase).filter(
-                VectorDatabase.id == vector_database_id
-            ).first()
-            
-            if vector_db:
-                logger.info(f"Found vector database: name={vector_db.name}, index={vector_db.pinecone_index}")
-                
-                # Create namespace for vector database
-                namespace = f"vdb-{vector_database_id}"
-                
-                try:
-                    import httpx
-                    
-                    # Call PDF API to delete from Pinecone using an HTTP request
-                    # This avoids circular import issues
-                    base_url = "http://localhost:8000"  # Adjust this to match your actual base URL
-                    delete_url = f"{base_url}/pdf/document"
-                    
-                    params = {
-                        "document_id": vector_id,  # Use the vector_id instead of the PostgreSQL document ID
-                        "namespace": namespace,
-                        "index_name": vector_db.pinecone_index,
-                        "vector_database_id": vector_database_id
-                    }
-                    
-                    logger.info(f"Calling PDF API to delete vectors with params: {params}")
-                    
-                    # Add retry logic for better reliability
-                    max_retries = 3
-                    retry_delay = 2  # seconds
-                    success = False
-                    last_error = None
-                    
-                    for retry in range(max_retries):
-                        try:
-                            async with httpx.AsyncClient(timeout=300) as client:  # Increased timeout to 300 seconds
-                                response = await client.delete(delete_url, params=params)
-                                
-                                if response.status_code == 200:
-                                    result = response.json()
-                                    pinecone_deletion_success = result.get('success', False)
-                                    vectors_deleted = result.get('vectors_deleted', 0)
-                                    logger.info(f"Vector deletion API call response: success={pinecone_deletion_success}, vectors_deleted={vectors_deleted}")
-                                    success = True
-                                    break
-                                else:
-                                    last_error = f"Failed with status code {response.status_code}: {response.text}"
-                                    logger.warning(f"Deletion attempt {retry+1}/{max_retries} failed: {last_error}")
-                        except Exception as e:
-                            last_error = str(e)
-                            logger.warning(f"Deletion attempt {retry+1}/{max_retries} failed with exception: {last_error}")
-                        
-                        # Wait before retrying
-                        if retry < max_retries - 1:  # Don't sleep after the last attempt
-                            logger.info(f"Retrying in {retry_delay} seconds...")
-                            await asyncio.sleep(retry_delay)
-                            retry_delay *= 2  # Exponential backoff
-                    
-                    if not success:
-                        pinecone_error = f"All deletion attempts failed. Last error: {last_error}"
-                        logger.warning(pinecone_error)
-                        # Continue with PostgreSQL deletion even if Pinecone deletion fails
-                except Exception as e:
-                    pinecone_error = f"Error setting up Pinecone deletion: {str(e)}"
-                    logger.error(pinecone_error)
-                    # Continue with PostgreSQL deletion even if Pinecone deletion fails
-        else:
-            logger.warning(f"No vector_id found for document {document_id}, skipping Pinecone deletion")
-        
         # Delete vector status
-        result_vs = db.query(VectorStatus).filter(VectorStatus.document_id == document_id).delete()
-        logger.info(f"Deleted {result_vs} vector status records for document {document_id}")
+        db.query(VectorStatus).filter(VectorStatus.document_id == document_id).delete()
         
         # Delete document content
-        result_dc = db.query(DocumentContent).filter(DocumentContent.document_id == document_id).delete()
-        logger.info(f"Deleted {result_dc} document content records for document {document_id}")
+        db.query(DocumentContent).filter(DocumentContent.document_id == document_id).delete()
         
         # Delete document
         db.delete(document)
         db.commit()
-        logger.info(f"Document with ID {document_id} successfully deleted from PostgreSQL")
         
-        # Prepare response with information about what happened
-        response = {
-            "status": "success",
-            "message": f"Document with ID {document_id} deleted successfully",
-            "postgresql_deletion": {
-                "document_deleted": True,
-                "vector_status_deleted": result_vs > 0,
-                "document_content_deleted": result_dc > 0
-            }
-        }
-        
-        # Add Pinecone deletion information
-        if vector_id:
-            response["pinecone_deletion"] = {
-                "attempted": True,
-                "vector_id": vector_id,
-                "success": pinecone_deletion_success,
-            }
-            if pinecone_error:
-                response["pinecone_deletion"]["error"] = pinecone_error
-        else:
-            response["pinecone_deletion"] = {
-                "attempted": False,
-                "reason": "No vector_id found for document"
-            }
-        
-        return response
+        return {"status": "success", "message": f"Document with ID {document_id} deleted successfully"}
     except HTTPException:
-        logger.warning(f"HTTP exception in delete_document for ID {document_id}")
         raise
     except SQLAlchemyError as e:
         db.rollback()
-        logger.error(f"Database error deleting document {document_id}: {e}")
+        logger.error(f"Database error deleting document: {e}")
         logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
     except Exception as e:
         db.rollback()
-        logger.error(f"Error deleting document {document_id}: {e}")
+        logger.error(f"Error deleting document: {e}")
         logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Error deleting document: {str(e)}")
