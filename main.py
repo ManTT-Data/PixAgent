@@ -441,7 +441,16 @@ async def websocket_listener():
                     # Ghi log kết nối thành công nhưng không gửi thông báo
                     logger.info("Admin WebSocket connected successfully! Now monitoring for 'I'm sorry' responses.")
                 
-                # Start keepalive thread
+                # Create WebSocket app with event handlers
+                ws = websocket.WebSocketApp(
+                    ws_url,
+                    on_open=on_open_with_time_update,
+                    on_message=on_message,
+                    on_error=on_error,
+                    on_close=on_close
+                )
+                
+                # Start keepalive thread - di chuyển vào sau khi tạo WebSocket app
                 def send_keepalive_thread():
                     while True:
                         try:
@@ -467,15 +476,6 @@ async def websocket_listener():
                 
                 keepalive_thread = threading.Thread(target=send_keepalive_thread, daemon=True)
                 keepalive_thread.start()
-                
-                # Create WebSocket app with event handlers
-                ws = websocket.WebSocketApp(
-                    ws_url,
-                    on_open=on_open_with_time_update,
-                    on_message=on_message,
-                    on_error=on_error,
-                    on_close=on_close
-                )
                 
                 # Add SSL options if using wss://
                 if ws_url.startswith("wss://"):
