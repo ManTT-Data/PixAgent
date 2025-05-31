@@ -442,39 +442,31 @@ async def websocket_listener():
                     logger.info("Admin WebSocket connected successfully! Now monitoring for 'I'm sorry' responses.")
                 
                 # Start keepalive thread
-                def send_keepalive_thread(websocket):
-                    ws_ref = websocket  # Lưu trữ tham chiếu cục bộ đến WebSocket
-                    is_running = True
-                    
-                    while is_running:
+                def send_keepalive_thread():
+                    while True:
                         try:
-                            # Kiểm tra xem WebSocket có còn hợp lệ không
-                            if ws_ref is None or not hasattr(ws_ref, 'sock') or not ws_ref.sock or not ws_ref.sock.connected:
-                                logger.info("WebSocket không còn kết nối, dừng thread keepalive")
-                                is_running = False
-                                break
-                                
-                            # Gửi tin nhắn giữ kết nối
-                            try:
-                                # Format 1: JSON with action ping (per admin guide)
-                                ws_ref.send(json.dumps({"action": "ping"}))
-                                logger.info("Sent keepalive message (JSON format)")
-                            except Exception as e1:
-                                logger.error(f"Error sending JSON keepalive: {e1}")
-                                
+                            if ws.sock and ws.sock.connected:
                                 try:
-                                    # Format 2: Simple string "keepalive"
-                                    ws_ref.send("keepalive")
-                                    logger.info("Sent keepalive message (string format)")
-                                except Exception as e2:
-                                    logger.error(f"Error sending string keepalive: {e2}")
+                                    # Format 1: JSON with action ping (per admin guide)
+                                    ws.send(json.dumps({"action": "ping"}))
+                                    logger.info("Sent keepalive message (JSON format)")
+                                except Exception as e1:
+                                    logger.error(f"Error sending JSON keepalive: {e1}")
                                     
+                                    try:
+                                        # Format 2: Simple string "keepalive"
+                                        ws.send("keepalive")
+                                        logger.info("Sent keepalive message (string format)")
+                                    except Exception as e2:
+                                        logger.error(f"Error sending string keepalive: {e2}")
+                            
                             time.sleep(120)  # 2 minutes instead of 5 minutes
                         except Exception as e:
                             logger.error(f"Error in keepalive thread: {e}")
                             time.sleep(60)  # Retry after 1 minute if error
-                            
-                    logger.info("Keepalive thread đã kết thúc")
+                
+                keepalive_thread = threading.Thread(target=send_keepalive_thread, daemon=True)
+                keepalive_thread.start()
                 
                 # Create WebSocket app with event handlers
                 ws = websocket.WebSocketApp(
@@ -484,10 +476,6 @@ async def websocket_listener():
                     on_error=on_error,
                     on_close=on_close
                 )
-                
-                # Khởi động thread keepalive với tham chiếu rõ ràng đến ws
-                keepalive_thread = threading.Thread(target=send_keepalive_thread, args=(ws,), daemon=True)
-                keepalive_thread.start()
                 
                 # Add SSL options if using wss://
                 if ws_url.startswith("wss://"):
@@ -544,10 +532,13 @@ async def websocket_listener():
                     if notification["type"] == "sorry_response":
                         # Format full name
                         user_full_name = f"{notification['first_name']} {notification['last_name']}".strip()
-                        
-                        # Escape username trước, sau đó mới thêm @ để tránh escape sai
-                        escaped_username = escape_markdown(notification['username']) if notification['username'] else ""
-                        username_display = f" (@{escaped_username})" if escaped_username else ""
+                        # Format username with @ if available, escape markdown trước khi tạo chuỗi hiển thị
+                        username = notification['username']
+                        if username:
+                            escaped_username = escape_markdown(username)
+                            username_display = f" (@{escaped_username})"
+                        else:
+                            username_display = ""
                         
                         # Escape special characters for Markdown
                         escaped_question = escape_markdown(notification['question'])
@@ -568,44 +559,34 @@ async def websocket_listener():
                         message_text = f"✅ {escape_markdown(notification['message'])}"
                     
                     if message_text:
-                        # Thử gửi với Markdown V2 trước
-                        try:
-                            await bot.send_message(
-                                chat_id=ADMIN_GROUP_CHAT_ID,
-                                text=message_text,
-                                parse_mode=ParseMode.MARKDOWN_V2
-                            )
-                            logger.info(f"Markdown notification sent to admin group: {notification['type']}")
-                        except Exception as e:
-                            logger.error(f"Error sending markdown notification: {e}")
-                            
-                            # Thử lại với plain text, xóa bỏ tất cả các ký tự đặc biệt của Markdown
+                        # Chỉ gửi thông báo cho các phản hồi "I'm sorry" từ session chat
+                        if notification["type"] == "sorry_response":
                             try:
-                                # Format lại text thông báo mà không có Markdown
-                                user_full_name = f"{notification['first_name']} {notification['last_name']}".strip()
-                                username_display = f" (@{notification['username']})" if notification['username'] else ""
-                                
-                                plain_text = (
-                                    f"🚨 Phát hiện phản hồi \"I'm sorry\"\n"
-                                    f"👤 Người dùng: {user_full_name}{username_display}\n"
-                                    f"💬 Câu hỏi: {notification['question']}\n"
-                                    f"🤖 Phản hồi: {notification['response']}\n"
-                                    f"🕒 Thời gian: {notification['created_at']}\n"
-                                    f"🆔 Session ID: {notification['session_id']}"
-                                )
-                                
+                                # Thử gửi với Markdown formatting trước
                                 await bot.send_message(
                                     chat_id=ADMIN_GROUP_CHAT_ID,
-                                    text=plain_text,
-                                    parse_mode=None
+                                    text=message_text,
+                                    parse_mode=ParseMode.MARKDOWN_V2
                                 )
-                                logger.info(f"Plain text notification sent to admin group: {notification['type']}")
-                            except Exception as fallback_e:
-                                logger.error(f"Error sending plain notification: {fallback_e}")
-                                logger.error(f"Make sure ADMIN_GROUP_CHAT_ID is correctly set: {ADMIN_GROUP_CHAT_ID}")
-                    else:
-                        # Ghi log các thông báo khác mà không gửi đến người dùng
-                        logger.info(f"Status notification skipped (not sent to user): {notification['type']}")
+                                logger.info(f"Markdown notification sent to admin group: {notification['type']}")
+                            except Exception as e:
+                                logger.error(f"Error sending Markdown notification: {e}")
+                                # Fallback to plain text
+                                try:
+                                    # Nếu lỗi, gửi plain text
+                                    plain_text = message_text.replace('\\', '').replace('*', '').replace('`', '').replace('_', '')
+                                    await bot.send_message(
+                                        chat_id=ADMIN_GROUP_CHAT_ID,
+                                        text=plain_text,
+                                        parse_mode=None
+                                    )
+                                    logger.info(f"Plain text notification sent to admin group: {notification['type']}")
+                                except Exception as e2:
+                                    logger.error(f"Error sending notification: {e2}")
+                                    logger.error(f"Make sure ADMIN_GROUP_CHAT_ID is correctly set: {ADMIN_GROUP_CHAT_ID}")
+                        else:
+                            # Ghi log các thông báo khác mà không gửi đến người dùng
+                            logger.info(f"Status notification skipped (not sent to user): {notification['type']}")
                 
             except queue.Empty:
                 # Timeout is just for thread checking, not an error
