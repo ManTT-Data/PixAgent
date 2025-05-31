@@ -536,7 +536,7 @@ async def websocket_listener():
                         username = notification['username']
                         if username:
                             escaped_username = escape_markdown(username)
-                            username_display = f" (@{escaped_username})"
+                            username_display = f" \\(@{escaped_username}\\)"
                         else:
                             username_display = ""
                         
