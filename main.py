@@ -304,7 +304,7 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["last_session_id"] = session_id
     
     # Log the clear action to the database
-    response_text = "Chat history has been cleared. Let's start fresh!"
+    response_text = "✅ <b>Lịch sử trò chuyện đã được xóa!</b>\n\nTất cả các tin nhắn trước đó sẽ không còn được sử dụng trong các cuộc trò chuyện tiếp theo.\n\nHãy bắt đầu trò chuyện mới ngay bây giờ!"
     await log_complete_session(update, "clear", "/clear", response_text)
     
     # Show main menu again
@@ -397,13 +397,15 @@ async def get_events(update: Update, context: ContextTypes.DEFAULT_TYPE, action:
             logger.error("Database API not configured. Cannot fetch events.")
             return
 
-        endpoint_url = fix_url(API_DATABASE_URL, "/postgres/events")
+        endpoint_url = fix_url(API_DATABASE_URL, "/postgresql/events")
         params = {
             "active_only": True,
             "featured_only": False,
             "limit": 3,
             "skip": 0,
-            "use_cache": True
+            "use_cache": True,
+            "sort_by": "date_start",
+            "sort_order": "asc"
         }
         logger.info(f"Fetching events from: {endpoint_url}")
 
@@ -454,7 +456,7 @@ async def get_events(update: Update, context: ContextTypes.DEFAULT_TYPE, action:
 
 async def get_emergency(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str, message: str):
     try:
-        url = fix_url(API_DATABASE_URL, "/postgres/emergency/sections")
+        url = fix_url(API_DATABASE_URL, "/postgresql/emergency/sections")
         resp = requests.get(url)
         resp.raise_for_status()
         sections = resp.json() or []
@@ -489,7 +491,7 @@ async def get_faq(update: Update, context: ContextTypes.DEFAULT_TYPE, action: st
             return
 
         # Phase 1: list questions as inline buttons
-        url = fix_url(API_DATABASE_URL, "/postgres/faq")
+        url = fix_url(API_DATABASE_URL, "/postgresql/faq")
         logger.info(f"Fetching FAQs from: {url}")
         
         resp = requests.get(url, params={"active_only": True, "limit": 10, "use_cache": True})
@@ -609,7 +611,7 @@ async def get_about_pixity(update: Update, context: ContextTypes.DEFAULT_TYPE, a
             logger.error("Database API not configured. Cannot fetch About Pixity information.")
             return
 
-        endpoint_url = fix_url(API_DATABASE_URL, "/postgres/about-pixity")
+        endpoint_url = fix_url(API_DATABASE_URL, "/postgresql/about-pixity")
         params = {"use_cache": True}
         logger.info(f"Fetching About Pixity info from: {endpoint_url}")
 
@@ -649,7 +651,7 @@ async def get_solana_summit(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error("Database API not configured. Cannot fetch Solana Summit information.")
             return
 
-        endpoint_url = fix_url(API_DATABASE_URL, "/postgres/solana-summit")
+        endpoint_url = fix_url(API_DATABASE_URL, "/postgresql/solana-summit")
         params = {"use_cache": True}
         logger.info(f"Fetching Solana Summit info from: {endpoint_url}")
 
@@ -698,7 +700,7 @@ async def get_danang_bucket_list(update: Update, context: ContextTypes.DEFAULT_T
             logger.error("Database API not configured. Cannot fetch Da Nang's Bucket List information.")
             return
 
-        endpoint_url = fix_url(API_DATABASE_URL, "/postgres/danang-bucket-list")
+        endpoint_url = fix_url(API_DATABASE_URL, "/postgresql/danang-bucket-list")
         params = {"use_cache": True}
         logger.info(f"Fetching Da Nang's Bucket List info from: {endpoint_url}")
 
@@ -900,7 +902,7 @@ if __name__ == "__main__":
 async def show_emergency_details(update: Update, context: ContextTypes.DEFAULT_TYPE, section_id: str):
     query = update.callback_query
     try:
-        url = fix_url(API_DATABASE_URL, f"/postgres/emergency/section/{section_id}")
+        url = fix_url(API_DATABASE_URL, f"/postgresql/emergency/section/{section_id}")
         resp = requests.get(url, params={"active_only": True, "use_cache": True})
         resp.raise_for_status()
         items = resp.json() or []
@@ -946,7 +948,7 @@ async def show_emergency_item(update: Update, context: ContextTypes.DEFAULT_TYPE
     query = update.callback_query
     try:
         idx = int(item_idx) - 1
-        url = fix_url(API_DATABASE_URL, f"/postgres/emergency/section/{section_id}")
+        url = fix_url(API_DATABASE_URL, f"/postgresql/emergency/section/{section_id}")
         resp = requests.get(url, params={"active_only": True, "use_cache": True})
         resp.raise_for_status()
         items = resp.json() or []
@@ -981,7 +983,7 @@ async def show_faq_answer(update: Update, context: ContextTypes.DEFAULT_TYPE, fa
             await query.message.reply_text("Database API not configured.")
             return
 
-        url = fix_url(API_DATABASE_URL, f"/postgres/faq/{faq_id}")
+        url = fix_url(API_DATABASE_URL, f"/postgresql/faq/{faq_id}")
         logger.info(f"Fetching FAQ answer from: {url}")
         
         resp = requests.get(url)

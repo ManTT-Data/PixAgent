@@ -13,6 +13,7 @@ from main import (
     events_command,
     faq_command,
     emergency_command,
+    clear_command,
     handle_callback,
     handle_message,
     TELEGRAM_BOT_TOKEN,
@@ -40,6 +41,7 @@ bot_app.add_handler(CommandHandler("events", events_command, block=False))
 bot_app.add_handler(CommandHandler("faq", faq_command, block=False))
 bot_app.add_handler(CommandHandler("emergency", emergency_command, block=False))
 bot_app.add_handler(CommandHandler("help", help_command, block=False))
+bot_app.add_handler(CommandHandler("clear", clear_command, block=False))
 bot_app.add_handler(CallbackQueryHandler(handle_callback))
 bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
