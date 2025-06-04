@@ -99,41 +99,41 @@ def get_current_time():
 
 async def send_status_message(chat_id=None, custom_message=None, alert=False):
     """Send a message about the backend connection status."""
-    # Nếu không có chat_id thì dùng ADMIN_GROUP_CHAT_ID
+    # If no chat_id is provided, use ADMIN_GROUP_CHAT_ID
     if not chat_id and ADMIN_GROUP_CHAT_ID:
         chat_id = ADMIN_GROUP_CHAT_ID
     if not chat_id:
         logger.error("No chat ID provided for status message")
         return
 
-    # Build nội dung message
+    # Build message content
     if custom_message:
         status_message = custom_message
     else:
-        api_status = "❌ Không kết nối"
-        db_status = "❌ Không kết nối"
-        rag_status = "❌ Không kết nối"
+        api_status = "❌ Not connected"
+        db_status = "❌ Not connected"
+        rag_status = "❌ Not connected"
         if API_DATABASE_URL:
             try:
                 url = fix_url(API_DATABASE_URL, "/health")
                 logger.info(f"Checking API health at: {url}")
                 response = requests.get(url, timeout=10)
                 if response.status_code == 200:
-                    api_status = "✅ Đã kết nối"
-                    db_status = "✅ Đã kết nối"
-                    rag_status = "✅ Đã kết nối"
+                    api_status = "✅ Connected"
+                    db_status = "✅ Connected"
+                    rag_status = "✅ Connected"
                     try:
                         mongo_url = fix_url(API_DATABASE_URL, "/mongodb/health")
                         mongo_resp = requests.get(mongo_url, timeout=5)
                         if mongo_resp.status_code != 200:
-                            db_status = "⚠️ Kết nối một phần"
+                            db_status = "⚠️ Partially connected"
                         rag_url = fix_url(API_DATABASE_URL, "/rag/health")
                         rag_resp = requests.get(rag_url, timeout=5)
                         if rag_resp.status_code == 200:
                             rag_data = rag_resp.json()
-                            rag_status = "✅ Đã kết nối" if rag_data.get("status")=="healthy" else "⚠️ Phát hiện vấn đề"
+                            rag_status = "✅ Connected" if rag_data.get("status")=="healthy" else "⚠️ Issues detected"
                         else:
-                            rag_status = "❌ Không kết nối"
+                            rag_status = "❌ Not connected"
                     except Exception as e:
                         logger.error(f"Error checking specific health endpoints: {e}")
                 else:
@@ -143,21 +143,21 @@ async def send_status_message(chat_id=None, custom_message=None, alert=False):
 
         # Check admin websocket status
         admin_id = os.getenv("ADMIN_ID", "admin-bot-123")
-        admin_status = "✅ Đã kết nối" if websocket_connection else "❌ Không kết nối"
+        admin_status = "✅ Connected" if websocket_connection else "❌ Not connected"
         
         status_message = (
-            "🤖 *Báo cáo trạng thái Admin Bot*\n\n"
-            f"🕒 Thời gian: {get_current_time()}\n"
+            "🤖 *Admin Bot Status Report*\n\n"
+            f"🕒 Time: {get_current_time()}\n"
             f"🔌 API: {api_status}\n"
-            f"📊 Cơ sở dữ liệu: {db_status}\n"
-            f"🧠 Hệ thống RAG: {rag_status}\n"
+            f"📊 Database: {db_status}\n"
+            f"🧠 RAG System: {rag_status}\n"
             f"📡 Admin WebSocket: {admin_status}\n\n"
-            "Bot đang giám sát hoạt động người dùng."
+            "Bot is monitoring user activity."
         )
         status_message = escape_markdown(status_message)
 
     if alert:
-        status_message = f"⚠️ *CẢNH BÁO* ⚠️\n\n{status_message}"
+        status_message = f"⚠️ *WARNING* ⚠️\n\n{status_message}"
 
     try:
         bot = Bot(token=ADMIN_TELEGRAM_BOT_TOKEN)
@@ -169,7 +169,7 @@ async def send_status_message(chat_id=None, custom_message=None, alert=False):
         logger.info(f"Status message sent to chat {chat_id}")
     except Exception as e:
         logger.error(f"Failed to send status message: {e}")
-        # Fallback không format
+        # Fallback without formatting
         try:
             plain = status_message.replace('*','').replace('`','').replace('_','')
             await bot.send_message(
@@ -392,7 +392,7 @@ async def websocket_listener():
         logger.error(f"WebSocket error: {error}")
         websocket_connection = False
         
-        # Chỉ ghi log lỗi, không gửi thông báo qua Telegram
+        # Only log errors, don't send notifications via Telegram
         logger.warning(f"WebSocket connection error: {error}")
     
     def on_close(ws, close_status_code, close_msg):
@@ -438,7 +438,7 @@ async def websocket_listener():
                     logger.info(f"WebSocket connection opened to {ws_url}")
                     websocket_connection = True
                     
-                    # Ghi log kết nối thành công nhưng không gửi thông báo
+                    # Log successful connection but don't send notification
                     logger.info("Admin WebSocket connected successfully! Now monitoring for 'I'm sorry' responses.")
                 
                 # Create WebSocket app with event handlers
@@ -546,23 +546,23 @@ async def websocket_listener():
                         escaped_session_id = escape_markdown(notification['session_id'])
                         
                         message_text = (
-                            f"🚨 *Phát hiện phản hồi \"I'm sorry\"*\n"
-                            f"👤 Người dùng: {escape_markdown(user_full_name)}{username_display}\n"
-                            f"💬 Câu hỏi: {escaped_question}\n"
-                            f"🤖 Phản hồi: {escaped_response}\n"
-                            f"🕒 Thời gian: {escape_markdown(notification['created_at'])}\n"
+                            f"🚨 *Detected \"I'm sorry\" response*\n"
+                            f"👤 User: {escape_markdown(user_full_name)}{username_display}\n"
+                            f"💬 Question: {escaped_question}\n"
+                            f"🤖 Response: {escaped_response}\n"
+                            f"🕒 Time: {escape_markdown(notification['created_at'])}\n"
                             f"🆔 Session ID: `{escaped_session_id}`"
                         )
                     elif notification["type"] == "error":
-                        message_text = f"❌ {escape_markdown(notification['message'])}\nĐang thử kết nối lại sau 5 giây..."
+                        message_text = f"❌ {escape_markdown(notification['message'])}\nTrying to reconnect in 5 seconds..."
                     elif notification["type"] == "success":
                         message_text = f"✅ {escape_markdown(notification['message'])}"
                     
                     if message_text:
-                        # Chỉ gửi thông báo cho các phản hồi "I'm sorry" từ session chat
+                        # Only send notifications for "I'm sorry" responses from chat sessions
                         if notification["type"] == "sorry_response":
                             try:
-                                # Thử gửi với Markdown formatting trước
+                                # Try sending with Markdown formatting first
                                 await bot.send_message(
                                     chat_id=ADMIN_GROUP_CHAT_ID,
                                     text=message_text,
@@ -573,7 +573,7 @@ async def websocket_listener():
                                 logger.error(f"Error sending Markdown notification: {e}")
                                 # Fallback to plain text
                                 try:
-                                    # Nếu lỗi, gửi plain text
+                                    # If error, send plain text
                                     plain_text = message_text.replace('\\', '').replace('*', '').replace('`', '').replace('_', '')
                                     await bot.send_message(
                                         chat_id=ADMIN_GROUP_CHAT_ID,
@@ -585,7 +585,7 @@ async def websocket_listener():
                                     logger.error(f"Error sending notification: {e2}")
                                     logger.error(f"Make sure ADMIN_GROUP_CHAT_ID is correctly set: {ADMIN_GROUP_CHAT_ID}")
                         else:
-                            # Ghi log các thông báo khác mà không gửi đến người dùng
+                            # Log other notifications without sending to users
                             logger.info(f"Status notification skipped (not sent to user): {notification['type']}")
                 
             except queue.Empty:
@@ -605,16 +605,16 @@ async def check_websocket_connection():
     """Check the health of the API and its services, log and alert if problems are found."""
     try:
         global websocket_connection, last_alert_time
-        # Chuyển đổi URL WebSocket sang HTTP để check API
+        # Convert WebSocket URL to HTTP for API check
         http_endpoint = API_DATABASE_URL
         
-        # Đảm bảo endpoint là HTTP/HTTPS, không phải WS/WSS
+        # Ensure endpoint is HTTP/HTTPS, not WS/WSS
         if http_endpoint.startswith('ws://'):
             http_endpoint = http_endpoint.replace('ws://', 'http://')
         elif http_endpoint.startswith('wss://'):
             http_endpoint = http_endpoint.replace('wss://', 'https://')
         
-        # Loại bỏ dấu / ở cuối URL nếu có
+        # Remove trailing slash from URL if present
         if http_endpoint.endswith('/'):
             http_endpoint = http_endpoint[:-1]
         
@@ -632,12 +632,12 @@ async def check_websocket_connection():
                         mongo_status = health_data.get('mongodb', False)
                         rag_status = health_data.get('rag_system', False)
                         
-                        # Ghi log trạng thái hệ thống nhưng không gửi thông báo
-                        status_message = "📊 Trạng thái hệ thống:"
-                        status_message += f"\n🔄 API: {'Trực tuyến ✅' if True else 'Ngoại tuyến ❌'}"
-                        status_message += f"\n🗄️ MongoDB: {'Trực tuyến ✅' if mongo_status else 'Ngoại tuyến ❌'}"
-                        status_message += f"\n🧠 RAG System: {'Trực tuyến ✅' if rag_status else 'Ngoại tuyến ❌'}"
-                        status_message += f"\n🔌 Admin WebSocket: {'Đã kết nối ✅' if websocket_connection else 'Mất kết nối ❌'}"
+                        # Log system status but don't send notifications
+                        status_message = "📊 System Status:"
+                        status_message += f"\n🔄 API: {'Online ✅' if True else 'Offline ❌'}"
+                        status_message += f"\n🗄️ MongoDB: {'Online ✅' if mongo_status else 'Offline ❌'}"
+                        status_message += f"\n🧠 RAG System: {'Online ✅' if rag_status else 'Offline ❌'}"
+                        status_message += f"\n🔌 Admin WebSocket: {'Connected ✅' if websocket_connection else 'Disconnected ❌'}"
                         
                         # Check overall system status
                         if not (mongo_status and rag_status and websocket_connection):
@@ -647,12 +647,12 @@ async def check_websocket_connection():
                             logger.debug("All services are operational")
                     else:
                         logger.error(f"Health check failed with status code: {response.status}")
-                        # Ghi log lỗi API
-                        logger.error(f"📊 Trạng thái hệ thống:\n🔄 API: Ngoại tuyến ❌ (Mã trạng thái: {response.status})")
+                        # Log API error
+                        logger.error(f"📊 System Status:\n🔄 API: Offline ❌ (Status code: {response.status})")
         except aiohttp.ClientError as e:
             logger.error(f"Health check request failed: {e}")
-            # Ghi log lỗi kết nối
-            logger.error(f"📊 Trạng thái hệ thống:\n🔄 API: Ngoại tuyến ❌ (Lỗi kết nối: {e})")
+            # Log connection error
+            logger.error(f"📊 System Status:\n🔄 API: Offline ❌ (Connection error: {e})")
     except Exception as e:
         logger.error(f"Error in check_websocket_connection: {e}")
         websocket_connection = False 
