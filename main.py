@@ -20,39 +20,39 @@ from telegram.constants import ParseMode
 # Hàm tiện ích để loại bỏ thẻ HTML không hợp lệ và tự động escape nội dung
 def clean_html(text):
     """
-    Xử lý nội dung để hiển thị an toàn trong Telegram.
-    Giữ lại các thẻ HTML hợp lệ: <b>, <i>, <a>, <code>, <pre>, <s>.
-    Escape các ký tự đặc biệt khác.
+    Process content for safe display in Telegram.
+    Preserve valid HTML tags: <b>, <i>, <a>, <code>, <pre>, <s>.
+    Escape other special characters.
     """
     if not text:
         return ""
         
-    # Danh sách các thẻ HTML được Telegram hỗ trợ
+    # List of HTML tags supported by Telegram
     valid_tags = ['<b>', '</b>', '<i>', '</i>', '<code>', '</code>', 
                  '<pre>', '</pre>', '<s>', '</s>']
     
-    # Mẫu regex cho thẻ <a>
+    # Regex pattern for <a> tag
     a_tag_pattern = r'<a\s+href=[\'"]([^\'"]+)[\'"]>(.*?)</a>'
     
-    # Kiểm tra nếu văn bản đã có chứa thẻ HTML
+    # Check if the text already contains HTML tags
     has_html_tags = any(tag in text.lower() for tag in valid_tags) or re.search(a_tag_pattern, text)
     
     if has_html_tags:
-        # Danh sách các mẫu regex để phát hiện thẻ và nội dung của chúng
+        # List of regex patterns to detect tags and their content
         tag_patterns = {
             'b': (r'<b>(.*?)</b>', r'<b>\1</b>'),
             'i': (r'<i>(.*?)</i>', r'<i>\1</i>'),
             'code': (r'<code>(.*?)</code>', r'<code>\1</code>'),
             'pre': (r'<pre>(.*?)</pre>', r'<pre>\1</pre>'),
             's': (r'<s>(.*?)</s>', r'<s>\1</s>'),
-            'a': (a_tag_pattern, None)  # None vì chúng ta sẽ xử lý đặc biệt
+            'a': (a_tag_pattern, None)  # None because we'll handle it specially
         }
         
-        # Đánh dấu thẻ hợp lệ để giữ lại
+        # Mark valid tags to preserve
         placeholder_map = {}
         counter = 0
         
-        # Thay thế tạm thời các thẻ hợp lệ bằng placeholder
+        # Temporarily replace valid tags with placeholders
         for tag, (pattern, replacement) in tag_patterns.items():
             matches = re.finditer(pattern, text, re.DOTALL)
             for match in matches:
@@ -70,16 +70,16 @@ def clean_html(text):
                 
                 text = text.replace(match.group(0), placeholder)
         
-        # Escape toàn bộ văn bản còn lại
+        # Escape all remaining text
         text = html.escape(text)
         
-        # Khôi phục các thẻ đã đánh dấu
+        # Restore the marked tags
         for placeholder, original in placeholder_map.items():
             text = text.replace(placeholder, original)
             
         return text
     else:
-        # Nếu không có thẻ HTML, escape toàn bộ văn bản
+        # If no HTML tags, escape the entire text
         return html.escape(text)
 
 # Configure logging
@@ -304,7 +304,7 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["last_session_id"] = session_id
     
     # Log the clear action to the database
-    response_text = "✅ <b>Lịch sử trò chuyện đã được xóa!</b>\n\nTất cả các tin nhắn trước đó sẽ không còn được sử dụng trong các cuộc trò chuyện tiếp theo.\n\nHãy bắt đầu trò chuyện mới ngay bây giờ!"
+    response_text = "✅ <b>Chat history has been cleared!</b>\n\nAll previous messages will no longer be used in future conversations.\n\nLet's start a new conversation now!"
     await log_complete_session(update, "clear", "/clear", response_text)
     
     # Show main menu again
@@ -574,7 +574,7 @@ async def get_rag_response(update: Update, context: ContextTypes.DEFAULT_TYPE, a
         result = response.json()
         answer = result.get("answer", "I couldn't find an answer to your question.")
         
-        # Đảm bảo an toàn HTML cho câu trả lời
+        # Ensure HTML safety for the answer
         escaped_answer = clean_html(answer)
         
         if sources := result.get("sources"):
@@ -628,7 +628,7 @@ async def get_about_pixity(update: Update, context: ContextTypes.DEFAULT_TYPE, a
         except:
             about_text = raw.strip()
             
-        # Đảm bảo an toàn HTML cho nội dung
+        # Ensure HTML safety for content
         escaped_about_text = clean_html(about_text)
 
         reply_markup = ReplyKeyboardMarkup(MAIN_MENU, resize_keyboard=True)
@@ -733,10 +733,10 @@ async def get_danang_bucket_list(update: Update, context: ContextTypes.DEFAULT_T
             bucket_text = "\n".join(lines)
 
         except Exception:
-            # Fallback nếu JSON malformed
+            # Fallback if JSON is malformed
             bucket_text = clean_html(raw.strip()) or "Da Nang's Bucket List information is unavailable."
 
-        # Gửi cùng keyboard
+        # Send with keyboard
         reply_markup = ReplyKeyboardMarkup(MAIN_MENU, resize_keyboard=True)
         await update.effective_message.reply_text(
             bucket_text, 
