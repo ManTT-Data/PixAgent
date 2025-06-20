@@ -5,6 +5,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.exc import SQLAlchemyError, OperationalError
 from dotenv import load_dotenv
 import logging
+from sqlalchemy.pool import QueuePool
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -29,93 +30,76 @@ if not DATABASE_URL:
     logger.error("No database URL configured. Using default URL.")
     DATABASE_URL = DEFAULT_DB_URL  # Use the correct default URL
 
-# Create SQLAlchemy engine with optimized settings
+# Configure the database engine with proper pooling
 try:
     engine = create_engine(
         DATABASE_URL,
-        pool_size=10,  # Limit max connections
-        max_overflow=5,  # Allow temporary overflow of connections
-        pool_timeout=30,  # Timeout waiting for connection from pool
-        pool_recycle=300,  # Recycle connections every 5 minutes
-        pool_pre_ping=True,  # Verify connection is still valid before using it
-        connect_args={
-            "connect_timeout": 5,   # Connection timeout in seconds
-            "keepalives": 1,        # Enable TCP keepalives
-            "keepalives_idle": 30,  # Time before sending keepalives
-            "keepalives_interval": 10, # Time between keepalives
-            "keepalives_count": 5,  # Number of keepalive probes
-            "application_name": "pixagent_api" # Identify app in PostgreSQL logs
-        },
-        # Performance optimizations
-        isolation_level="READ COMMITTED",  # Lower isolation level for better performance
-        echo=False,                 # Disable SQL echo to reduce overhead
-        echo_pool=False,            # Disable pool logging
-        future=True,                # Use SQLAlchemy 2.0 features
-        # Execution options for common queries
-        execution_options={
-            "compiled_cache": {},   # Use an empty dict for compiled query caching
-            "logging_token": "SQL", # Tag for query logging
-        }
+        pool_size=2,  # Maximum number of permanent connections
+        max_overflow=20,  # Maximum number of additional connections
+        pool_timeout=30,  # Timeout in seconds for getting a connection from the pool
+        pool_recycle=300,  # Recycle connections after 30 minutes
+        pool_pre_ping=True,  # Enable connection health checks
+        poolclass=QueuePool,  # Use QueuePool for better connection management
+        echo=True  # Enable SQL query logging
     )
-    logger.info("PostgreSQL engine initialized with optimized settings")
+    
+    # Test the connection
+    with engine.connect() as conn:
+        conn.execute(text("SELECT 1"))
+        logger.info("Successfully connected to PostgreSQL database")
 except Exception as e:
-    logger.error(f"Failed to initialize PostgreSQL engine: {e}")
-    # Don't raise exception to avoid crash on startup
+    logger.error(f"Failed to create database engine: {e}")
+    raise
 
-# Create optimized session factory
-SessionLocal = sessionmaker(
-    autocommit=False, 
-    autoflush=False, 
-    bind=engine,
-    expire_on_commit=False  # Prevent automatic reloading after commit
-)
+# Create session factory
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-# Base class for declarative models - use sqlalchemy.orm for SQLAlchemy 2.0 compatibility
-from sqlalchemy.orm import declarative_base
+# Create base class for declarative models
 Base = declarative_base()
 
 # Check PostgreSQL connection
 def check_db_connection():
-    """Check PostgreSQL connection status"""
+    """Check if database connection is working."""
     try:
-        # Simple query to verify connection
-        with engine.connect() as connection:
-            connection.execute(text("SELECT 1")).fetchone()
-        logger.info("PostgreSQL connection successful")
-        return True
-    except OperationalError as e:
-        logger.error(f"PostgreSQL connection failed: {e}")
-        return False
+        # Create a new connection and immediately close it
+        with engine.connect() as conn:
+            result = conn.execute(text("SELECT 1"))
+            row = result.fetchone()
+            if row and row[0] == 1:
+                return True
+            else:
+                logger.error("Database connection check failed: unexpected result")
+                return False
     except Exception as e:
-        logger.error(f"Unknown error checking PostgreSQL connection: {e}")
+        logger.error(f"Database connection check failed: {e}")
         return False
 
 # Dependency to get DB session with improved error handling
 def get_db():
-    """Get PostgreSQL database session"""
-    db = SessionLocal()
+    """Get database session with proper cleanup."""
+    db = None
     try:
-        # Test connection
-        db.execute(text("SELECT 1")).fetchone()
+        db = SessionLocal()
+        # Test the connection
+        db.execute(text("SELECT 1"))
         yield db
     except Exception as e:
-        logger.error(f"DB connection error: {e}")
+        logger.error(f"Error getting database session: {e}")
+        if db:
+            db.rollback()
         raise
     finally:
-        db.close()  # Ensure connection is closed and returned to pool
+        if db:
+            db.close()
 
 # Create tables in database if they don't exist
 def create_tables():
-    """Create tables in database"""
+    """Create all tables in database."""
     try:
         Base.metadata.create_all(bind=engine)
-        logger.info("Database tables created or already exist")
         return True
-    except SQLAlchemyError as e:
-        logger.error(f"Failed to create database tables (SQLAlchemy error): {e}")
-        return False
     except Exception as e:
-        logger.error(f"Failed to create database tables (unexpected error): {e}")
+        logger.error(f"Error creating tables: {e}")
         return False
 
 # Function to create indexes for better performance

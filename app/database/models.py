@@ -1,8 +1,10 @@
-from sqlalchemy import Column, Integer, String, DateTime, Boolean, ForeignKey, Float, Text, LargeBinary, JSON
+from sqlalchemy import Column, Integer, String, DateTime, Boolean, ForeignKey, Float, Text, LargeBinary, JSON, UUID, Index
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 from .postgresql import Base
-import datetime
+from datetime import datetime
+import uuid
 
 class FAQItem(Base):
     __tablename__ = "faq_item"
@@ -125,6 +127,7 @@ class VectorStatus(Base):
     document_id = Column(Integer, ForeignKey("document.id"), nullable=False)
     vector_database_id = Column(Integer, ForeignKey("vector_database.id"), nullable=False)
     vector_id = Column(String, nullable=True)
+    document_name = Column(String, nullable=True)
     status = Column(String, default="pending")
     error_message = Column(String, nullable=True)
     embedded_at = Column(DateTime, nullable=True)
@@ -155,13 +158,10 @@ class ChatEngine(Base):
     answer_model = Column(String, nullable=False)
     system_prompt = Column(Text, nullable=True)
     empty_response = Column(String, nullable=True)
-    characteristic = Column(Text, nullable=True)
-    historical_sessions_number = Column(Integer, default=3)
     similarity_top_k = Column(Integer, default=3)
     vector_distance_threshold = Column(Float, default=0.75)
     grounding_threshold = Column(Float, default=0.2)
     use_public_information = Column(Boolean, default=False)
-    pinecone_index_name = Column(String, default="testbot768")
     status = Column(String, default="active")
     created_at = Column(DateTime, server_default=func.now())
     last_modified = Column(DateTime, server_default=func.now(), onupdate=func.now())
@@ -204,4 +204,48 @@ class ApiKey(Base):
     created_at = Column(DateTime, server_default=func.now())
     last_used = Column(DateTime, nullable=True)
     expires_at = Column(DateTime, nullable=True)
-    is_active = Column(Boolean, default=True) 
+    is_active = Column(Boolean, default=True)
+
+class DatabaseMergeOperation(Base):
+    __tablename__ = "database_merge_operation"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    merge_id = Column(String, unique=True, nullable=False)
+    source_database_ids = Column(JSON, nullable=False)
+    target_database_id = Column(Integer, ForeignKey("vector_database.id"), nullable=False)
+    status = Column(String, default="pending")  # pending, in_progress, completed, failed
+    total_documents = Column(Integer, default=0)
+    processed_documents = Column(Integer, default=0)
+    failed_documents = Column(Integer, default=0)
+    current_document = Column(String, nullable=True)
+    error_message = Column(String, nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+    
+    # Relationships
+    target_database = relationship("VectorDatabase", foreign_keys=[target_database_id])
+
+class AdminLog(Base):
+    __tablename__ = "admin_logs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    timestamp = Column(DateTime(timezone=True), nullable=False, default=datetime.now)
+    user_id = Column(String(255), nullable=False)
+    action = Column(String(50), nullable=False)  # create, read, update, delete
+    resource_type = Column(String(100), nullable=False)  # Document, ChatEngine, User, etc.
+    resource_id = Column(String(255), nullable=True)
+    details = Column(Text, nullable=False)
+    ip_address = Column(String(45), nullable=True)
+    status = Column(String(50), nullable=False)  # success, failure
+    previous_state = Column(JSONB, nullable=True)
+    new_state = Column(JSONB, nullable=True)
+
+    # Indexes
+    __table_args__ = (
+        Index('ix_admin_logs_timestamp', timestamp),
+        Index('ix_admin_logs_user_id', user_id),
+        Index('ix_admin_logs_action', action),
+        Index('ix_admin_logs_resource_type', resource_type),
+        Index('ix_admin_logs_resource_id', resource_id),
+        Index('ix_admin_logs_status', status),
+    ) 

@@ -1,5 +1,7 @@
+from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, Field
-from typing import Optional, List, Dict, Any
+from datetime import datetime
+from app.api.models import MergeProgressResponse, MergeStatusResponse, DatabaseMergeRequest
 
 class PDFUploadRequest(BaseModel):
     """Request model cho upload PDF"""
@@ -48,13 +50,32 @@ class DocumentsListResponse(BaseModel):
     postgresql_documents: Optional[List[Dict[str, Any]]] = Field(None, description="Danh sách documents từ PostgreSQL")
     postgresql_document_count: Optional[int] = Field(None, description="Số lượng documents từ PostgreSQL")
     error: Optional[str] = Field(None, description="Thông báo lỗi (nếu có)")
-    
+
     class Config:
         schema_extra = {
             "example": {
                 "success": True,
-                "total_vectors": 5000,
+                "total_vectors": 100,
                 "namespace": "Default",
-                "index_name": "testbot768"
+                "index_name": "testbot768",
+                "documents": [
+                    {
+                        "id": "doc1",
+                        "metadata": {
+                            "title": "Sample Document",
+                            "description": "A sample document"
+                        }
+                    }
+                ],
+                "postgresql_documents": [
+                    {
+                        "id": 1,
+                        "name": "Sample Document",
+                        "file_type": "pdf",
+                        "size": 1024,
+                        "created_at": "2023-01-01T00:00:00Z"
+                    }
+                ],
+                "postgresql_document_count": 1
             }
-        } 
+        }

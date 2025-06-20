@@ -17,6 +17,7 @@ from datetime import datetime
 from app.utils.pdf_processor import PDFProcessor
 from app.models.pdf_models import PDFResponse, DeleteDocumentRequest, DocumentsListResponse
 from app.database.postgresql import get_db
+from app.api.models import MergeStatusResponse, MergeProgressResponse, DatabaseMergeRequest
 from app.database.models import VectorDatabase, Document, VectorStatus, ApiKey, DocumentContent
 from app.api.pdf_websocket import (
     send_pdf_upload_started, 

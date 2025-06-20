@@ -12,7 +12,7 @@ import time
 import uuid
 import traceback
 
-# Cấu hình logging
+# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 DEBUG = os.getenv("DEBUG", "False").lower() in ("true", "1", "t")
 
-# Kiểm tra các biến môi trường bắt buộc
+# Check required environment variables
 required_env_vars = [
     "AIVEN_DB_URL", 
     "MONGODB_URL", 
@@ -38,12 +38,12 @@ required_env_vars = [
 missing_vars = [var for var in required_env_vars if not os.getenv(var)]
 if missing_vars:
     logger.error(f"Missing required environment variables: {', '.join(missing_vars)}")
-    if not DEBUG:  # Chỉ thoát nếu không ở chế độ debug
+    if not DEBUG:  # Only exit if not in debug mode
         sys.exit(1)
 
 # Database health checks
 def check_database_connections():
-    """Kiểm tra kết nối các database khi khởi động"""
+    """Check database connections on startup"""
     from app.database.postgresql import check_db_connection as check_postgresql
     from app.database.mongodb import check_db_connection as check_mongodb
     from app.database.pinecone import check_db_connection as check_pinecone
@@ -58,28 +58,39 @@ def check_database_connections():
     if not all_ok:
         failed_dbs = [name for name, status in db_status.items() if not status]
         logger.error(f"Failed to connect to databases: {', '.join(failed_dbs)}")
-        if not DEBUG:  # Chỉ thoát nếu không ở chế độ debug
+        if not DEBUG:  # Only exit if not in debug mode
             sys.exit(1)
     
     return db_status
 
-# Khởi tạo lifespan để kiểm tra kết nối database khi khởi động
+# Initialize lifespan to check database connections on startup
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: kiểm tra kết nối các database
+    # Startup: check database connections
     logger.info("Starting application...")
-    db_status = check_database_connections()
-    
-    # Khởi tạo bảng trong cơ sở dữ liệu (nếu chưa tồn tại)
-    if DEBUG and all(db_status.values()):  # Chỉ khởi tạo bảng trong chế độ debug và khi tất cả kết nối DB thành công
-        from app.database.postgresql import create_tables
-        if create_tables():
-            logger.info("Database tables created or already exist")
+    try:
+        db_status = check_database_connections()
+        
+        # Initialize tables in database (if they don't exist)
+        if DEBUG and all(db_status.values()):
+            from app.database.postgresql import create_tables
+            if create_tables():
+                logger.info("Database tables created or already exist")
+    except Exception as e:
+        logger.error(f"Error during startup: {e}")
+        if not DEBUG:
+            raise
     
     yield
     
-    # Shutdown
+    # Shutdown: cleanup connections
     logger.info("Shutting down application...")
+    try:
+        from app.database.postgresql import engine
+        engine.dispose()
+        logger.info("Database connections closed")
+    except Exception as e:
+        logger.error(f"Error during shutdown: {e}")
 
 # Import routers
 try:
@@ -89,9 +100,12 @@ try:
     from app.api.websocket_routes import router as websocket_router
     from app.api.pdf_routes import router as pdf_router
     from app.api.pdf_websocket import router as pdf_websocket_router
+    from app.api.admin_routes import router as admin_router
+    from app.api.content_routes import router as content_router
     
     # Import middlewares
     from app.utils.middleware import RequestLoggingMiddleware, ErrorHandlingMiddleware, DatabaseCheckMiddleware
+    from app.middleware.admin_logging import AdminLoggingMiddleware
     
     # Import debug utilities
     from app.utils.debug_utils import debug_view, DebugInfo, error_tracker, performance_monitor
@@ -125,11 +139,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Thêm middlewares
+# Add middlewares in correct order
+if not DEBUG:  # Only add database check middleware in production
+    app.add_middleware(DatabaseCheckMiddleware)
 app.add_middleware(ErrorHandlingMiddleware)
 app.add_middleware(RequestLoggingMiddleware)
-if not DEBUG:  # Chỉ thêm middleware kiểm tra database trong production
-    app.add_middleware(DatabaseCheckMiddleware)
+app.add_middleware(AdminLoggingMiddleware)
 
 # Include routers
 app.include_router(mongodb_router)
@@ -138,6 +153,8 @@ app.include_router(rag_router)
 app.include_router(websocket_router)
 app.include_router(pdf_router)
 app.include_router(pdf_websocket_router)
+app.include_router(admin_router)
+app.include_router(content_router)
 
 # Log all registered routes
 logger.info("Registered API routes:")
@@ -157,7 +174,7 @@ def read_root():
 # Health check endpoint
 @app.get("/health")
 def health_check():
-    # Kiểm tra kết nối database
+    # Check database connections
     db_status = check_database_connections()
     all_db_ok = all(db_status.values())
     
@@ -175,113 +192,70 @@ async def ping():
 # Cache stats endpoint
 @app.get("/cache/stats")
 def cache_stats():
-    """Trả về thống kê về cache"""
+    """Return cache statistics"""
     cache = get_cache()
     return cache.stats()
 
 # Cache clear endpoint
 @app.delete("/cache/clear")
 def cache_clear():
-    """Xóa tất cả dữ liệu trong cache"""
+    """Clear all data in cache"""
     cache = get_cache()
     cache.clear()
     return {"message": "Cache cleared successfully"}
 
-# Debug endpoints (chỉ có trong chế độ debug)
+# Debug endpoints (only in debug mode)
 if DEBUG:
     @app.get("/debug/config")
     def debug_config():
-        """Hiển thị thông tin cấu hình (chỉ trong chế độ debug)"""
+        """Display configuration information (debug mode only)"""
         config = {
             "environment": os.environ.get("ENVIRONMENT", "production"),
             "debug": DEBUG,
             "db_connection_mode": os.environ.get("DB_CONNECTION_MODE", "aiven"),
             "databases": {
                 "postgresql": os.environ.get("AIVEN_DB_URL", "").split("@")[1].split("/")[0] if "@" in os.environ.get("AIVEN_DB_URL", "") else "N/A",
-                "mongodb": os.environ.get("MONGODB_URL", "").split("@")[1].split("/?")[0] if "@" in os.environ.get("MONGODB_URL", "") else "N/A",
-                "pinecone": os.environ.get("PINECONE_INDEX_NAME", "N/A"),
+                "mongodb": os.environ.get("MONGODB_URL", "").split("@")[1].split("/")[0] if "@" in os.environ.get("MONGODB_URL", "") else "N/A",
+                "pinecone": "configured" if os.environ.get("PINECONE_API_KEY") else "not configured"
             }
         }
         return config
-    
+
     @app.get("/debug/system")
     def debug_system():
-        """Hiển thị thông tin hệ thống (chỉ trong chế độ debug)"""
-        return DebugInfo.get_system_info()
-    
+        """Display system information (debug mode only)"""
+        return debug_view.get_system_info()
+
     @app.get("/debug/database")
     def debug_database():
-        """Hiển thị trạng thái database (chỉ trong chế độ debug)"""
-        return DebugInfo.get_database_status()
-    
+        """Display database information (debug mode only)"""
+        return debug_view.get_database_info()
+
     @app.get("/debug/errors")
     def debug_errors(limit: int = 10):
-        """Hiển thị các lỗi gần đây (chỉ trong chế độ debug)"""
-        return error_tracker.get_errors(limit=limit)
-    
+        """Display recent errors (debug mode only)"""
+        return error_tracker.get_recent_errors(limit)
+
     @app.get("/debug/performance")
     def debug_performance():
-        """Hiển thị thông tin hiệu suất (chỉ trong chế độ debug)"""
-        return performance_monitor.get_report()
-    
+        """Display performance metrics (debug mode only)"""
+        return performance_monitor.get_metrics()
+
     @app.get("/debug/full")
     def debug_full_report(request: Request):
-        """Hiển thị báo cáo debug đầy đủ (chỉ trong chế độ debug)"""
-        return debug_view(request)
-    
+        """Generate full debug report (debug mode only)"""
+        return debug_view.generate_full_report(request)
+
     @app.get("/debug/cache")
     def debug_cache():
-        """Hiển thị thông tin chi tiết về cache (chỉ trong chế độ debug)"""
+        """Display cache information (debug mode only)"""
         cache = get_cache()
-        cache_stats = cache.stats()
-        
-        # Thêm thông tin chi tiết về các key trong cache
-        cache_keys = list(cache.cache.keys())
-        history_users = list(cache.user_history_queues.keys())
-        
         return {
-            "stats": cache_stats,
-            "keys": cache_keys,
-            "history_users": history_users,
-            "config": {
-                "ttl": cache.ttl,
-                "cleanup_interval": cache.cleanup_interval,
-                "max_size": cache.max_size,
-                "history_queue_size": os.getenv("HISTORY_QUEUE_SIZE", "10"),
-                "history_cache_ttl": os.getenv("HISTORY_CACHE_TTL", "3600"),
-            }
-        }
-    
-    @app.get("/debug/websocket-routes")
-    def debug_websocket_routes():
-        """Hiển thị thông tin về các WebSocket route (chỉ trong chế độ debug)"""
-        ws_routes = []
-        for route in app.routes:
-            if "websocket" in str(route.__class__).lower():
-                ws_routes.append({
-                    "path": route.path,
-                    "name": route.name,
-                    "endpoint": str(route.endpoint)
-                })
-        return {
-            "websocket_routes": ws_routes,
-            "total_count": len(ws_routes)
-        }
-        
-    @app.get("/debug/mock-status")
-    def debug_mock_status():
-        """Display current mock mode settings"""
-        # Import was: from app.api.pdf_routes import USE_MOCK_MODE
-        # We've disabled mock mode
-        
-        return {
-            "mock_mode": False,  # Disabled - using real database
-            "mock_env_variable": os.getenv("USE_MOCK_MODE", "false"),
-            "debug_mode": DEBUG
+            "stats": cache.stats(),
+            "info": cache.info(),
+            "keys": list(cache.keys())
         }
 
-
-# Run the app with uvicorn when executed directly
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 7860))
     uvicorn.run("app:app", host="0.0.0.0", port=port, reload=DEBUG) 

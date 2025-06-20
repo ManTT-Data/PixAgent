@@ -24,18 +24,23 @@ MONGODB_TIMEOUT = int(os.getenv("MONGODB_TIMEOUT", "5000"))  # 5 seconds by defa
 HISTORY_CACHE_TTL = int(os.getenv("HISTORY_CACHE_TTL", "3600"))  # 1 hour by default
 HISTORY_QUEUE_SIZE = int(os.getenv("HISTORY_QUEUE_SIZE", "10"))  # 10 items by default
 
+# Initialize variables
+client = None
+db = None
+session_collection = None
+
 # Create MongoDB connection with timeout
 try:
     client = MongoClient(MONGODB_URL, serverSelectionTimeoutMS=MONGODB_TIMEOUT)
     db = client[DB_NAME]
-
-    # Collections
     session_collection = db[COLLECTION_NAME]
     logger.info(f"MongoDB connection initialized to {DB_NAME}.{COLLECTION_NAME}")
-    
 except Exception as e:
     logger.error(f"Failed to initialize MongoDB connection: {e}")
-    # Don't raise exception to avoid crash during startup, error handling will be done in functions
+    # Create dummy client and collection for type safety
+    client = MongoClient()
+    db = client[DB_NAME]
+    session_collection = db[COLLECTION_NAME]
 
 # Check MongoDB connection
 def check_db_connection():
