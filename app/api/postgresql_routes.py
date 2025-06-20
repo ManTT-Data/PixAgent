@@ -3514,15 +3514,21 @@ async def upload_document(
     name: str = Form(...),
     vector_database_id: int = Form(...),
     file: UploadFile = File(...),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
     db: Session = Depends(get_db)
 ):
     """
     Upload a new document and associate it with a vector database.
+    Automatically processes PDFs and uploads them to Pinecone in the background.
     
     - **name**: Document name
     - **vector_database_id**: ID of the vector database to associate with
     - **file**: The file to upload
     """
+    import os
+    import tempfile
+    from app.utils.pdf_processor import PDFProcessor
+    
     try:
         # Check if vector database exists
         vector_db = db.query(VectorDatabase).filter(VectorDatabase.id == vector_database_id).first()
@@ -3573,6 +3579,32 @@ async def upload_document(
         # Get vector database name for response
         vector_db_name = vector_db.name if vector_db else f"db_{vector_database_id}"
         
+        # Schedule automatic PDF processing to Pinecone if it's a PDF file
+        if file_extension.lower() == "pdf":
+            try:
+                # Get Pinecone configuration from environment
+                pinecone_api_key = os.getenv("PINECONE_API_KEY")
+                pinecone_index_name = os.getenv("PINECONE_INDEX_NAME", "testbot768")
+                
+                if pinecone_api_key:
+                    # Create a temporary file with the PDF content
+                    background_tasks.add_task(
+                        process_pdf_to_pinecone,
+                        file_content=file_content,
+                        filename=filename,
+                        document_id=document.id,
+                        document_name=name,
+                        vector_database_id=vector_database_id,
+                        pinecone_api_key=pinecone_api_key,
+                        pinecone_index_name=pinecone_index_name
+                    )
+                    logger.info(f"Scheduled automatic PDF processing to Pinecone for document {document.id}")
+                else:
+                    logger.warning("PINECONE_API_KEY not found in environment variables. Skipping automatic Pinecone upload.")
+            except Exception as e:
+                logger.error(f"Failed to schedule automatic PDF processing for document {document.id}: {str(e)}")
+                # Don't fail the upload if Pinecone scheduling fails
+        
         # Create response
         result = DocumentResponse(
             id=document.id,
@@ -3601,12 +3633,119 @@ async def upload_document(
         logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Error uploading document: {str(e)}")
 
+async def process_pdf_to_pinecone(
+    file_content: bytes,
+    filename: str,
+    document_id: int,
+    document_name: str,
+    vector_database_id: int,
+    pinecone_api_key: str,
+    pinecone_index_name: str
+):
+    """
+    Background task to process PDF and upload to Pinecone.
+    """
+    import tempfile
+    import os
+    from sqlalchemy.orm import sessionmaker
+    from app.database.postgresql import engine
+    from app.utils.pdf_processor import PDFProcessor
+    from app.database.models import VectorStatus
+    
+    # Create a new database session for the background task
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    db = SessionLocal()
+    
+    temp_file_path = None
+    try:
+        # Create a temporary file with the PDF content
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_file:
+            temp_file.write(file_content)
+            temp_file_path = temp_file.name
+        
+        # Initialize PDF processor with the "default" namespace as requested
+        processor = PDFProcessor(
+            index_name=pinecone_index_name,
+            namespace="default",
+            api_key=pinecone_api_key,
+            vector_db_id=vector_database_id,
+            correlation_id=f"auto_upload_{document_id}"
+        )
+        
+        # Extract filename without extension for document ID
+        document_vector_id = pathlib_Path(filename).stem.replace(" ", "_").replace("[", "").replace("]", "")
+        
+        # Create metadata
+        metadata = {
+            "title": document_name,
+            "filename": filename,
+            "source": "auto_upload",
+            "content_type": "application/pdf",
+            "document_id": str(document_id),
+            "vector_database_id": str(vector_database_id)
+        }
+        
+        # Process the PDF
+        result = await processor.process_pdf(
+            file_path=temp_file_path,
+            document_id=document_vector_id,
+            metadata=metadata
+        )
+        
+        # Update vector status based on result
+        vector_status = db.query(VectorStatus).filter(VectorStatus.document_id == document_id).first()
+        if vector_status:
+            if result.get("success"):
+                vector_status.status = "completed"
+                vector_status.vector_id = document_vector_id
+                vector_status.embedded_at = datetime.now()
+                vector_status.error_message = None
+                logger.info(f"✅ Successfully processed PDF to Pinecone: document_id={document_id}, chunks={result.get('chunks_processed', 0)}, vectors={result.get('vectors_created', 0)}")
+            else:
+                vector_status.status = "failed"
+                vector_status.error_message = result.get("error", "Unknown error during PDF processing")
+                logger.error(f"❌ Failed to process PDF to Pinecone: document_id={document_id}, error={result.get('error', 'Unknown error')}")
+            
+            db.commit()
+        
+        # Update document as embedded if successful
+        if result.get("success"):
+            document = db.query(Document).filter(Document.id == document_id).first()
+            if document:
+                document.is_embedded = True
+                db.commit()
+        
+    except Exception as e:
+        logger.error(f"❌ Exception during automatic PDF processing for document {document_id}: {str(e)}")
+        logger.error(traceback.format_exc())
+        
+        # Update vector status to failed
+        try:
+            vector_status = db.query(VectorStatus).filter(VectorStatus.document_id == document_id).first()
+            if vector_status:
+                vector_status.status = "failed"
+                vector_status.error_message = f"Exception during processing: {str(e)}"
+                db.commit()
+        except Exception as db_error:
+            logger.error(f"Failed to update vector status after error: {str(db_error)}")
+    
+    finally:
+        # Clean up temporary file
+        if temp_file_path and os.path.exists(temp_file_path):
+            try:
+                os.unlink(temp_file_path)
+            except Exception as cleanup_error:
+                logger.error(f"Failed to clean up temporary file {temp_file_path}: {str(cleanup_error)}")
+        
+        # Close database session
+        db.close()
+
 @router.put("/documents/{document_id}", response_model=DocumentResponse)
 async def update_document(
     document_id: int,
     name: Optional[str] = Form(None),
     file: Optional[UploadFile] = File(None),
-    background_tasks: BackgroundTasks = None,
+    background_tasks: BackgroundTasks = BackgroundTasks(),
     db: Session = Depends(get_db)
 ):
     """
@@ -3616,6 +3755,10 @@ async def update_document(
     - **name**: New document name (optional)
     - **file**: New file content (optional)
     """
+    import os
+    import tempfile
+    from app.utils.pdf_processor import PDFProcessor
+    
     try:
         # Validate document_id
         if document_id <= 0:
@@ -3687,46 +3830,31 @@ async def update_document(
                 )
                 db.add(vector_status)
             
-            # Schedule deletion of old vectors in Pinecone if we have all needed info
-            if old_vector_id and vector_db and document.vector_database_id and background_tasks:
+            # Schedule automatic PDF processing to Pinecone if it's a PDF file
+            if file_extension.lower() == "pdf":
                 try:
-                    # Initialize PDFProcessor for vector deletion
-                    from app.pdf.processor import PDFProcessor
+                    # Get Pinecone configuration from environment
+                    pinecone_api_key = os.getenv("PINECONE_API_KEY")
+                    pinecone_index_name = os.getenv("PINECONE_INDEX_NAME", "testbot768")
                     
-                    processor = PDFProcessor(
-                        index_name=vector_db.pinecone_index,
-                        namespace=f"vdb-{document.vector_database_id}",
-                        vector_db_id=document.vector_database_id
-                    )
-                    
-                    # Add deletion task to background tasks
-                    background_tasks.add_task(
-                        processor.delete_document_vectors,
-                        old_vector_id
-                    )
-                    
-                    logger.info(f"Scheduled deletion of old vectors for document {document_id}")
+                    if pinecone_api_key:
+                        # Schedule PDF processing
+                        background_tasks.add_task(
+                            process_pdf_to_pinecone,
+                            file_content=file_content,
+                            filename=filename,
+                            document_id=document.id,
+                            document_name=document.name,
+                            vector_database_id=document.vector_database_id,
+                            pinecone_api_key=pinecone_api_key,
+                            pinecone_index_name=pinecone_index_name
+                        )
+                        logger.info(f"Scheduled automatic PDF processing to Pinecone for updated document {document.id}")
+                    else:
+                        logger.warning("PINECONE_API_KEY not found in environment variables. Skipping automatic Pinecone upload.")
                 except Exception as e:
-                    logger.error(f"Error scheduling vector deletion: {str(e)}")
-                    # Continue with the update even if vector deletion scheduling fails
-            
-            # Schedule document for re-embedding if possible
-            if background_tasks and document.vector_database_id:
-                try:
-                    # Import here to avoid circular imports
-                    from app.pdf.tasks import process_document_for_embedding
-                    
-                    # Schedule embedding
-                    background_tasks.add_task(
-                        process_document_for_embedding,
-                        document_id=document_id,
-                        vector_db_id=document.vector_database_id
-                    )
-                    
-                    logger.info(f"Scheduled re-embedding for document {document_id}")
-                except Exception as e:
-                    logger.error(f"Error scheduling document embedding: {str(e)}")
-                    # Continue with the update even if embedding scheduling fails
+                    logger.error(f"Failed to schedule automatic PDF processing for updated document {document.id}: {str(e)}")
+                    # Don't fail the update if Pinecone scheduling fails
         
         db.commit()
         db.refresh(document)

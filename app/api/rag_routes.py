@@ -387,15 +387,30 @@ async def get_chat_engines(
         if status:
             query = query.filter(ChatEngine.status == status)
         
-        engines = query.offset(skip).limit(limit).all()
-        return [ChatEngineResponse.model_validate(engine, from_attributes=True) for engine in engines]
+        db_engines = query.offset(skip).limit(limit).all()
+        
+        # Convert to response model, handling potential None for pinecone_index_name
+        response_engines = []
+        for engine in db_engines:
+            engine_data = engine.__dict__
+            if engine_data.get("pinecone_index_name") is None:
+                engine_data["pinecone_index_name"] = "testbot768"  # Default value
+            response_engines.append(ChatEngineResponse(**engine_data))
+            
+        return response_engines
     except SQLAlchemyError as e:
-        logger.error(f"Database error retrieving chat engines: {e}")
-        raise HTTPException(status_code=500, detail=f"Lỗi database: {str(e)}")
+        logger.error(f"Lỗi SQLAlchemy khi lấy danh sách chat engines: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Lỗi database khi lấy danh sách chat engines: {str(e)}"
+        )
     except Exception as e:
-        logger.error(f"Error retrieving chat engines: {e}")
+        logger.error(f"Lỗi khi lấy danh sách chat engines: {e}")
         logger.error(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=f"Lỗi khi lấy danh sách chat engines: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Lỗi khi lấy danh sách chat engines: {str(e)}"
+        )
 
 @router.post("/chat-engine", response_model=ChatEngineResponse, status_code=status.HTTP_201_CREATED, tags=["Chat Engine"])
 async def create_chat_engine(
@@ -508,31 +523,57 @@ async def delete_chat_engine(
     db: Session = Depends(get_db)
 ):
     """
-    Xóa một chat engine.
-    
-    - **engine_id**: ID của chat engine
+    Xóa một chat engine. Nếu engine_id là 0, xóa tất cả chat engines trừ engine_id 13.
+
+    - **engine_id**: ID của chat engine (0 để xóa tất cả trừ ID 13)
     """
     try:
-        db_engine = db.query(ChatEngine).filter(ChatEngine.id == engine_id).first()
-        if not db_engine:
-            raise HTTPException(status_code=404, detail=f"Không tìm thấy chat engine với ID {engine_id}")
-        
-        # Delete engine
-        db.delete(db_engine)
-        db.commit()
-        
-        return {"message": f"Chat engine với ID {engine_id} đã được xóa thành công"}
-    except HTTPException:
-        raise
+        if engine_id == 0: # Special case to delete all except ID 13
+            engines_to_delete = db.query(ChatEngine).filter(ChatEngine.id != 13).all()
+            if not engines_to_delete:
+                return {"message": "Không có chat engine nào để xóa (ngoại trừ ID 13)."}
+            
+            count_deleted = 0
+            for engine in engines_to_delete:
+                db.delete(engine)
+                count_deleted += 1
+            db.commit()
+            # Clear cache for all deleted engines
+            cache = get_cache()
+            for engine in engines_to_delete:
+                cache_key = get_chat_engine_cache_key(engine.id)
+                cache.delete(cache_key)
+            return {"message": f"Đã xóa thành công {count_deleted} chat engines (trừ ID 13)."}
+        else:
+            engine = db.query(ChatEngine).filter(ChatEngine.id == engine_id).first()
+            if not engine:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Chat engine với ID {engine_id} không tìm thấy")
+            
+            db.delete(engine)
+            db.commit()
+            
+            # Clear cache for the deleted engine
+            cache = get_cache()
+            cache_key = get_chat_engine_cache_key(engine_id)
+            cache.delete(cache_key)
+            
+            return {"message": f"Chat engine với ID {engine_id} đã được xóa thành công"}
+            
     except SQLAlchemyError as e:
         db.rollback()
-        logger.error(f"Database error deleting chat engine: {e}")
-        raise HTTPException(status_code=500, detail=f"Lỗi database: {str(e)}")
+        logger.error(f"Lỗi SQLAlchemy khi xóa chat engine: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Lỗi database khi xóa chat engine: {str(e)}"
+        )
     except Exception as e:
         db.rollback()
-        logger.error(f"Error deleting chat engine: {e}")
+        logger.error(f"Lỗi khi xóa chat engine: {e}")
         logger.error(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=f"Lỗi khi xóa chat engine: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Lỗi khi xóa chat engine: {str(e)}"
+        )
 
 @timer_decorator
 @router.post("/chat-with-engine/{engine_id}", response_model=ChatResponse, tags=["Chat Engine"])
@@ -543,18 +584,20 @@ async def chat_with_engine(
     db: Session = Depends(get_db)
 ):
     """
-    Tương tác với một chat engine cụ thể.
+    Chat with a specific chat engine using RAG.
     
-    - **engine_id**: ID của chat engine
-    - **user_id**: ID của người dùng
-    - **question**: Câu hỏi của người dùng
-    - **include_history**: Có sử dụng lịch sử chat hay không
-    - **session_id**: ID session (optional)
-    - **first_name**: Tên của người dùng (optional)
-    - **last_name**: Họ của người dùng (optional)
-    - **username**: Username của người dùng (optional)
+    - **engine_id**: ID of the chat engine
+    - **request**: Chat request details
     """
     start_time = time.time()
+    
+    # Log the API Key being used by the application (first 5 and last 4 chars for security)
+    app_google_api_key = os.getenv("GOOGLE_API_KEY", "Not Set")
+    if len(app_google_api_key) > 9:
+        logger.info(f"RAG Route - Using Google API Key: {app_google_api_key[:5]}...{app_google_api_key[-4:]}")
+    else:
+        logger.info(f"RAG Route - Using Google API Key: {app_google_api_key}")
+
     try:
         # Lấy cache
         cache = get_cache()
@@ -607,49 +650,27 @@ async def chat_with_engine(
             chat_history = get_chat_history(request.user_id, n=engine.historical_sessions_number)
             logger.info(f"Sử dụng lịch sử chat: {chat_history[:100]}...")
         
-        # Cache các tham số cấu hình model
-        model_cache_key = get_model_config_cache_key(engine.answer_model)
-        model_config = cache.get(model_cache_key)
+        # Cache hoặc lấy cấu hình model (ví dụ: temperature, etc. - không phải tên model chính)
+        model_cache_key = get_model_config_cache_key(engine.answer_model) # Keyed by actual model name
+        model_config_params = cache.get(model_cache_key)
         
-        if not model_config:
-            # Nếu không có trong cache, tạo mới và lưu cache
-            generation_config = {
-                "temperature": 0.9,
-                "top_p": 1,
-                "top_k": 1,
-                "max_output_tokens": 2048,
+        if not model_config_params:
+            # Đây là nơi bạn có thể đặt các tham số mặc định cho model nếu cần
+            # Ví dụ: generation_config, safety_settings
+            # Quan trọng: KHÔNG override engine.answer_model ở đây
+            model_config_params = {
+                # "temperature": 0.7, # Ví dụ
             }
+            cache.set(model_cache_key, model_config_params, MODEL_CONFIG_CACHE_TTL)
 
-            safety_settings = [
-                {
-                    "category": "HARM_CATEGORY_HARASSMENT",
-                    "threshold": "BLOCK_MEDIUM_AND_ABOVE"
-                },
-                {
-                    "category": "HARM_CATEGORY_HATE_SPEECH",
-                    "threshold": "BLOCK_MEDIUM_AND_ABOVE"
-                },
-                {
-                    "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-                    "threshold": "BLOCK_MEDIUM_AND_ABOVE"
-                },
-                {
-                    "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
-                    "threshold": "BLOCK_MEDIUM_AND_ABOVE"
-                },
-            ]
-            
-            model_config = {
-                "model_name": engine.answer_model,
-                "generation_config": generation_config,
-                "safety_settings": safety_settings
-            }
-            
-            cache.set(model_cache_key, model_config, MODEL_CONFIG_CACHE_TTL)
-
-        # Khởi tạo Gemini model từ cấu hình đã cache
-        model = genai.GenerativeModel(**model_config)
-
+        # Sử dụng tên model trực tiếp từ engine đã được load và cache
+        logger.info(f"RAG Route - Attempting to initialize Google GenAI Model: {engine.answer_model} with params: {model_config_params}")
+        model = genai.GenerativeModel(
+            model_name=engine.answer_model,
+            # generation_config=genai.types.GenerationConfig(**model_config_params.get('generation_config', {})),
+            # safety_settings=model_config_params.get('safety_settings', None)
+        )
+        
         # Sử dụng fix_request để tinh chỉnh câu hỏi
         prompt_request = fix_request.format(
             question=request.question,

@@ -81,7 +81,7 @@ class ChatEngineBase(BaseModel):
     similarity_top_k: int = Field(3, description="Số lượng top similar documents để trả về")
     vector_distance_threshold: float = Field(0.75, description="Threshold cho vector similarity")
     grounding_threshold: float = Field(0.2, description="Threshold cho grounding")
-    pinecone_index_name: str = Field("testbot768", description="Vector database mà model được quyền sử dụng")
+    pinecone_index_name: Optional[str] = Field("testbot768", description="Vector database mà model được quyền sử dụng")
     status: str = Field("active", description="Trạng thái của chat engine")
 
 class ChatEngineCreate(ChatEngineBase):
